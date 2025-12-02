@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Alert,
   Animated as RNAnimated,
   Dimensions,
   Image,
@@ -26,37 +26,48 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { Href } from 'expo-router';
 
 import { Video, ResizeMode } from 'expo-av';
-import { openPhone, openWhatsApp, PropertyData } from '../../src/data/properties';
-import { Comment } from '../../components/comments/types';
-import { useComments } from '../../components/comments/useComments';
-import { CommentBottomSheet } from '../../components/comments/CommentBottomSheet';
-import { AuthModal } from '../../components/auth/AuthModal';
-import { LoginWithOTPScreen } from '../../components/auth/LoginWithOTPScreen';
-import { SignUpScreen } from '../../components/auth/SignUpScreen';
-import { ReservationModal } from '../../components/ReservationModal';
-import { VisitPaymentDialog } from '../../components/VisitPaymentDialog';
-import { VisitScheduleModal } from '../../components/VisitScheduleModal';
-import { PaymentModal } from '../../components/PaymentModal';
-import { PaymentSuccessModal } from '../../components/PaymentSuccessModal';
-import { ChatbotPopup } from '../../components/ChatbotPopup';
+import { openPhone, openWhatsApp, PropertyData } from '@/src/data/properties';
+import { CommentWithAuthor } from '@/src/features/comments/types';
+import { useComments } from '@/src/features/comments/hooks';
+import { CommentBottomSheet } from '@/src/features/host/components/CommentBottomSheet';
+import { AuthModal } from '@/src/features/auth/components/AuthModal';
+import { LoginWithOTPScreen } from '@/src/features/auth/components/LoginWithOTPScreen';
+import { SignUpScreen } from '@/src/features/auth/components/SignUpScreen';
+import { ReservationModal } from '@/src/features/bookings/components/ReservationModal';
+import { VisitPaymentDialog } from '@/src/features/payments/components/VisitPaymentDialog';
+import { VisitScheduleModal } from '@/src/features/visits/components/VisitScheduleModal';
+import { PaymentModal } from '@/src/features/payments/components/PaymentModal';
+import { PaymentSuccessModal } from '@/src/features/payments/components/PaymentSuccessModal';
+import { ChatbotPopup } from '@/src/components/ui/ChatbotPopup';
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { AuthUser } from '@/src/contexts/AuthContext';
 import { useVisits } from '@/src/contexts/VisitsContext';
-import { useReservations } from '@/src/contexts/ReservationContext';
+import { useReservations, type NewReservationInput } from '@/src/contexts/ReservationContext';
 import { computeUpfrontPayment } from '@/src/utils/reservationPayment';
-import { useListingDetails } from '@/src/hooks/useListingDetails';
+import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, HostProfileSummary } from '@/src/types/listings';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HERO_HEIGHT = SCREEN_HEIGHT * 0.58;
 const SHEET_SNAP_POINT = HERO_HEIGHT - 140;
 const SNAP_FADE_DISTANCE = 30;
-const VERIFIED_BADGE_ICON = require('../../assets/icons/feed-icon-verified.png');
+const VERIFIED_BADGE_ICON = require('@/assets/icons/feed-icon-verified.png');
 const VISIT_PRICE_FCFA = 5000;
 const PROFILE_TAB_ROUTE: Href = '/';
 const VISITS_ROUTE: Href = '/visits';
 type AuthPurpose = 'visit' | 'reservation' | 'chat' | 'follow';
 const FEATURE_PREVIEW_COUNT = 9;
+const NEAR_MAIN_ROAD_LABELS: Record<string, string> = {
+  within_100m: 'À moins de 100 m',
+  beyond_200m: 'À plus de 200 m',
+};
+
+const translateRoadProximity = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  return NEAR_MAIN_ROAD_LABELS[value] ?? value;
+};
 
 function normalizeLabel(value: string) {
   return value
@@ -135,8 +146,9 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
   const landlordPhone = hostProfile?.phone ?? FALLBACK_PHONE;
 
   const amenities = [...full.featureBadges];
-  if (full.features?.near_main_road) {
-    amenities.push(`Proche route (${full.features.near_main_road})`);
+  const roadProximityBadge = translateRoadProximity(full.features?.near_main_road);
+  if (roadProximityBadge) {
+    amenities.push(`Proche route (${roadProximityBadge})`);
   }
   const isFurnished = Boolean(listing.is_furnished);
 
@@ -276,8 +288,10 @@ const formatPrice = (price: string | number | undefined) => {
 };
 
 const PropertyProfileScreen = () => {
-  const params = useLocalSearchParams<{ id?: string; heroUri?: string }>();
+  const params = useLocalSearchParams<{ id?: string; heroUri?: string; initialCommentId?: string; highlightReplyId?: string; source?: string }>();
   const propertyIdParam = params?.id;
+  const initialCommentId = params?.initialCommentId;
+  const highlightReplyIdParam = params?.highlightReplyId;
   const heroUriParam = useMemo(() => {
     const raw = params?.heroUri;
     if (!raw) return null;
@@ -288,6 +302,13 @@ const PropertyProfileScreen = () => {
       return value;
     }
   }, [params?.heroUri]);
+  const highlightReplyId = useMemo(() => {
+    if (!highlightReplyIdParam) {
+      return null;
+    }
+    const value = Array.isArray(highlightReplyIdParam) ? highlightReplyIdParam[0] : highlightReplyIdParam;
+    return value ?? null;
+  }, [highlightReplyIdParam]);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const headerPaddingTop = Math.max(0, insets.top + 12 - 20) + 5;
@@ -307,6 +328,7 @@ const PropertyProfileScreen = () => {
   const [showVisitScheduleModal, setShowVisitScheduleModal] = useState(false);
   const [showVisitPaymentModal, setShowVisitPaymentModal] = useState(false);
   const [showVisitSuccessModal, setShowVisitSuccessModal] = useState(false);
+  const [showCommentsBottomSheet, setShowCommentsBottomSheet] = useState(false);
   const [showChatbot, setShowChatbot] = useState(false);
   const [isHostAvatarVisible, setIsHostAvatarVisible] = useState(false);
   const [showAllFeatures, setShowAllFeatures] = useState(false);
@@ -318,9 +340,12 @@ const PropertyProfileScreen = () => {
     total: 0,
     amountDueNow: 0,
     remainingAmount: 0,
+    paymentScheme: 'full' as 'full' | 'split',
+    originalTotal: 0,
+    discountAmount: 0,
+    discountPercent: null as number | null,
   });
   const [paymentNotice, setPaymentNotice] = useState('');
-  const [hasReservation, setHasReservation] = useState(false);
   const [visitSuccessCopy, setVisitSuccessCopy] = useState({
     title: 'Visite programmée !',
     message: 'Votre visite a été programmée. Nous vous tiendrons informé pour la confirmation.',
@@ -328,11 +353,10 @@ const PropertyProfileScreen = () => {
   });
   const [visitDetails, setVisitDetails] = useState<{ date: Date | null; time: string }>({ date: null, time: '' });
   const pendingActionRef = useRef<(() => void) | null>(null);
-  const { isLoggedIn, refreshProfile } = useAuth();
+  const { isLoggedIn, refreshProfile, supabaseProfile } = useAuth();
   const isAuthenticated = isLoggedIn;
   const wasLoggedInRef = useRef(isLoggedIn);
-  const { addVisit, updateVisit, getVisitByPropertyId } = useVisits();
-  const { addReservation } = useReservations();
+
   const {
     data: listingData,
     isLoading: isListingLoading,
@@ -347,13 +371,46 @@ const PropertyProfileScreen = () => {
     return null;
   }, [listingData]);
 
+  const { addVisit, updateVisit, getVisitByPropertyId } = useVisits();
+  const { reservations, addReservation, refreshReservations } = useReservations();
+
+  const existingReservation = useMemo(() => {
+    if (!property?.id) {
+      return undefined;
+    }
+    return reservations.find(
+      (reservation) => reservation.propertyId === property.id && reservation.status !== 'cancelled',
+    );
+  }, [reservations, property?.id]);
+
+  const hasReservation = Boolean(existingReservation);
+
+  useEffect(() => {
+    if (!existingReservation) {
+      return;
+    }
+    setReservationSummary({
+      checkIn: new Date(existingReservation.checkInDate),
+      checkOut: new Date(existingReservation.checkOutDate),
+      nights: existingReservation.nights,
+      total: existingReservation.totalPrice,
+      amountDueNow: existingReservation.amountPaid ?? existingReservation.totalPrice,
+      remainingAmount: existingReservation.amountRemaining ?? 0,
+      paymentScheme: existingReservation.amountRemaining && existingReservation.amountRemaining > 0 ? 'split' : 'full',
+      originalTotal: existingReservation.originalTotal ?? existingReservation.totalPrice,
+      discountAmount: existingReservation.discountAmount ?? 0,
+      discountPercent: existingReservation.discountPercent ?? null,
+    });
+  }, [existingReservation]);
+
   const mediaItems = useMemo(() => listingData?.media ?? [], [listingData]);
-  const heroPosterSource = useMemo(() => {
-    const fallback = property?.images?.[0];
-    return fallback ? { uri: fallback } : undefined;
+  const heroImageSource = useMemo(() => {
+    // Utiliser la première image comme placeholder pour masquer le fond
+    const firstImage = property?.images?.[0];
+    return firstImage ? { uri: firstImage } : undefined;
   }, [property?.images]);
-  const [heroVideoReady, setHeroVideoReady] = useState(false);
   const [heroVideoUri, setHeroVideoUri] = useState<string | null>(heroUriParam ?? null);
+  const [isVideoLoaded, setIsVideoLoaded] = useState(false); // État pour savoir si la vidéo est prête
   const heroVideoId = useMemo(() => {
     const heroMedia = mediaItems.find((item) => item.type === 'video');
     return heroMedia?.id ?? null;
@@ -372,7 +429,7 @@ const PropertyProfileScreen = () => {
 
   useEffect(() => {
     setHeroVideoUri(heroUriParam ?? null);
-    setHeroVideoReady(false);
+    setIsVideoLoaded(false); // Reset l'état de chargement
   }, [heroUriParam, property?.id]);
 
   useEffect(() => {
@@ -551,43 +608,36 @@ const PropertyProfileScreen = () => {
     [combinedCharacteristics, showAllFeatures],
   );
 
-  const initialComments = useMemo<Comment[]>(
-    () => [
-      {
-        id: 'comment_1',
-        userId: 'user_1',
-        userName: 'Elsa N.',
-        userAvatar: 'https://i.pravatar.cc/150?img=47',
-        userIsVerified: true,
-        text: 'Appartement incroyable, super accueil !',
-        timestamp: new Date(),
-        likes: 12,
-        isLiked: false,
-      },
-      {
-        id: 'comment_2',
-        userId: 'user_2',
-        userName: 'Arnaud B.',
-        userAvatar: 'https://i.pravatar.cc/150?img=53',
-        userIsVerified: false,
-        text: 'Photos fidèles à la réalité, je recommande.',
-        timestamp: new Date(),
-        likes: 4,
-        isLiked: false,
-      },
-    ],
-    [property?.id],
-  );
-
   const {
     comments,
+    replies,
+    isLoading,
+    isSubmitting,
+    loadComments,
+    loadReplies,
     addComment,
-    toggleLikeComment,
     deleteComment,
-    isCommentsVisible,
-    openComments,
-    closeComments,
-  } = useComments(initialComments);
+    getRepliesForComment,
+    hasReplies,
+    getReplyCount,
+    getFirstReply,
+    totalCommentsCount,
+    toggleCommentLike,
+    isCommentLiked,
+    getCommentLikeCount,
+  } = useComments(property?.id ?? '', supabaseProfile?.id ?? null, property?.landlord?.id ?? null);
+
+  useEffect(() => {
+    if (property?.id) {
+      loadComments();
+    }
+  }, [property?.id, loadComments]);
+
+  useEffect(() => {
+    if (initialCommentId && comments.length > 0) {
+      setShowCommentsBottomSheet(true);
+    }
+  }, [initialCommentId, comments]);
 
   const handleCloseGallery = useCallback(() => {
     setIsGalleryVisible(false);
@@ -639,30 +689,24 @@ const PropertyProfileScreen = () => {
   );
 
   if (!property) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" />
-        <View style={styles.statusWrapper}>
-          {isListingLoading ? (
-            <>
-              <ActivityIndicator size="large" color="#2ECC71" />
-              <Text style={styles.statusTitle}>Chargement de l'annonce…</Text>
-            </>
-          ) : (
-            <>
-              <Text style={styles.statusTitle}>Impossible de charger l'annonce</Text>
-              {listingError && <Text style={styles.statusSubtitle}>{listingError}</Text>}
-              <TouchableOpacity style={styles.retryButton} onPress={refreshListing}>
-                <Text style={styles.retryButtonText}>Réessayer</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
-      </SafeAreaView>
-    );
+    if (listingError) {
+      return (
+        <SafeAreaView style={styles.container}>
+          <StatusBar barStyle="dark-content" />
+          <View style={styles.statusWrapper}>
+            <Text style={styles.statusTitle}>Impossible de charger l'annonce</Text>
+            {listingError && <Text style={styles.statusSubtitle}>{listingError}</Text>}
+            <TouchableOpacity style={styles.retryButton} onPress={refreshListing}>
+              <Text style={styles.retryButtonText}>Réessayer</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      );
+    }
+    return <View style={styles.container} />;
   }
 
-  const propertyLocationLabel = `${property.location.neighborhood}, ${property.location.city}`;
+  const propertyLocationLabel = `${property!.location.neighborhood}, ${property!.location.city}`;
   const isFurnished = property.isFurnished;
   const isShop = property.type === 'boutique';
   const isRoadsideShop = isShop && property.amenities?.some((amenity) => amenity.toLowerCase().includes('bord'));
@@ -689,7 +733,7 @@ const PropertyProfileScreen = () => {
       ];
 
   const tags = fallbackTags;
-  const nearMainRoadInfo = listingData?.features?.near_main_road ?? null;
+  const nearMainRoadInfo = translateRoadProximity(listingData?.features?.near_main_road ?? null);
 
   const shortDescription =
     property.description.length > 180 && !showFullDescription
@@ -746,7 +790,9 @@ const PropertyProfileScreen = () => {
     setShowVisitPaymentDialog(true);
   };
   const handleVisitRequest = () => ensureAuthenticated('visit', startVisitFlow);
-  const handleReservationRequest = () => ensureAuthenticated('reservation', openReservationModal);
+  const handleReservationRequest = () => {
+    ensureAuthenticated('reservation', openReservationModal);
+  };
   const startChatFlow = () => setShowChatbot(true);
   const handleMessageRequest = () => ensureAuthenticated('chat', startChatFlow);
   const handleFollowToggle = () => ensureAuthenticated('follow', () => setIsFollowing((prev) => !prev));
@@ -762,11 +808,11 @@ const PropertyProfileScreen = () => {
   };
 
   const handlePaymentSuccess = () => {
-    setShowPaymentModal(false);
-    setShowPaymentSuccessModal(true);
-    setHasReservation(true);
+    if (!property) {
+      return;
+    }
 
-    addReservation({
+    const payload: NewReservationInput = {
       propertyId: property.id,
       propertyTitle: property.title,
       propertyImage: property.images[0],
@@ -785,12 +831,35 @@ const PropertyProfileScreen = () => {
       totalPrice: reservationSummary.total,
       pricePerNight:
         reservationSummary.nights > 0
-          ? Math.round(reservationSummary.total / reservationSummary.nights)
+          ? Math.round(reservationSummary.total / Math.max(reservationSummary.nights, 1))
           : pricePerNightValue || reservationSummary.total,
       amountPaid:
         reservationSummary.amountDueNow > 0 ? reservationSummary.amountDueNow : reservationSummary.total,
       amountRemaining: reservationSummary.remainingAmount,
-    });
+      paymentScheme: reservationSummary.paymentScheme,
+      originalTotal: reservationSummary.originalTotal || reservationSummary.total,
+      discountAmount: reservationSummary.discountAmount,
+      discountPercent: reservationSummary.discountPercent,
+      updatedAt: new Date().toISOString(),
+    } as const;
+
+    addReservation(payload)
+      .then(async () => {
+        setShowPaymentModal(false);
+        setShowPaymentSuccessModal(true);
+        try {
+          await refreshReservations();
+        } catch (error) {
+          console.error('[PropertyProfileScreen] refreshReservations error', error);
+        }
+      })
+      .catch((error) => {
+        console.error('[PropertyProfileScreen] addReservation error', error);
+        Alert.alert(
+          'Réservation non enregistrée',
+          'Nous n’avons pas pu sauvegarder votre réservation. Vérifiez votre connexion puis réessayez.',
+        );
+      });
   };
 
   const handleReservationConfirm = (checkIn: Date, checkOut: Date, nights: number, total: number) => {
@@ -798,6 +867,8 @@ const PropertyProfileScreen = () => {
     const discountRatio = baseTotal > 0 ? Math.min(1, Math.max(0, total / baseTotal)) : 1;
     const effectivePricePerNight = pricePerNightValue * discountRatio;
     const paymentInfo = computeUpfrontPayment(nights, effectivePricePerNight);
+    const discountAmount = Math.max(baseTotal - total, 0);
+    const discountPercent = baseTotal > 0 && discountAmount > 0 ? Math.round((discountAmount / baseTotal) * 100) : null;
     setReservationSummary({
       checkIn,
       checkOut,
@@ -805,13 +876,13 @@ const PropertyProfileScreen = () => {
       total,
       amountDueNow: paymentInfo.amountDueNow,
       remainingAmount: paymentInfo.remainingAmount,
+      paymentScheme: paymentInfo.remainingAmount > 0 ? 'split' : 'full',
+      originalTotal: baseTotal || total,
+      discountAmount,
+      discountPercent,
     });
     setPaymentNotice(paymentInfo.message ?? '');
     setShowReservationModal(false);
-    if (hasReservation) {
-      // Modification sans repaiement
-      return;
-    }
     setShowPaymentModal(true);
   };
 
@@ -901,28 +972,24 @@ const PropertyProfileScreen = () => {
     follow: 'Connectez-vous pour suivre cet hôte',
   };
 
+  // Si pas de property et pas d'erreur, on attend le chargement sans afficher de loader
   if (!property) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" />
-        <View style={styles.statusWrapper}>
-          {isListingLoading ? (
-            <>
-              <ActivityIndicator size="large" color="#2ECC71" />
-              <Text style={styles.statusTitle}>Chargement de l'annonce…</Text>
-            </>
-          ) : (
-            <>
-              <Text style={styles.statusTitle}>Impossible de charger l'annonce</Text>
-              {listingError && <Text style={styles.statusSubtitle}>{listingError}</Text>}
-              <TouchableOpacity style={styles.retryButton} onPress={refreshListing}>
-                <Text style={styles.retryButtonText}>Réessayer</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
-      </SafeAreaView>
-    );
+    if (listingError) {
+      return (
+        <SafeAreaView style={styles.container}>
+          <StatusBar barStyle="dark-content" />
+          <View style={styles.statusWrapper}>
+            <Text style={styles.statusTitle}>Impossible de charger l'annonce</Text>
+            {listingError && <Text style={styles.statusSubtitle}>{listingError}</Text>}
+            <TouchableOpacity style={styles.retryButton} onPress={refreshListing}>
+              <Text style={styles.retryButtonText}>Réessayer</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      );
+    }
+    // Pendant le chargement, on retourne un composant vide mais typé correctement
+    return <View style={styles.container} />;
   }
 
   return (
@@ -962,7 +1029,9 @@ const PropertyProfileScreen = () => {
               showsHorizontalScrollIndicator={false}
               onMomentumScrollEnd={(event) => {
                 const index = Math.round(event.nativeEvent.contentOffset.x / SCREEN_WIDTH);
-                setCurrentImageIndex(index);
+                const clampedIndex = Math.max(0, Math.min(index, mediaItems.length - 1));
+                console.log('[Property] Scroll end - index:', index, 'clamped:', clampedIndex, 'total:', mediaItems.length);
+                setCurrentImageIndex(clampedIndex);
               }}
             >
               {mediaItems.map((media, index) => {
@@ -980,21 +1049,30 @@ const PropertyProfileScreen = () => {
                   >
                     {media.type === 'video' ? (
                       <View style={styles.videoWrapper}>
+                        {/* Image de fond qui masque le noir pendant le chargement */}
+                        {!isVideoLoaded && heroImageSource && (
+                          <Image 
+                            source={heroImageSource} 
+                            style={styles.videoBackgroundImage}
+                            blurRadius={0}
+                          />
+                        )}
                         <Video
                           source={{ uri: isHeroVideo && heroVideoUri ? heroVideoUri : media.url }}
-                          style={styles.videoPlayer}
+                          style={[styles.videoPlayer, !isVideoLoaded && { opacity: 0 }]} // Cacher la vidéo jusqu'à ce qu'elle soit prête
                           resizeMode={ResizeMode.COVER}
                           shouldPlay={isActiveSlide && !isGalleryVisible}
                           isLooping
                           isMuted={heroVideoMuted || isGalleryVisible}
                           useNativeControls={false}
-                          usePoster={!heroVideoReady && !!heroPosterSource}
-                          posterSource={heroPosterSource}
-                          posterStyle={styles.videoPoster}
+                          usePoster={false}
+                          progressUpdateIntervalMillis={50} // Plus fréquent pour plus de réactivité
                           onLoad={() => {
-                            if (isHeroVideo && !heroVideoReady) {
-                              setHeroVideoReady(true);
-                            }
+                            // La vidéo est considérée comme prête dès le début
+                          }}
+                          onReadyForDisplay={() => {
+                            // Afficher la vidéo et cacher l'image quand tout est prêt
+                            setIsVideoLoaded(true);
                           }}
                         />
                         <View style={styles.videoOverlay}>
@@ -1031,6 +1109,7 @@ const PropertyProfileScreen = () => {
                 </View>
               )}
 
+              {!isGalleryVisible && (
               <View style={styles.mediaProgressContainer}>
                 <View style={styles.mediaProgressBar}>
                   {mediaItems.map((_, index) => (
@@ -1050,6 +1129,7 @@ const PropertyProfileScreen = () => {
                   ))}
                 </View>
               </View>
+              )}
             </>
           )}
         </Animated.View>
@@ -1094,9 +1174,17 @@ const PropertyProfileScreen = () => {
               {renderIcon(ICONS.heartOutline, 18, '#6B7280')}
               <Text style={styles.statValue}>{property.likes.toLocaleString('fr-FR')}</Text>
             </View>
-            <TouchableOpacity style={styles.statItem} onPress={openComments}>
+            <TouchableOpacity
+              style={styles.statItem}
+              onPress={() => {
+                if (!isLoading) {
+                  void loadComments();
+                }
+                setShowCommentsBottomSheet(true);
+              }}
+            >
               {renderIcon(ICONS.comments, 18, '#6B7280')}
-              <Text style={styles.statValue}>{comments.length}</Text>
+              <Text style={styles.statValue}>{totalCommentsCount ?? comments.length}</Text>
             </TouchableOpacity>
             {isFurnished && !isShop && (
               <View style={styles.statItem}>
@@ -1207,9 +1295,7 @@ const PropertyProfileScreen = () => {
           {isFurnished && !isShop ? (
             <>
               <TouchableOpacity style={styles.primaryButton} onPress={handleReservationRequest}>
-                <Text style={styles.primaryButtonText}>
-                  {hasReservation ? 'Modifier ma réservation' : 'Réserver le logement'}
-                </Text>
+                <Text style={styles.primaryButtonText}>Réserver le logement</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.secondaryButton} onPress={handleMessageRequest}>
                 <Text style={styles.secondaryButtonText}>Envoyer un message</Text>
@@ -1242,7 +1328,9 @@ const PropertyProfileScreen = () => {
             contentOffset={{ x: currentImageIndex * SCREEN_WIDTH, y: 0 }}
             onMomentumScrollEnd={(event) => {
               const index = Math.round(event.nativeEvent.contentOffset.x / SCREEN_WIDTH);
-              setCurrentImageIndex(index);
+              const clampedIndex = Math.max(0, Math.min(index, mediaItems.length - 1));
+              console.log('[Property Gallery] Scroll end - index:', index, 'clamped:', clampedIndex, 'total:', mediaItems.length);
+              setCurrentImageIndex(clampedIndex);
             }}
           >
             {mediaItems.map((media, index) => (
@@ -1276,27 +1364,28 @@ const PropertyProfileScreen = () => {
       </Modal>
 
       <CommentBottomSheet
-        visible={isCommentsVisible}
-        onClose={closeComments}
+        visible={showCommentsBottomSheet}
+        onClose={() => setShowCommentsBottomSheet(false)}
         comments={comments}
+        replies={replies}
         onAddComment={addComment}
-        onLikeComment={toggleLikeComment}
-        onDeleteComment={deleteComment}
+        onLoadReplies={loadReplies}
+        getRepliesForComment={getRepliesForComment}
+        hasReplies={hasReplies}
+        isLoading={isLoading}
+        isSubmitting={isSubmitting}
+        initialCommentId={initialCommentId}
+        currentUserId={supabaseProfile?.id ?? undefined}
+        currentUserAvatar={supabaseProfile?.avatar_url ?? undefined}
         propertyTitle={property.title}
-      />
-
-      <AuthModal
-        visible={showAuthModal}
-        onClose={closeAuthModal}
-        onLogin={() => {
-          closeAuthModal();
-          setShowLoginScreen(true);
-        }}
-        onSignUp={() => {
-          closeAuthModal();
-          setShowSignUpScreen(true);
-        }}
-        message={authMessages[authPurpose]}
+        getReplyCount={getReplyCount}
+        totalCommentsCount={totalCommentsCount}
+        getFirstReply={getFirstReply}
+        onToggleCommentLike={toggleCommentLike}
+        isCommentLiked={isCommentLiked}
+        getCommentLikeCount={getCommentLikeCount}
+        listingHostId={property?.landlord?.id ?? null}
+        onDeleteComment={deleteComment}
       />
 
       <LoginWithOTPScreen
@@ -2017,20 +2106,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   videoWrapper: {
-    width: SCREEN_WIDTH,
+    width: '100%',
     height: HERO_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
   },
-  videoPlayer: {
+  videoBackgroundImage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: '100%',
     height: '100%',
-  },
-  videoPoster: {
     resizeMode: 'cover',
-    backgroundColor: '#000',
+  },
+  videoPlayer: {
     width: '100%',
     height: '100%',
   },

@@ -8,6 +8,7 @@ import {
 import type { SupabaseProfile } from '@/src/contexts/AuthContext';
 import { firebaseAuth } from '@/src/firebaseClient';
 import { supabase } from '@/src/supabaseClient';
+import { syncSupabaseSession } from './supabaseSession';
 
 const DEFAULT_COUNTRY_CODE = '+237';
 
@@ -68,6 +69,9 @@ export const confirmOtpCode = async (
   const credential = await confirmationResultRef.confirm(code);
   const user = credential.user;
   const phoneNumber = user.phoneNumber ?? lastPhoneE164 ?? null;
+
+  // Synchroniser la session Supabase pour que les services backend (commentaires, likes) reconnaissent l'utilisateur
+  await syncSupabaseSession(user);
 
   return { user, phoneNumber };
 };

@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from 'react';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { SplashScreen } from '@/components/SplashScreen';
+import { SplashScreen } from '@/src/components/ui/SplashScreen';
 import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 export default function IntroScreen() {

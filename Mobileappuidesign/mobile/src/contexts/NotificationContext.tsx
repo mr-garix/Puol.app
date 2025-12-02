@@ -32,18 +32,30 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const dismissNotification = useCallback(() => {
+    console.log('[NotificationContext] dismissNotification called');
     clearHideTimeout();
     setNotification(null);
+    console.log('[NotificationContext] Notification dismissed');
   }, []);
 
   const showNotification = useCallback((payload: NotificationPayload) => {
+    console.log('[NotificationContext] showNotification called with payload:', JSON.stringify(payload, null, 2));
     clearHideTimeout();
+    
+    // Forcer un délai pour s'assurer que le state est bien mis à jour
     setNotification(payload);
+    console.log('[NotificationContext] Notification state updated');
 
     const duration = payload.durationMs ?? 8000;
     if (duration > 0) {
+      console.log(`[NotificationContext] Setting auto-dismiss timeout for ${duration}ms`);
       hideTimeoutRef.current = setTimeout(() => {
-        setNotification((current) => (current?.id === payload.id ? null : current));
+        console.log(`[NotificationContext] Auto-dismissing notification: ${payload.id}`);
+        setNotification((current) => {
+          const shouldDismiss = current?.id === payload.id;
+          console.log(`[NotificationContext] Should dismiss ${payload.id}? ${shouldDismiss}`);
+          return shouldDismiss ? null : current;
+        });
         hideTimeoutRef.current = null;
       }, duration);
     }

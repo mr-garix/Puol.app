@@ -3,7 +3,7 @@ import { StatusBar } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
-import VisitsScreen, { Visit as VisitCard } from '@/components/VisitsScreen';
+import VisitsScreen, { Visit as VisitCard } from '@/src/features/host/components/VisitsScreen';
 import { useVisits } from '@/src/contexts/VisitsContext';
 import { getPropertyById } from '@/src/data/properties';
 

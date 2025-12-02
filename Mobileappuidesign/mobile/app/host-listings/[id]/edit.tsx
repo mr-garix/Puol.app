@@ -34,11 +34,11 @@ import * as FileSystem from 'expo-file-system';
 import { FFmpegKit, ReturnCode } from 'ffmpeg-kit-react-native';
 */
 
-import { useAuth } from '@/src/features/auth/AuthContext';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { useFeed } from '@/src/contexts/FeedContext';
-import { useListingDetails } from '@/src/hooks/useListingDetails';
+import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, ListingFeatureFlagKeys, ListingFeaturesRow } from '@/src/types/listings';
-import { createListingWithRelations, updateListingWithRelations } from '@/src/services/listings';
+import { createListingWithRelations, updateListingWithRelations } from '@/src/features/listings/services';
 import { MUSIC_LIBRARY } from '@/src/constants/music';
 
 const COLORS = {
@@ -451,7 +451,7 @@ const mapFeaturesToAmenities = (features: ListingFeaturesRow | null): AmenityId[
   }
 
   const amenities: AmenityId[] = [];
-  (Object.entries(features) as Array<[keyof ListingFeaturesRow, boolean | string | null]>).forEach(([key, value]) => {
+  (Object.entries(features) as [keyof ListingFeaturesRow, boolean | string | null][]).forEach(([key, value]) => {
     if (!value) {
       return;
     }

@@ -8,11 +8,14 @@ import React, {
   type ReactNode,
 } from 'react';
 
-import type { FavoriteProperty } from '@/components/FavoritesScreen';
+import type { FavoriteProperty } from '@/src/features/listings/components/FavoritesScreen';
 import { supabase } from '@/src/supabaseClient';
 import type { Tables } from '@/src/types/supabase.generated';
 import { orderMediaRowsByType } from '@/src/utils/media';
 import { toCdnUrl } from '@/src/utils/cdn';
+import { getListingLikeCount, hasUserLikedListing, toggleListingLike } from '@/src/features/likes/services';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { getListingCommentCounts } from '@/src/features/comments/services';
 
 const FALLBACK_AVATAR = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format';
 const FALLBACK_COVER = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
@@ -35,6 +38,7 @@ type FeedMediaItem = {
 
 export interface PropertyListing {
   id: string;
+  hostId: string;
   title: string;
   price: string;
   priceValue?: number | null;
@@ -64,10 +68,11 @@ interface FeedContextValue {
   favoriteProperties: FavoriteProperty[];
   likesById: Record<string, boolean>;
   likedPropertyIds: string[];
-  toggleLike: (listingId: string) => void;
+  toggleLike: (listingId: string) => Promise<void>;
   isLoadingListings: boolean;
   listingsError: string | null;
   refreshListings: () => Promise<void>;
+  updateListingCommentCount: (listingId: string, count: number) => void;
 }
 
 type ListingRow = {
@@ -157,6 +162,8 @@ const mapListingToProperty = (
   mediaRows: ListingMediaRow[],
   hasPromotion: boolean,
   hostProfile?: HostProfileRow | null,
+  likesCount: number = 0,
+  commentCount: number = 0,
 ): PropertyListing => {
   const orderedMedia = orderMediaRowsByType(mediaRows);
   const normalizedMedia: FeedMediaItem[] = orderedMedia
@@ -194,6 +201,7 @@ const mapListingToProperty = (
 
   return {
     id: listing.id,
+    hostId: listing.host_id,
     title: listing.title,
     price: formatPriceDisplay(listing.price_per_night),
     priceValue: listing.price_per_night,
@@ -204,8 +212,8 @@ const mapListingToProperty = (
     surfaceAreaLabel: undefined,
     imageUrl,
     coverPhotoUrl: listing.cover_photo_url ?? imageUrl,
-    likes: 0,
-    comments: 0,
+    likes: likesCount,
+    comments: commentCount,
     shares: 0,
     hostAvatar,
     hostName,
@@ -224,6 +232,8 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
   const [likesState, setLikesState] = useState<Record<string, LikeInfo>>({});
   const [isLoadingListings, setIsLoadingListings] = useState(true);
   const [listingsError, setListingsError] = useState<string | null>(null);
+
+  const { supabaseProfile } = useAuth();
 
   const fetchListings = useCallback(async () => {
     setIsLoadingListings(true);
@@ -246,6 +256,8 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       let promotionRows: ListingPromotionRow[] = [];
       let hostProfiles: Dictionary<HostProfileRow> = {};
 
+      let commentCounts: Dictionary<number> = {};
+
       if (listingIds.length) {
         const hostIds = Array.from(new Set(listingRows.map((listing) => listing.host_id).filter(Boolean)));
 
@@ -253,6 +265,7 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
           { data: mediaData, error: mediaError },
           { data: promoData, error: promoError },
           { data: hostData, error: hostError },
+          fetchedCommentCounts,
         ] = await Promise.all([
           supabase
             .from('listing_media')
@@ -266,6 +279,7 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
                 .select('id, first_name, last_name, avatar_url, is_certified, username')
                 .in('id', hostIds)
             : Promise.resolve({ data: [] as HostProfileRow[], error: null }),
+          getListingCommentCounts(listingIds),
         ]);
 
         if (mediaError) {
@@ -286,6 +300,8 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
           }
           return acc;
         }, {});
+
+        commentCounts = fetchedCommentCounts ?? {};
       }
 
       const mediaByListing = mediaRows.reduce<Dictionary<ListingMediaRow[]>>((acc, media) => {
@@ -301,38 +317,138 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
         return acc;
       }, {});
 
+      // Charger les vrais compteurs de likes pour chaque listing
+      const likeCounts: Dictionary<number> = {};
+      await Promise.all(
+        listingRows.map(async (listing) => {
+          likeCounts[listing.id] = await getListingLikeCount(listing.id);
+        })
+      );
+
       const nextListings = listingRows.map((listing) =>
         mapListingToProperty(
           listing,
           mediaByListing[listing.id] ?? [],
           Boolean(promotionLookup[listing.id]),
           listing.host_id ? hostProfiles[listing.host_id] : undefined,
+          likeCounts[listing.id] ?? 0,
+          commentCounts[listing.id] ?? 0,
         ),
       );
 
       setPropertyListings(nextListings);
+
+      // Charger l'état de like de l'utilisateur pour chaque listing
+      const likesState: Dictionary<LikeInfo> = {};
+      if (supabaseProfile?.id) {
+        await Promise.all(
+          listingRows.map(async (listing) => {
+            const hasLiked = await hasUserLikedListing(listing.id, supabaseProfile.id);
+            if (hasLiked) {
+              likesState[listing.id] = { liked: true, favoritedAt: Date.now() };
+            } else {
+              likesState[listing.id] = { liked: false };
+            }
+          })
+        );
+      } else {
+        listingRows.forEach((listing) => {
+          likesState[listing.id] = { liked: false };
+        });
+      }
+      setLikesState(likesState);
     } catch (error) {
       console.error('[FeedProvider] Failed to load listings', error);
       setListingsError("Impossible de charger les annonces.");
     } finally {
       setIsLoadingListings(false);
     }
-  }, []);
+  }, [supabaseProfile?.id]);
 
   useEffect(() => {
     fetchListings();
   }, [fetchListings]);
 
-  const toggleLike = useCallback((listingId: string) => {
-    setLikesState((prev) => {
-      const current = prev[listingId];
-      const nextState: LikeInfo = current?.liked
-        ? { liked: false }
-        : { liked: true, favoritedAt: Date.now() };
-      return {
+  const refreshListingLikesCount = useCallback(async (listingId: string) => {
+    const latestCount = await getListingLikeCount(listingId);
+
+    setPropertyListings((prev) =>
+      prev.map((listing) =>
+        listing.id === listingId
+          ? {
+              ...listing,
+              likes: latestCount,
+            }
+          : listing,
+      ),
+    );
+  }, []);
+
+  const toggleLike = useCallback(async (listingId: string) => {
+    if (!supabaseProfile?.id) {
+      console.warn('[FeedContext] toggleLike skipped (missing profile)', { listingId });
+      return;
+    }
+
+    try {
+      const newLikedState = await toggleListingLike(listingId, supabaseProfile.id);
+
+      setLikesState((prev) => {
+        const nextState: LikeInfo = newLikedState
+          ? { liked: true, favoritedAt: Date.now() }
+          : { liked: false };
+        return {
+          ...prev,
+          [listingId]: nextState,
+        };
+      });
+      // Mettre à jour le compteur de likes dans le listing correspondant
+      setPropertyListings((prev) =>
+        prev.map((listing) => {
+          if (listing.id === listingId) {
+            const fallbackCount = newLikedState ? listing.likes + 1 : Math.max(0, listing.likes - 1);
+            return {
+              ...listing,
+              likes: fallbackCount,
+            };
+          }
+          return listing;
+        }),
+      );
+
+      // Mettre à jour la liste des favoris (utile si la page favoris est ouverte)
+      setLikesState((prev) => ({
         ...prev,
-        [listingId]: nextState,
-      };
+        [listingId]: newLikedState ? { liked: true, favoritedAt: Date.now() } : { liked: false },
+      }));
+
+      // Forcer un recalcul exact en arrière-plan pour éviter les décalages éventuels
+      void refreshListingLikesCount(listingId);
+    } catch (error) {
+      console.error('[FeedContext] toggleLike error', error);
+      // On ne lève pas l’erreur pour ne pas casser l’UI, mais on pourrait afficher un toast
+    }
+  }, [refreshListingLikesCount, supabaseProfile?.id]);
+
+  const updateListingCommentCount = useCallback((listingId: string, count: number) => {
+    setPropertyListings((prev) => {
+      let didChange = false;
+      const next = prev.map((listing) => {
+        if (listing.id !== listingId) {
+          return listing;
+        }
+        const nextCount = Math.max(0, count);
+        if (listing.comments === nextCount) {
+          return listing;
+        }
+        didChange = true;
+        return {
+          ...listing,
+          comments: nextCount,
+        };
+      });
+
+      return didChange ? next : prev;
     });
   }, []);
 
@@ -347,6 +463,50 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       return acc;
     }, {});
   }, [likedPropertyIds]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('feed-listing-likes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'listing_likes' }, async (payload) => {
+        const listingId = payload.new?.listing_id?.toString();
+        if (!listingId) {
+          return;
+        }
+
+        const likerId = payload.new?.profile_id?.toString();
+
+        if (likerId === supabaseProfile?.id) {
+          setLikesState((prev) => ({
+            ...prev,
+            [listingId]: { liked: true, favoritedAt: Date.now() },
+          }));
+        }
+
+        await refreshListingLikesCount(listingId);
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'listing_likes' }, async (payload) => {
+        const listingId = payload.old?.listing_id?.toString();
+        if (!listingId) {
+          return;
+        }
+
+        const likerId = payload.old?.profile_id?.toString();
+
+        if (likerId === supabaseProfile?.id) {
+          setLikesState((prev) => ({
+            ...prev,
+            [listingId]: { liked: false },
+          }));
+        }
+
+        await refreshListingLikesCount(listingId);
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [refreshListingLikesCount, supabaseProfile?.id]);
 
   const favoriteProperties = useMemo(() => {
     return likedPropertyIds
@@ -369,9 +529,11 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
           title: listing.title,
           location: listing.location,
           pricePerNight: listing.priceValue ?? undefined,
+          coverPhotoUrl: listing.coverPhotoUrl ?? listing.imageUrl,
           images: gallery,
           type: listing.propertyType ?? undefined,
           surfaceArea: listing.surfaceAreaLabel,
+          tags: listing.tags,
           favoritedAt: favoritedAt ? new Date(favoritedAt) : undefined,
         } satisfies FavoriteProperty;
       })
@@ -389,8 +551,9 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       isLoadingListings,
       listingsError,
       refreshListings: fetchListings,
+      updateListingCommentCount,
     }),
-    [favoriteProperties, fetchListings, isLoadingListings, likedPropertyIds, likesById, listingsError, propertyListings, toggleLike],
+    [favoriteProperties, fetchListings, isLoadingListings, likedPropertyIds, likesById, listingsError, propertyListings, toggleLike, updateListingCommentCount],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;

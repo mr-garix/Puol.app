@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 
 import {
   View,
@@ -11,7 +11,6 @@ import {
   Image,
   FlatList,
   ScrollView,
-    
   NativeSyntheticEvent,
   NativeScrollEvent,
   Animated,
@@ -22,6 +21,8 @@ import {
   GestureResponderEvent,
   AppState,
   type AppStateStatus,
+  ViewToken,
+  ActivityIndicator,
 } from 'react-native';
 
 import { BlurView } from 'expo-blur';
@@ -33,19 +34,22 @@ import { useIsFocused } from '@react-navigation/native';
 import PagerView from 'react-native-pager-view';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 
-import { CommentBottomSheet } from '@/components/comments/CommentBottomSheet';
-import { useComments } from '@/components/comments/useComments';
-import type { Comment } from '@/components/comments/types';
-import { ShareFeature } from '@/components/share/ShareFeature';
-import { SearchModal } from '@/components/search/SearchModal';
+import { CommentBottomSheet } from '@/features/host/components/CommentBottomSheet';
+import { useComments as useListingComments } from '@/features/comments/hooks';
+import { ShareFeature } from '@/src/components/ui/ShareFeature';
+import { SearchModal } from '@/src/features/search/components/SearchModal';
 import { useFeed, type PropertyListing } from '@/src/contexts/FeedContext';
-import { prefetchListingData } from '@/src/hooks/useListingDetails';
+import { useListingDetails } from '@/features/listings/hooks/useListingDetails';
+import { prefetchListingData } from '@/features/listings/hooks/useListingDetails';
 import { VideoWithThumbnail } from '@/src/components/VideoWithThumbnail';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { trackListingView } from '@/src/features/listings/services/viewService';
 
 import type { SearchCriteria } from '@/src/types/search';
-import { getSearchResultsForCriteria, getSearchResultCards, type SearchResultCard } from '@/src/utils/searchResults';
+import { searchListings, type SearchResultCard } from '@/src/utils/searchResults';
 import { usePreloadedVideo } from '@/src/contexts/PreloadContext';
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -65,6 +69,7 @@ const NEIGHBOR_MEDIA_LIMIT = 2;
 const FAST_SCROLL_THRESHOLD_PX_PER_SEC = 1800;
 const FAST_SCROLL_COOLDOWN_MS = 700;
 const MAX_CACHED_VIDEOS = 6;
+const LISTING_VIEW_TRIGGER_DELAY_MS = 1_000;
 
 const getCacheDirectory = () => {
   const fs = FileSystem as { cacheDirectory?: string | null; documentDirectory?: string | null };
@@ -156,55 +161,6 @@ const formatTitleForDisplay = (title: string, limit = 32): string => {
   return `${firstLine}\n${secondLine}`;
 };
 
-const MOCK_COMMENTS: Comment[] = [
-  {
-    id: '1',
-    userId: 'user1',
-    userName: 'Amadou Diallo',
-    userAvatar: 'https://i.pravatar.cc/150?img=12',
-    userIsVerified: true,
-    text: "Magnifique villa ! Le jardin est splendide 33f J'adore l'architecture moderne.",
-    timestamp: new Date(Date.now() - 3600000),
-    likes: 24,
-    isLiked: false,
-    replies: [
-      {
-        id: '2',
-        userId: 'user2',
-        userName: 'Fatima Ndiaye',
-        userAvatar: 'https://i.pravatar.cc/150?img=5',
-        userIsVerified: true,
-        text: "Je suis d'accord ! Et la piscine est incroyable 60d",
-        timestamp: new Date(Date.now() - 1800000),
-        likes: 8,
-        isLiked: true,
-      },
-    ],
-  },
-  {
-    id: '3',
-    userId: 'user3',
-    userName: 'Mamadou Kane',
-    userAvatar: 'https://i.pravatar.cc/150?img=8',
-    userIsVerified: false,
-    text: "Quel est le prix de location par mois ? C'est dans quel quartier exactement ?",
-    timestamp: new Date(Date.now() - 600000),
-    likes: 3,
-    isLiked: false,
-  },
-  {
-    id: '4',
-    userId: 'user4',
-    userName: 'Aissatou Touré',
-    userAvatar: 'https://i.pravatar.cc/150?img=9',
-    userIsVerified: true,
-    text: "Je suis intéressée par cette villa, pouvez-vous me donner plus de détails ?",
-    timestamp: new Date(Date.now() - 300000),
-    likes: 5,
-    isLiked: false,
-  },
-];
-
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -221,7 +177,8 @@ export default function HomeScreen() {
   const lastTapRef = useRef<number>(0);
   const likeButtonScale = useRef(new Animated.Value(1)).current;
   const mediaScrollX = useRef(new Animated.Value(0)).current;
-  const { propertyListings, likesById, toggleLike } = useFeed();
+  const { propertyListings, likesById, toggleLike, updateListingCommentCount } = useFeed();
+
   const [activeListingIdx, setActiveListingIdx] = useState(0);
   const prevListingsLengthRef = useRef<number>(0);
   const { preloadedVideoUri } = usePreloadedVideo();
@@ -231,66 +188,100 @@ export default function HomeScreen() {
   const [cachedVideoUris, setCachedVideoUris] = useState<Record<string, string>>({});
   const cleanupCacheRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isScrollAcceleratedRef = useRef(false);
-
-  useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      setIsAppActive(nextState === 'active');
-      if (nextState !== 'active') {
-        activeVideoKeyRef.current = null;
-      }
-    };
-
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => {
-      subscription.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isFeedFocused) {
-      activeVideoKeyRef.current = null;
+  const { supabaseProfile } = useAuth();
+  const viewerForTracking = useMemo(() => {
+    if (!supabaseProfile) {
+      return null;
     }
-  }, [isFeedFocused]);
+    return {
+      id: supabaseProfile.id,
+      city: supabaseProfile.city ?? null,
+    } as const;
+  }, [supabaseProfile]);
+  const [isCommentsVisible, setIsCommentsVisible] = useState(false);
+  const activeListingViewRef = useRef<{ listingId: string; startedAt: number } | null>(null);
+  const searchResultViewEntriesRef = useRef<Record<string, { startedAt: number }>>({});
+
+  const activeListing = propertyListings[activeListingIdx] ?? null;
+  const activeListingId = activeListing?.id ?? '';
+  const activeListingHostId = activeListing?.hostId ?? null;
 
   const {
     comments,
-    isCommentsVisible,
-    totalCommentsCount,
+    replies,
+    isLoading: areCommentsLoading,
+    isSubmitting: isSubmittingComment,
+    loadComments,
+    loadReplies,
     addComment,
-    toggleLikeComment,
     deleteComment,
-    openComments,
-    closeComments,
-  } = useComments(MOCK_COMMENTS);
+    getRepliesForComment,
+    hasReplies,
+    getReplyCount,
+    getFirstReply,
+    totalCommentsCount,
+    loadedListingId,
+    toggleCommentLike,
+    isCommentLiked,
+    getCommentLikeCount,
+  } = useListingComments(activeListingId, supabaseProfile?.id ?? null, activeListingHostId);
+
+  const hasLoadedComments = loadedListingId === activeListingId;
+
+  useEffect(() => {
+    if (!activeListingId || !hasLoadedComments) {
+      return;
+    }
+    updateListingCommentCount(activeListingId, totalCommentsCount);
+  }, [activeListingId, hasLoadedComments, totalCommentsCount, updateListingCommentCount]);
+
+  const fetchCommentsForActiveListing = useCallback(async () => {
+    if (!activeListingId) {
+      return;
+    }
+
+    if (!activeListingId || loadedListingId === activeListingId) {
+      return;
+    }
+    await loadComments();
+  }, [activeListingId, loadComments, loadedListingId]);
+
+  const handleOpenComments = useCallback(() => {
+    if (!activeListingId) {
+      return;
+    }
+    setIsCommentsVisible(true);
+  }, [activeListingId]);
+
+  const handleCloseComments = useCallback(() => {
+    setIsCommentsVisible(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isCommentsVisible) {
+      return;
+    }
+    if (!activeListingId) {
+      setIsCommentsVisible(false);
+      return;
+    }
+    void fetchCommentsForActiveListing();
+  }, [activeListingId, fetchCommentsForActiveListing, isCommentsVisible, loadComments]);
 
   const [isSearchVisible, setIsSearchVisible] = useState(false);
+
   const [searchResults, setSearchResults] = useState<SearchResultCard[] | null>(null);
   const [searchCriteria, setSearchCriteria] = useState<SearchCriteria | null>(null);
   const [isResultsOverlayVisible, setIsResultsOverlayVisible] = useState(false);
   const [isResultsOverlayMounted, setIsResultsOverlayMounted] = useState(false);
+  const [resultsContext, setResultsContext] = useState<'exact' | 'fallback'>('exact');
   const [shouldReopenSearch, setShouldReopenSearch] = useState(false);
-  const [resultsContext, setResultsContext] = useState<'matches' | 'fallback' | null>(null);
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const searchChips = buildCriteriaChips(searchCriteria);
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const overlayTranslateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
-
-  const buildFallbackSuggestions = useCallback((criteria: SearchCriteria): SearchResultCard[] => {
-    const allCards = getSearchResultCards();
-    const normalizedLocation = criteria.location?.trim().toLowerCase() ?? '';
-
-    const typeMatches = criteria.type ? allCards.filter((card) => card.propertyType === criteria.type) : [];
-    const locationMatches = normalizedLocation
-      ? allCards.filter((card) => `${card.city} ${card.neighborhood}`.toLowerCase().includes(normalizedLocation))
-      : [];
-
-    const deduped = [...typeMatches, ...locationMatches].filter(
-      (card, index, self) => self.findIndex((candidate) => candidate.id === card.id) === index,
-    );
-
-    const source = deduped.length ? deduped : allCards;
-    return source.slice(0, 6);
-  }, []);
 
   useEffect(() => {
     Animated.parallel([
@@ -315,25 +306,38 @@ export default function HomeScreen() {
     setIsSearchVisible(false);
   }, []);
 
-  const handleSearchSubmit = useCallback((criteria: SearchCriteria) => {
-    const matches = getSearchResultsForCriteria(criteria);
-    const nextResults = matches.length ? matches : buildFallbackSuggestions(criteria);
-
-    setSearchCriteria(criteria);
-    setSearchResults(nextResults);
-    setResultsContext(matches.length ? 'matches' : 'fallback');
-    setIsResultsOverlayVisible(true);
-    handleCloseSearch();
-  }, [buildFallbackSuggestions, handleCloseSearch]);
+  const handleSearchSubmit = useCallback(
+    async (criteria: SearchCriteria) => {
+      setIsSearchLoading(true);
+      setSearchError(null);
+      try {
+        const response = await searchListings(criteria);
+        setSearchCriteria(criteria);
+        setSearchResults(response.results);
+        setResultsContext(response.isFallback ? 'fallback' : 'exact');
+        setIsResultsOverlayVisible(true);
+        handleCloseSearch();
+      } catch (error) {
+        console.error('[Search] failed to load listings', error);
+        setSearchCriteria(criteria);
+        setSearchResults([]);
+        setResultsContext('exact');
+        setSearchError("Impossible de charger les résultats. Réessaie plus tard.");
+        setIsResultsOverlayVisible(true);
+        handleCloseSearch();
+      } finally {
+        setIsSearchLoading(false);
+      }
+    },
+    [handleCloseSearch],
+  );
 
   const handleHideResults = useCallback(() => {
     setIsResultsOverlayVisible(false);
-    setResultsContext(null);
   }, []);
 
   const handleEditSearch = useCallback(() => {
     setIsResultsOverlayVisible(false);
-    setResultsContext(null);
     setShouldReopenSearch(true);
   }, []);
 
@@ -352,6 +356,119 @@ export default function HomeScreen() {
   useEffect(() => {
     allowPlaybackRef.current = allowFeedPlayback;
   }, [allowFeedPlayback]);
+
+  const trackListingViewWithDuration = useCallback(
+    (listingId: string, source: 'feed' | 'search', durationMs: number) => {
+      if (!listingId) {
+        return;
+      }
+      const durationSeconds = Math.max(1, Math.round(durationMs / 1000));
+      void trackListingView({
+        listingId,
+        source,
+        durationSeconds,
+        viewer: viewerForTracking,
+      });
+    },
+    [viewerForTracking],
+  );
+
+  const searchViewabilityConfig = useMemo(() => ({ itemVisiblePercentThreshold: 70 }), []);
+
+  const flushActiveListingView = useCallback(() => {
+    const data = activeListingViewRef.current;
+    if (!data) {
+      return;
+    }
+
+    const durationMs = Date.now() - data.startedAt;
+    if (durationMs >= LISTING_VIEW_TRIGGER_DELAY_MS) {
+      trackListingViewWithDuration(data.listingId, 'feed', durationMs);
+    }
+
+    activeListingViewRef.current = null;
+  }, [trackListingViewWithDuration]);
+
+  const flushSearchViewEntry = useCallback(
+    (listingId: string) => {
+      const entry = searchResultViewEntriesRef.current[listingId];
+      if (!entry) {
+        return;
+      }
+
+      const durationMs = Date.now() - entry.startedAt;
+      if (durationMs >= LISTING_VIEW_TRIGGER_DELAY_MS) {
+        trackListingViewWithDuration(listingId, 'search', durationMs);
+      }
+
+      delete searchResultViewEntriesRef.current[listingId];
+    },
+    [trackListingViewWithDuration],
+  );
+
+  const flushAllSearchViewEntries = useCallback(() => {
+    Object.keys(searchResultViewEntriesRef.current).forEach((id) => {
+      const entry = searchResultViewEntriesRef.current[id];
+      if (!entry) {
+        return;
+      }
+
+      const durationMs = Date.now() - entry.startedAt;
+      if (durationMs >= LISTING_VIEW_TRIGGER_DELAY_MS) {
+        trackListingViewWithDuration(id, 'search', durationMs);
+      }
+    });
+    searchResultViewEntriesRef.current = {};
+  }, [trackListingViewWithDuration]);
+
+  const handleSearchViewableItemsChanged = useCallback(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      if (!isResultsOverlayVisible) {
+        return;
+      }
+
+      const visibleIds = new Set<string>();
+
+      viewableItems.forEach((token) => {
+        if (!token?.isViewable) return;
+        const card = token.item as SearchResultCard;
+        if (!card?.id) return;
+        visibleIds.add(card.id);
+        if (searchResultViewEntriesRef.current[card.id]) {
+          return;
+        }
+        searchResultViewEntriesRef.current[card.id] = { startedAt: Date.now() };
+      });
+
+      Object.keys(searchResultViewEntriesRef.current).forEach((id) => {
+        if (visibleIds.has(id)) {
+          return;
+        }
+        flushSearchViewEntry(id);
+      });
+    },
+    [flushSearchViewEntry, isResultsOverlayVisible],
+  );
+
+  useEffect(() => {
+    if (!isResultsOverlayMounted && shouldReopenSearch) {
+      handleOpenSearch();
+      setShouldReopenSearch(false);
+    }
+  }, [handleOpenSearch, isResultsOverlayMounted, shouldReopenSearch]);
+
+  useEffect(() => {
+    if (!isResultsOverlayVisible) {
+      flushAllSearchViewEntries();
+    }
+  }, [flushAllSearchViewEntries, isResultsOverlayVisible]);
+
+  useEffect(() => {
+    return () => {
+      flushActiveListingView();
+      flushAllSearchViewEntries();
+    };
+  }, [flushActiveListingView, flushAllSearchViewEntries]);
 
   const getHeroVideoUri = useCallback(
     (listing: PropertyListing) => {
@@ -566,7 +683,14 @@ export default function HomeScreen() {
 
     const formattedTitle = formatTitleForDisplay(listing.title);
     const formattedLikes = (listing.likes ?? 0).toLocaleString('fr-FR');
-    const formattedComments = (listing.comments ?? totalCommentsCount).toLocaleString('fr-FR');
+    const commentCountForDisplay =
+      activeListingIdx === index
+        ? hasLoadedComments
+          ? totalCommentsCount
+          : listing.comments ?? 0
+        : listing.comments ?? 0;
+    const formattedComments = commentCountForDisplay.toLocaleString('fr-FR');
+
     const shareCount = listing.shares ?? 0;
     const shareUrl = `https://app.puol.co/property/${listing.id}`;
     const tagTokens = [...(listing.tags ?? []), listing.surfaceAreaLabel].filter(Boolean) as string[];
@@ -598,13 +722,13 @@ export default function HomeScreen() {
           >
             {mediaItems.length > 0 ? (
               mediaItems.map((mediaItem, mediaIdx) => {
-                const isActiveListing = propertyListings[activeListingIdx]?.id === listing.id;
                 const activeMediaIndex = mediaIndexById[listing.id] ?? 0;
                 const mediaKey = `${listing.id}-${mediaItem.id}`;
                 const userPrefersPlay = videoPlaybackState[mediaKey] ?? true;
                 const allowPlayback = allowFeedPlayback;
-                const isVideoActive = isActiveListing && activeMediaIndex === mediaIdx;
+                const isVideoActive = activeListingIdx === index && activeMediaIndex === mediaIdx;
                 const shouldPlayVideo = allowPlayback && isVideoActive && userPrefersPlay;
+
                 const shouldShowPlayOverlay = isVideoActive && !shouldPlayVideo;
                 const isFirstListingVideo = propertyListings[0]?.id === listing.id && mediaIdx === 0;
                 const cachedUri = cachedVideoUris[mediaKey];
@@ -618,7 +742,7 @@ export default function HomeScreen() {
                 const shouldMountVideoInstance =
                   mediaItem.type === 'video' &&
                   shouldMountListingVideo &&
-                  (isActiveListing ? Math.abs(activeMediaIndex - mediaIdx) <= 1 : mediaIdx < neighborLimit);
+                  (activeListingIdx === index ? Math.abs(activeMediaIndex - mediaIdx) <= 1 : mediaIdx < neighborLimit);
 
                 if (mediaItem.type === 'video' && isVideoActive) {
                   activeVideoKeyRef.current = mediaKey;
@@ -788,7 +912,7 @@ export default function HomeScreen() {
               <Text style={styles.rightStatText}>{formattedLikes}</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity activeOpacity={0.85} style={styles.rightStatBlock} onPress={openComments}>
+            <TouchableOpacity activeOpacity={0.85} style={styles.rightStatBlock} onPress={handleOpenComments}>
               <View style={styles.iconShadowContainer}>
                 <Image
                   source={require('../assets/icons/feed-icon-comment.png')}
@@ -937,11 +1061,11 @@ export default function HomeScreen() {
   };
 
   const renderSearchOverlay = () => {
-    if (!searchResults || !isResultsOverlayMounted) {
+    if ((!searchResults && !isSearchLoading) || !isResultsOverlayMounted) {
       return null;
     }
 
-    const resultCount = searchResults.length;
+    const resultCount = searchResults?.length ?? 0;
     const hasResults = resultCount > 0;
     const showingFallback = resultsContext === 'fallback';
 
@@ -968,11 +1092,14 @@ export default function HomeScreen() {
                   <View style={styles.overlayHeaderCenter}>
                     <Text style={styles.overlayTitle}>Résultats</Text>
                     <Text style={styles.overlaySubtitle}>
-                      {hasResults
-                        ? `${resultCount} logement${resultCount > 1 ? 's' : ''} trouvé${resultCount > 1 ? 's' : ''}`
-                        : 'Aucun logement trouvé'}
+                      {isSearchLoading
+                        ? 'Chargement en cours...'
+                        : hasResults
+                          ? `${resultCount} logement${resultCount > 1 ? 's' : ''} trouvé${resultCount > 1 ? 's' : ''}`
+                          : 'Aucun logement trouvé'}
                     </Text>
                   </View>
+
                   <TouchableOpacity style={styles.overlayIconButton} onPress={handleEditSearch}>
                     <Text style={styles.overlayIconButtonText}>⌕</Text>
                   </TouchableOpacity>
@@ -988,7 +1115,7 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-                {showingFallback && (
+                {showingFallback && !isSearchLoading && (
                   <View style={styles.searchFallbackNotice}>
                     <Text style={styles.searchFallbackTitle}>Suggestions similaires</Text>
                     <Text style={styles.searchFallbackSubtitle}>
@@ -997,14 +1124,37 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-                <FlatList<SearchResultCard>
-                  data={searchResults}
-                  keyExtractor={(item) => item.id}
-                  renderItem={renderSearchResultCard}
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.searchResultsList}
-                />
-
+                {isSearchLoading ? (
+                  <View style={styles.searchLoadingState}>
+                    <ActivityIndicator size="large" color={PUOL_GREEN} />
+                    <Text style={styles.searchLoadingText}>Recherche des meilleures offres...</Text>
+                  </View>
+                ) : (
+                  <>
+                    {!!searchError && (
+                      <View style={styles.searchErrorBanner}>
+                        <Text style={styles.searchErrorText}>{searchError}</Text>
+                      </View>
+                    )}
+                    <FlatList<SearchResultCard>
+                      data={searchResults ?? []}
+                      keyExtractor={(item) => item.id}
+                      renderItem={renderSearchResultCard}
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={styles.searchResultsList}
+                      onViewableItemsChanged={handleSearchViewableItemsChanged}
+                      viewabilityConfig={searchViewabilityConfig}
+                      ListEmptyComponent={!searchError ? (
+                        <View style={styles.searchEmptyState}>
+                          <Text style={styles.searchEmptyTitle}>Aucun logement trouvé</Text>
+                          <Text style={styles.searchEmptySubtitle}>
+                            Ajuste les filtres ou essaie une autre localisation.
+                          </Text>
+                        </View>
+                      ) : null}
+                    />
+                  </>
+                )}
               </SafeAreaView>
             </Animated.View>
           </View>
@@ -1045,13 +1195,26 @@ export default function HomeScreen() {
 
       <CommentBottomSheet
         visible={isCommentsVisible}
-        onClose={closeComments}
+        onClose={handleCloseComments}
         comments={comments}
-        onAddComment={addComment}
-        onLikeComment={toggleLikeComment}
-        onDeleteComment={deleteComment}
-        currentUserId="current_user_id"
-        currentUserAvatar={propertyListings[0]?.hostAvatar}
+        replies={replies}
+        onAddComment={(text, replyToId) => addComment(text, replyToId)}
+        onDeleteComment={(commentId) => deleteComment(commentId)}
+        onLoadReplies={loadReplies}
+        getRepliesForComment={getRepliesForComment}
+        hasReplies={hasReplies}
+        isLoading={areCommentsLoading}
+        isSubmitting={isSubmittingComment}
+        currentUserId={supabaseProfile?.id ?? undefined}
+        currentUserAvatar={supabaseProfile?.avatar_url ?? undefined}
+        propertyTitle={activeListing?.title}
+        getReplyCount={getReplyCount}
+        totalCommentsCount={totalCommentsCount}
+        getFirstReply={getFirstReply}
+        onToggleCommentLike={toggleCommentLike}
+        isCommentLiked={isCommentLiked}
+        getCommentLikeCount={getCommentLikeCount}
+        listingHostId={activeListingHostId}
       />
 
       <SearchModal visible={isSearchVisible} onClose={handleCloseSearch} onSearch={handleSearchSubmit} />
@@ -1774,6 +1937,54 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 13,
   },
+  searchLoadingState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    gap: 12,
+  },
+  searchLoadingText: {
+    color: '#4B5563',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  searchErrorBanner: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginBottom: 16,
+  },
+  searchErrorText: {
+    color: '#B91C1C',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  searchResultsList: {
+    paddingBottom: 40,
+  },
+  searchEmptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+  },
+  searchEmptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  searchEmptySubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
   searchChipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1790,25 +2001,6 @@ const styles = StyleSheet.create({
   searchChipText: {
     color: '#1F2937',
     fontSize: 11,
-    fontWeight: '500',
-  },
-  searchResultsList: {
-    paddingBottom: 140,
-  },
-  searchEmptyState: {
-    alignItems: 'center',
-    paddingVertical: 48,
-    paddingHorizontal: 20,
-  },
-  searchEmptyIcon: {
-    fontSize: 48,
-    marginBottom: 12,
-  },
-  searchEmptyText: {
-    color: '#E5E7EB',
-    fontSize: 15,
-    textAlign: 'center',
-    marginBottom: 18,
   },
   searchResultCtaFull: {
     width: '100%',

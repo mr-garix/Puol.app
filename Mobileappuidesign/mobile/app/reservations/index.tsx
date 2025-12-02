@@ -1,7 +1,7 @@
 import React from 'react';
 import { useRouter } from 'expo-router';
 
-import ReservationsListScreen from '@/components/reservations/ReservationsListScreen';
+import ReservationsListScreen from '@/src/features/bookings/components/ReservationsListScreen';
 
 export default function ReservationsIndexRoute() {
   const router = useRouter();

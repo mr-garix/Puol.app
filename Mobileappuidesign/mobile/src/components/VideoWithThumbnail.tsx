@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, Platform } from 'react-native';
 import { Video, type VideoProps } from 'expo-av';
 
 type VideoWithThumbnailProps = {
@@ -24,6 +24,16 @@ export const VideoWithThumbnail: React.FC<VideoWithThumbnailProps> = ({
       ref?.unloadAsync().catch(() => null);
     };
   }, []);
+
+  // Force immediate playback on Android when shouldPlay changes to true
+  useEffect(() => {
+    if (shouldPlay && videoRef.current && Platform.OS === 'android') {
+      // Small delay to ensure video is ready
+      setTimeout(() => {
+        videoRef.current?.playAsync().catch(() => null);
+      }, 50);
+    }
+  }, [shouldPlay]);
 
   const videoStyle = useMemo(() => [styles.media, style], [style]);
   const videoInstanceKey = useMemo(() => `${videoUrl}-${reloadKey}`, [reloadKey, videoUrl]);

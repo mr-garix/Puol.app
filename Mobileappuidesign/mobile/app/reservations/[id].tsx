@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
-import ReservationDetailsScreen from '@/components/reservations/ReservationDetailsScreen';
+import ReservationDetailsScreen from '@/src/features/bookings/components/ReservationDetailsScreen';
 
 export default function ReservationDetailsRoute() {
   const router = useRouter();

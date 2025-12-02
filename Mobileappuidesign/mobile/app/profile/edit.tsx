@@ -35,11 +35,11 @@ const BORDER = '#E5E7EB';
 
 type GenderValue = 'female' | 'male';
 
-const genderOptions: Array<{
+const genderOptions: {
   label: string;
   value: GenderValue;
   icon: 'user';
-}> = [
+}[] = [
   { label: 'Femme', value: 'female', icon: 'user' },
   { label: 'Homme', value: 'male', icon: 'user' },
 ];

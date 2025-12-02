@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
 import { useRouter } from 'expo-router';
 
-import FavoritesScreen from '@/components/FavoritesScreen';
+import FavoritesScreen from '@/src/features/listings/components/FavoritesScreen';
 import { useFeed } from '@/src/contexts/FeedContext';
 
 export default function FavoritesTabScreen() {

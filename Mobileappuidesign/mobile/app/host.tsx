@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   KeyboardAvoidingView,
@@ -15,9 +15,14 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather } from '@expo/vector-icons';
+import { Feather, FontAwesome5 } from '@expo/vector-icons';
 
-import { STORAGE_KEYS } from '@/src/constants/storageKeys';
+import {
+  HostOnboardingForm,
+  HostVerificationModal,
+  HostSuccessScreen,
+  type HostOnboardingData,
+} from '@/src/features/auth/components';
 import {
   DEFAULT_PHONE_COUNTRY,
   PHONE_COUNTRY_OPTIONS,
@@ -25,14 +30,53 @@ import {
   formatE164PhoneNumber,
   sanitizeNationalNumber,
 } from '@/src/features/auth/phoneCountries';
+import { supabase } from '@/src/supabaseClient';
+import { useAuth } from '@/src/contexts/AuthContext';
 
-const furnitureOptions = ['Chambre meublée', 'Studio meublé', 'Appartement meublé', 'Maison meublée'];
-const inventoryOptions = ['1', '2 à 5', '5 et plus'];
 const PUOL_GREEN = '#2ECC71';
 const PUOL_GREEN_LIGHT = 'rgba(46, 204, 113, 0.12)';
 
+const furnitureOptions = [
+  { label: 'Chambre meublée', iconName: 'bed', IconComponent: FontAwesome5 },
+  { label: 'Studio meublé', iconName: 'layout', IconComponent: Feather },
+  { label: 'Appartement meublé', iconName: 'building', IconComponent: FontAwesome5 },
+  { label: 'Maison meublée', iconName: 'home', IconComponent: FontAwesome5 },
+];
+
+const inventoryOptions = ['1', '2 à 5', '5 et plus'];
+
+type FurnitureOption = (typeof furnitureOptions)[number];
+
+type FurnitureChipProps = {
+  option: FurnitureOption;
+  selected: boolean;
+  onPress: () => void;
+};
+
+const FurnitureChip: React.FC<FurnitureChipProps> = ({ option, selected, onPress }) => {
+  const IconComponent = option.IconComponent ?? Feather;
+  return (
+    <TouchableOpacity
+      style={[styles.chip, selected && styles.chipSelected]}
+      activeOpacity={0.85}
+      onPress={onPress}
+    >
+      <IconComponent
+        name={option.iconName as any}
+        size={16}
+        color={selected ? '#FFFFFF' : PUOL_GREEN}
+        style={styles.chipIcon}
+      />
+      <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{option.label}</Text>
+    </TouchableOpacity>
+  );
+};
+
+type ModalStep = 'verify' | 'success' | null;
+
 export default function BecomeHostScreen() {
   const router = useRouter();
+  const { supabaseProfile: user } = useAuth();
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -42,18 +86,19 @@ export default function BecomeHostScreen() {
   const [city, setCity] = useState('');
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [inventory, setInventory] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [modalStep, setModalStep] = useState<'verify' | 'success' | null>(null);
+  const [modalStep, setModalStep] = useState<ModalStep>(null);
   const [verificationCode, setVerificationCode] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const canSubmit =
     firstName.trim().length > 1 &&
     lastName.trim().length > 1 &&
-    city.trim().length > 1 &&
+    city.trim().length > 2 &&
     selectedTypes.length > 0 &&
     !!inventory &&
     phoneNumber.trim().length === phoneCountry.minLength;
 
+  // Animations
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerTranslateY = useRef(new Animated.Value(-20)).current;
   const illustrationOpacity = useRef(new Animated.Value(0)).current;
@@ -103,62 +148,81 @@ export default function BecomeHostScreen() {
     setSelectedTypes((prev) => (prev.includes(label) ? prev.filter((item) => item !== label) : [...prev, label]));
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!canSubmit) return;
-    setModalStep('verify');
+    
+    const e164Phone = formatE164PhoneNumber(phoneNumber, phoneCountry);
+    const onboardingData: HostOnboardingData = {
+      firstName,
+      lastName,
+      phoneCountry,
+      phoneNumber: e164Phone,
+      city,
+      selectedTypes,
+      inventory,
+    };
+
+    try {
+      console.log('[BecomeHost] Envoi du code SMS vers', e164Phone);
+      // TODO: intégrer ton service d'envoi SMS ici
+      setModalStep('verify');
+    } catch (error) {
+      console.error('[BecomeHost] Erreur lors de la soumission', error);
+    }
   };
 
-  const handleVerification = async () => {
-    if (verificationCode.trim().length < 4) {
-      return;
-    }
+  const handleVerify = async (code: string) => {
     setIsSubmitting(true);
-    const profile = {
-      fullName: `${firstName.trim()} ${lastName.trim()}`.trim(),
-      phone: formatE164PhoneNumber(phoneNumber.trim(), phoneCountry),
-      phoneCountry: phoneCountry.code,
-      city: city.trim(),
-      furnishedTypes: selectedTypes,
-      inventory,
-      createdAt: new Date().toISOString(),
-    };
     try {
-      await AsyncStorage.multiSet([
-        [STORAGE_KEYS.HOST_PROFILE, JSON.stringify(profile)],
-        [STORAGE_KEYS.HOST_APPLICATION_COMPLETED, 'true'],
-        [STORAGE_KEYS.HOST_VERIFICATION_STATUS, 'pending'],
-      ]);
+      console.log('[BecomeHost] Vérification du code', code);
+      // TODO: intégrer ton service de vérification SMS ici
+
+      // Enregistrer les données dans Supabase
+      if (user) {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            first_name: firstName,
+            last_name: lastName,
+            phone: formatE164PhoneNumber(phoneNumber, phoneCountry),
+            city: city,
+            role: 'host',
+            host_status: 'pending',
+            business_name: `${firstName} ${lastName}`,
+            furnished_types: selectedTypes,
+            inventory: inventory,
+            inventory_count: inventory === '1' ? 1 : inventory === '2 à 5' ? 3 : 6,
+            stats: { views: 0, likes: 0, comments: 0 },
+          })
+          .eq('id', user.id);
+
+        if (error) {
+          console.error('[BecomeHost] Erreur Supabase', error);
+          throw error;
+        }
+      }
+
       setModalStep('success');
+    } catch (error) {
+      console.error('[BecomeHost] Erreur lors de la vérification', error);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleDiscoverApp = () => {
+  const handleCloseModal = () => {
     setModalStep(null);
-    router.replace('/(tabs)/profile' as never);
+    setVerificationCode('');
+  };
+
+  const handleCloseSuccess = () => {
+    handleCloseModal();
+    router.back();
   };
 
   const handleBack = () => {
     router.replace('/onboarding' as never);
   };
-
-  const renderChip = useCallback(
-    (label: string) => {
-      const selected = selectedTypes.includes(label);
-      return (
-        <TouchableOpacity
-          key={label}
-          style={[styles.chip, selected && styles.chipSelected]}
-          onPress={() => toggleType(label)}
-          activeOpacity={0.85}
-        >
-          <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{label}</Text>
-        </TouchableOpacity>
-      );
-    },
-    [selectedTypes, toggleType],
-  );
 
   const renderInventoryOption = useCallback(
     (label: string) => {
@@ -187,177 +251,151 @@ export default function BecomeHostScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-        <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}> 
-          <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
-            <Text style={styles.backIcon}>←</Text>
-          </TouchableOpacity>
-        </Animated.View>
+          <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}> 
+            <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
+              <Text style={styles.backIcon}>←</Text>
+            </TouchableOpacity>
+          </Animated.View>
 
-        <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}> 
-          <Text style={styles.kicker}>Louer ton meublé n'a jamais été aussi facile</Text>
-        </Animated.View>
+          <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}> 
+            <Text style={styles.kicker}>Louer n'a jamais été aussi simple</Text>
+          </Animated.View>
 
-        <Animated.Image
-          source={require('../assets/icons/splash3.png')}
-          style={[styles.hero, { opacity: illustrationOpacity, transform: [{ scale: illustrationScale }] }]}
-          resizeMode="contain"
-        />
+          <Animated.Image
+            source={require('../assets/icons/splash3.png')}
+            style={[styles.hero, { opacity: illustrationOpacity, transform: [{ scale: illustrationScale }] }]}
+            resizeMode="contain"
+          />
 
-        <Animated.View style={[styles.bodyTextContainer, { opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }]}> 
-          <Text style={styles.title}>Deviens hôte sur PUOL</Text>
-          <Text style={styles.subtitle}>Dis-nous un peu plus pour t'aider à publier tes meublés.</Text>
-        </Animated.View>
+          <Animated.View style={[styles.bodyTextContainer, { opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }]}> 
+            <Text style={styles.title}>Deviens hôte sur PUOL</Text>
+            <Text style={styles.subtitle}>Dis-nous un peu plus pour t'aider à louer tes biens meublés.</Text>
+          </Animated.View>
 
-        <Animated.View style={[styles.formCard, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}> 
-          <View style={styles.nameRow}>
-            <View style={styles.nameField}>
-              <Text style={styles.fieldLabel}>Prénom</Text>
-              <TextInput
-                style={[styles.input]}
-                placeholder="Ex: Alex"
-                placeholderTextColor="#9CA3AF"
-                value={firstName}
-                onChangeText={setFirstName}
-                returnKeyType="next"
-              />
+          <Animated.View style={[styles.formCard, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}> 
+            <View style={styles.nameRow}>
+              <View style={styles.nameField}>
+                <Text style={styles.fieldLabel}>Prénom</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: Alex"
+                  placeholderTextColor="#9CA3AF"
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  returnKeyType="next"
+                />
+              </View>
+              <View style={styles.nameField}>
+                <Text style={styles.fieldLabel}>Nom</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: Emmanuel"
+                  placeholderTextColor="#9CA3AF"
+                  value={lastName}
+                  onChangeText={setLastName}
+                  returnKeyType="next"
+                />
+              </View>
             </View>
-            <View style={styles.nameField}>
-              <Text style={styles.fieldLabel}>Nom</Text>
-              <TextInput
-                style={[styles.input]}
-                placeholder="Ex: Landjou"
-                placeholderTextColor="#9CA3AF"
-                value={lastName}
-                onChangeText={setLastName}
-                returnKeyType="next"
-              />
-            </View>
-          </View>
 
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
-            <View style={styles.phoneField}>
-              <TouchableOpacity
-                style={styles.countrySelector}
-                activeOpacity={0.8}
-                onPress={() => setIsCountryPickerOpen((prev) => !prev)}
-              >
-                <Text style={styles.flag}>{phoneCountry.flag}</Text>
-                <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
-              </TouchableOpacity>
-              <TextInput
-                style={styles.phoneInput}
-                placeholder={phoneCountry.inputPlaceholder}
-                placeholderTextColor="#9CA3AF"
-                keyboardType="phone-pad"
-                value={phoneNumber}
-                onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
-              />
-            </View>
-          </View>
-          {isCountryPickerOpen && (
-            <View style={styles.countryList}>
-              {PHONE_COUNTRY_OPTIONS.map((country) => (
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
+              <View style={styles.phoneField}>
                 <TouchableOpacity
-                  key={country.code}
-                  style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    setPhoneCountry(country);
-                    setPhoneNumber('');
-                    setIsCountryPickerOpen(false);
-                  }}
+                  style={styles.countrySelector}
+                  activeOpacity={0.8}
+                  onPress={() => setIsCountryPickerOpen((prev) => !prev)}
                 >
-                  <Text style={styles.flag}>{country.flag}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.countryName}>{country.name}</Text>
-                    <Text style={styles.countryDial}>{country.dialCode}</Text>
-                  </View>
+                  <Text style={styles.flag}>{phoneCountry.flag}</Text>
+                  <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
                 </TouchableOpacity>
+                <TextInput
+                  style={styles.phoneInput}
+                  placeholder={phoneCountry.inputPlaceholder}
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="phone-pad"
+                  value={phoneNumber}
+                  onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
+                />
+              </View>
+            </View>
+            {isCountryPickerOpen && (
+              <View style={styles.countryList}>
+                {PHONE_COUNTRY_OPTIONS.map((country) => (
+                  <TouchableOpacity
+                    key={country.code}
+                    style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setPhoneCountry(country);
+                      setPhoneNumber('');
+                      setIsCountryPickerOpen(false);
+                    }}
+                  >
+                    <Text style={styles.flag}>{country.flag}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.countryName}>{country.name}</Text>
+                      <Text style={styles.countryDial}>{country.dialCode}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Ville</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Ex: Douala"
+                placeholderTextColor="#9CA3AF"
+                value={city}
+                onChangeText={setCity}
+              />
+            </View>
+
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Quel type de biens meublés proposes-tu ?</Text>
+            </View>
+            <View style={styles.chipsContainer}>
+              {furnitureOptions.map((option) => (
+                <FurnitureChip
+                  key={option.label}
+                  option={option}
+                  selected={selectedTypes.includes(option.label)}
+                  onPress={() => toggleType(option.label)}
+                />
               ))}
             </View>
-          )}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Ville</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: Douala"
-              placeholderTextColor="#9CA3AF"
-              value={city}
-              onChangeText={setCity}
-            />
-          </View>
 
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Quel type de meublé proposes-tu ?</Text>
-          </View>
-          <View style={styles.chipsContainer}>{furnitureOptions.map(renderChip)}</View>
+            <View style={[styles.sectionHeader, { marginTop: 20 }]}> 
+              <Text style={styles.sectionTitle}>Nombre de biens</Text>
+            </View>
+            <View style={styles.inventoryRow}>{inventoryOptions.map(renderInventoryOption)}</View>
+          </Animated.View>
 
-          <View style={[styles.sectionHeader, { marginTop: 20 }]}> 
-            <Text style={styles.sectionTitle}>Nombre de biens</Text>
-          </View>
-          <View style={styles.inventoryRow}>{inventoryOptions.map(renderInventoryOption)}</View>
-        </Animated.View>
-
-        <Animated.View style={[styles.ctaContainer, { opacity: ctaOpacity, transform: [{ translateY: ctaTranslateY }] }]}> 
-          <TouchableOpacity
-            style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-            onPress={handleSubmit}
-            disabled={!canSubmit}
-            activeOpacity={0.9}
-          >
-            <Text style={[styles.submitLabel, !canSubmit && styles.submitLabelDisabled]}>Envoyer</Text>
-          </TouchableOpacity>
-        </Animated.View>
+          <Animated.View style={[styles.ctaContainer, { opacity: ctaOpacity, transform: [{ translateY: ctaTranslateY }] }]}> 
+            <TouchableOpacity
+              style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+              onPress={handleSubmit}
+              disabled={!canSubmit}
+              activeOpacity={0.9}
+            >
+              <Text style={[styles.submitLabel, !canSubmit && styles.submitLabelDisabled]}>Envoyer</Text>
+            </TouchableOpacity>
+          </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <Modal transparent visible={modalStep === 'verify'} animationType="fade" onRequestClose={() => setModalStep(null)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Vérifie ton numéro</Text>
-            <Text style={styles.modalText}>Nous t'avons envoyé un code sur WhatsApp. Entre-le pour confirmer ton inscription.</Text>
-            <TextInput
-              style={styles.otpInput}
-              keyboardType="number-pad"
-              maxLength={6}
-              placeholder="Code"
-              placeholderTextColor="#9CA3AF"
-              value={verificationCode}
-              onChangeText={setVerificationCode}
-            />
-            <TouchableOpacity
-              style={[styles.modalButton, verificationCode.trim().length < 4 && styles.modalButtonDisabled]}
-              onPress={handleVerification}
-              disabled={verificationCode.trim().length < 4 || isSubmitting}
-            >
-              <Text style={styles.modalButtonLabel}>{isSubmitting ? 'Validation...' : 'Valider'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setModalStep(null)}>
-              <Text style={styles.modalDismiss}>Annuler</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <HostVerificationModal
+        isVisible={modalStep === 'verify'}
+        onClose={handleCloseModal}
+        onVerify={handleVerify}
+        isVerifying={isSubmitting}
+        phoneNumber={formatE164PhoneNumber(phoneNumber, phoneCountry)}
+      />
 
-      <Modal transparent visible={modalStep === 'success'} animationType="fade">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.successIconCircle}>
-              <Feather name="check" size={28} color="#FFFFFF" />
-            </View>
-            <Text style={styles.modalTitle}>Demande reçue</Text>
-            <Text style={styles.modalText}>
-              Un membre de notre équipe commerciale vous contactera sur WhatsApp dans les prochaines minutes pour finaliser votre dossier.
-            </Text>
-            <Text style={styles.modalHint}>En attendant, explorez l'application pour prendre de l'avance.</Text>
-            <TouchableOpacity style={[styles.modalButton, { marginTop: 12 }]} onPress={handleDiscoverApp}>
-              <Text style={styles.modalButtonLabel} numberOfLines={1} adjustsFontSizeToFit>
-                Découvrir l'application
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+      <Modal visible={modalStep === 'success'} animationType="slide">
+        <HostSuccessScreen onClose={handleCloseSuccess} />
       </Modal>
     </View>
   );
@@ -548,6 +586,9 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 999,
@@ -558,6 +599,9 @@ const styles = StyleSheet.create({
   chipSelected: {
     backgroundColor: PUOL_GREEN,
     borderColor: PUOL_GREEN,
+  },
+  chipIcon: {
+    marginRight: 2,
   },
   chipLabel: {
     fontFamily: 'Manrope',
@@ -623,87 +667,5 @@ const styles = StyleSheet.create({
   },
   submitLabelDisabled: {
     color: 'rgba(255,255,255,0.7)',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalCard: {
-    width: '100%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 24,
-    alignItems: 'center',
-    gap: 12,
-    alignSelf: 'center',
-  },
-  successIconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: PUOL_GREEN,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  modalTitle: {
-    fontFamily: 'Manrope',
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
-    textAlign: 'center',
-  },
-  modalText: {
-    fontFamily: 'Manrope',
-    fontSize: 14,
-    color: '#475467',
-    lineHeight: 20,
-    textAlign: 'center',
-  },
-  modalHint: {
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    color: '#94A3B8',
-    textAlign: 'center',
-  },
-  otpInput: {
-    height: 54,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 18,
-    fontFamily: 'Manrope',
-    fontSize: 18,
-    letterSpacing: 4,
-    textAlign: 'center',
-    color: '#0F172A',
-  },
-  modalButton: {
-    backgroundColor: PUOL_GREEN,
-    borderRadius: 16,
-    paddingVertical: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    alignSelf: 'stretch',
-  },
-  modalButtonDisabled: {
-    backgroundColor: '#D1D5DB',
-  },
-  modalButtonLabel: {
-    fontFamily: 'Manrope',
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  modalDismiss: {
-    textAlign: 'center',
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#94A3B8',
   },
 });

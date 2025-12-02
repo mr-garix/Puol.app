@@ -1,10 +1,24 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
-import { SafeAreaView, View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert, Linking } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Modal,
+  SafeAreaView,
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
+import { supabase } from '@/src/supabaseClient';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 
-import { HOST_RESERVATIONS } from '@/src/data/mockHostReservations';
+import { useHostBookings } from '@/src/features/host/hooks';
+import { requestRemainingPayment } from '@/src/features/bookings/services';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -23,36 +37,128 @@ const formatFullDate = (iso: string) =>
     year: 'numeric',
   });
 
-const formatCurrency = (value: number) => `${value.toLocaleString('fr-FR')} FCFA`;
+const formatCurrency = (value: number | string | null | undefined) => `${Number(value ?? 0).toLocaleString('fr-FR')} FCFA`;
 
 export default function HostReservationDetailsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string }>();
   const insets = useSafeAreaInsets();
-  const reservation = HOST_RESERVATIONS.find((item) => item.id === params.id);
-  const [paymentState, setPaymentState] = useState<'idle' | 'pending' | 'received'>('idle');
+  const { getBookingById, fetchBooking, isLoading } = useHostBookings();
+  const [isFetching, setIsFetching] = useState(false);
+  const [isRequestingPayment, setIsRequestingPayment] = useState(false);
   const [paymentToast, setPaymentToast] = useState<{ title: string; subtitle: string; tone: 'info' | 'success' } | null>(null);
+  const [isGuestAvatarVisible, setIsGuestAvatarVisible] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const paymentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const booking = useMemo(() => (params.id ? getBookingById(params.id) : undefined), [getBookingById, params.id]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!params.id) {
+      return;
+    }
+    setIsFetching(true);
+    fetchBooking(params.id)
+      .catch((error) => {
+        console.error('[HostReservationDetails] unable to fetch booking', error);
+      })
+      .finally(() => {
+        if (mounted) {
+          setIsFetching(false);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [params.id, fetchBooking]);
 
   const stayRange = useMemo(() => {
-    if (!reservation) {
+    if (!booking) {
       return { checkIn: '', checkOut: '' };
     }
     return {
-      checkIn: formatFullDate(reservation.checkIn),
-      checkOut: formatFullDate(reservation.checkOut),
+      checkIn: formatFullDate(booking.checkInDate),
+      checkOut: formatFullDate(booking.checkOutDate),
     };
-  }, [reservation]);
+  }, [booking]);
+
+  const statusBadge = useMemo(() => {
+    if (!booking) {
+      return {
+        label: '',
+        icon: 'check-circle' as const,
+        backgroundColor: 'rgba(46,204,113,0.12)',
+        iconColor: COLORS.accent,
+        textColor: COLORS.accent,
+      };
+    }
+
+    switch (booking.status) {
+      case 'cancelled':
+        return {
+          label: 'Annulée',
+          icon: 'slash' as const,
+          backgroundColor: 'rgba(248,113,113,0.15)',
+          iconColor: '#991B1B',
+          textColor: '#991B1B',
+        };
+      case 'completed':
+        return {
+          label: 'Séjour terminé',
+          icon: 'check-circle' as const,
+          backgroundColor: 'rgba(59,130,246,0.12)',
+          iconColor: '#1D4ED8',
+          textColor: '#1D4ED8',
+        };
+      case 'pending':
+        return {
+          label: 'En attente',
+          icon: 'clock' as const,
+          backgroundColor: 'rgba(249,115,22,0.12)',
+          iconColor: '#C2410C',
+          textColor: '#C2410C',
+        };
+      default:
+        return {
+          label: 'Confirmée',
+          icon: 'check-circle' as const,
+          backgroundColor: 'rgba(46,204,113,0.12)',
+          iconColor: COLORS.accent,
+          textColor: COLORS.accent,
+        };
+    }
+  }, [booking]);
 
   const stayNightsLabel = useMemo(() => {
-    if (!reservation) {
+    if (!booking) {
       return '';
     }
-    return `${reservation.nights} nuit${reservation.nights > 1 ? 's' : ''}`;
-  }, [reservation]);
+    return `${booking.nights} nuit${booking.nights > 1 ? 's' : ''}`;
+  }, [booking]);
 
-  if (!reservation) {
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) {
+        clearTimeout(toastTimer.current);
+      }
+    };
+  }, []);
+
+  if (!params.id) {
+    router.back();
+    return null;
+  }
+
+  if (!booking && (isLoading || isFetching)) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}> 
+        <ActivityIndicator size="small" color={COLORS.accent} />
+        <Text style={{ color: COLORS.muted, marginTop: 12 }}>Chargement de la réservation...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!booking) {
     return (
       <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}> 
         <Text style={{ color: COLORS.muted }}>Réservation introuvable.</Text>
@@ -60,35 +166,67 @@ export default function HostReservationDetailsScreen() {
     );
   }
 
-  const hasSplitPayout = reservation.payoutBreakdown.dueOnArrival > 0;
+  const discountAmountValue = Number(booking.discountAmount ?? 0);
+  const originalTotalValue = Number(booking.originalTotal ?? booking.totalPrice);
+  const remainingAmountValue = Number(booking.amountRemaining ?? 0);
+  const hasSplitPayout = remainingAmountValue > 0;
+  const isSplitPayment = booking.paymentScheme === 'split' || (booking.depositNights ?? 0) > 0 || (booking.remainingNights ?? 0) > 0;
+  const hasDiscount = discountAmountValue > 0;
+  const hasOriginalTotal = originalTotalValue > Number(booking.totalPrice ?? 0);
+  const isCancelled = booking.status === 'cancelled';
   const handleCancelPress = () => {
+    if (isCancelled) {
+      return;
+    }
     Alert.alert(
       'Annuler cette réservation',
-      "Vous êtes sur le point d'annuler. Contactez le support PUOL pour finaliser l'opération.",
+      'Pour annuler, vous devez contacter notre équipe support et expliquer la situation.',
       [
-        { text: 'Fermer', style: 'cancel' },
+        { text: 'Non', style: 'cancel' },
         {
           text: 'Contacter le support',
-          style: 'destructive',
-          onPress: () => router.push('/support' as never),
+          style: 'default',
+          onPress: () => {
+            router.push('/support' as never);
+          },
         },
       ],
     );
   };
 
-  const handleRequestPayment = () => {
-    if (paymentState !== 'idle') {
+  const handleRequestPayment = async () => {
+    console.log('[HostReservation] Payment button clicked');
+    console.log('[HostReservation] Booking data:', {
+      id: booking?.id,
+      remainingPaymentStatus: booking?.remainingPaymentStatus,
+      amountRemaining: booking?.amountRemaining,
+      isCancelled
+    });
+    
+    if (!booking) {
+      console.log('[HostReservation] No booking data');
       return;
     }
-    setPaymentState('pending');
-    showToast('Lien envoyé', 'Surveillez le paiement depuis vos versements.', 'info');
-    if (paymentTimer.current) {
-      clearTimeout(paymentTimer.current);
+    
+    const status = booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined;
+    if (status === 'requested' || status === 'paid' || isCancelled) {
+      console.log('[HostReservation] Payment already processed or cancelled:', { status, isCancelled });
+      return;
     }
-    paymentTimer.current = setTimeout(() => {
-      setPaymentState('received');
-      showToast('Paiement reçu', 'Le reste du versement est confirmé.', 'success');
-    }, 10000);
+    
+    try {
+      setIsRequestingPayment(true);
+      console.log('[HostReservation] Requesting remaining payment:', booking.id);
+      await requestRemainingPayment(booking.id);
+      console.log('[HostReservation] Payment request successful, refreshing booking');
+      await fetchBooking(booking.id);
+      showToast('Lien envoyé', 'Le voyageur a reçu la demande de paiement.', 'info');
+    } catch (err) {
+      console.error('[HostReservation] Request payment error:', err);
+      Alert.alert('Erreur', `Impossible d'envoyer la demande de paiement: ${err instanceof Error ? err.message : 'Erreur inconnue'}`);
+    } finally {
+      setIsRequestingPayment(false);
+    }
   };
 
   const showToast = (title: string, subtitle: string, tone: 'info' | 'success') => {
@@ -99,32 +237,25 @@ export default function HostReservationDetailsScreen() {
     toastTimer.current = setTimeout(() => setPaymentToast(null), 3500);
   };
 
-  useEffect(() => {
-    return () => {
-      if (toastTimer.current) {
-        clearTimeout(toastTimer.current);
-      }
-      if (paymentTimer.current) {
-        clearTimeout(paymentTimer.current);
-      }
-    };
-  }, []);
-
-  const paymentButtonIcon = paymentState === 'received' ? 'check-circle' : paymentState === 'pending' ? 'clock' : 'credit-card';
-  const paymentButtonTitle = paymentState === 'pending' ? 'En attente du paiement' : paymentState === 'received' ? 'Paiement reçu' : 'Demander le reste du paiement';
-  const paymentButtonSubtitle = paymentState === 'pending' ? 'Le voyageur vient de recevoir le lien' : paymentState === 'received' ? 'Le versement sera mis à jour automatiquement' : 'Prévenez le voyageur et envoyez le lien';
+  const paymentButtonIcon = (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' ? 'check-circle' : (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'requested' ? 'clock' : 'credit-card';
+  const paymentButtonTitle = (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'requested' ? 'En attente du paiement' : (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' ? 'Paiement reçu' : 'Demander le reste du paiement';
+  const paymentButtonSubtitle = (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'requested' ? 'Le voyageur vient de recevoir le lien' : (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' ? 'Le versement a été confirmé' : 'Prévenez le voyageur et envoyez le lien';
   const paymentButtonStyle = [
     styles.collectButton,
-    paymentState === 'pending' && styles.collectButtonPending,
-    paymentState === 'received' && styles.collectButtonReceived,
-    paymentState !== 'idle' && { opacity: paymentState === 'received' ? 1 : 0.95 },
+    (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'requested' && styles.collectButtonPending,
+    (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' && styles.collectButtonReceived,
+    (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) !== 'idle' && { opacity: (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' ? 1 : 0.95 },
   ];
 
+  const handleViewListing = () => {
+    router.push({ pathname: '/property/[id]', params: { id: booking.listingId } } as never);
+  };
+
   const handleCallGuest = () => {
-    if (!reservation?.guestPhone) {
+    if (!booking?.guest?.phone) {
       return;
     }
-    const telUrl = `tel:${reservation.guestPhone.replace(/\s+/g, '')}`;
+    const telUrl = `tel:${booking.guest.phone.replace(/\s+/g, '')}`;
     Linking.canOpenURL(telUrl)
       .then((supported) => {
         if (supported) {
@@ -138,13 +269,13 @@ export default function HostReservationDetailsScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={[styles.headerWrapper, { paddingTop: Math.max(insets.top, 16) }]}> 
+      <View style={[styles.headerWrapper, { paddingTop: Math.max(insets.top - 32, 8) }]}> 
         <View style={styles.headerRow}>
           <TouchableOpacity style={styles.navButton} activeOpacity={0.85} onPress={() => router.back()}>
             <Feather name="chevron-left" size={22} color={COLORS.dark} />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>{reservation.propertyName}</Text>
+            <Text style={styles.headerTitle}>{booking.listingTitle}</Text>
             <Text style={styles.headerSubtitle}>Détails de la réservation</Text>
           </View>
           <View style={{ width: 44 }} />
@@ -154,19 +285,37 @@ export default function HostReservationDetailsScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.heroCard}>
           <View style={styles.guestRow}>
-            <Image
-              source={{ uri: `https://i.pravatar.cc/160?u=${reservation.guestHandle}` }}
-              style={styles.guestAvatar}
-            />
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => setIsGuestAvatarVisible(true)}
+              style={styles.guestAvatarWrapper}
+            >
+              <Image
+                source={{
+                  uri:
+                    booking.guest?.avatarUrl ||
+                    (booking.guest?.username ? `https://i.pravatar.cc/160?u=${booking.guest.username}` : 'https://i.pravatar.cc/160'),
+                }}
+                style={styles.guestAvatar}
+              />
+            </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <View style={styles.nameRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.heroGuest}>{reservation.guestName}</Text>
-                  <Text style={styles.heroHandle}>{reservation.guestHandle}</Text>
+                  <Text style={styles.heroGuest}>{booking.guest?.name ?? 'Voyageur PUOL'}</Text>
+                  {booking.guest?.username ? <Text style={styles.heroHandle}>{booking.guest.username}</Text> : null}
                 </View>
-                <View style={styles.confirmBadge}>
-                  <Feather name="check-circle" size={14} color={COLORS.accent} />
-                  <Text style={styles.confirmBadgeText}>Confirmé</Text>
+                <View
+                  style={[
+                    styles.confirmBadge,
+                    {
+                      backgroundColor: statusBadge.backgroundColor,
+                      borderColor: statusBadge.iconColor,
+                    },
+                  ]}
+                >
+                  <Feather name={statusBadge.icon} size={14} color={statusBadge.iconColor} />
+                  <Text style={[styles.confirmBadgeText, { color: statusBadge.textColor }]}>{statusBadge.label}</Text>
                 </View>
               </View>
             </View>
@@ -175,15 +324,17 @@ export default function HostReservationDetailsScreen() {
             <TouchableOpacity
               style={[styles.viewListingButton, { flex: 1 }]}
               activeOpacity={0.85}
-              onPress={() => router.push(`/property/${encodeURIComponent(reservation.propertyName)}` as never)}
+              onPress={handleViewListing}
             >
               <Text style={styles.viewListingText}>Voir l'annonce</Text>
               <Feather name="arrow-up-right" size={14} color={COLORS.accent} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.callButton} activeOpacity={0.85} onPress={handleCallGuest}>
-              <Feather name="phone" size={14} color={COLORS.accent} />
-              <Text style={styles.callButtonText}>{reservation.guestPhone}</Text>
-            </TouchableOpacity>
+            {booking.guest?.phone ? (
+              <TouchableOpacity style={styles.callButton} activeOpacity={0.85} onPress={handleCallGuest}>
+                <Feather name="phone" size={14} color={COLORS.accent} />
+                <Text style={styles.callButtonText}>{booking.guest.phone}</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
 
@@ -191,33 +342,64 @@ export default function HostReservationDetailsScreen() {
           <Text style={styles.sectionTitle}>Résumé du séjour</Text>
           <InfoRow label="Arrivée" value={stayRange.checkIn} icon="log-in" />
           <InfoRow label="Départ" value={stayRange.checkOut} icon="log-out" />
-          <InfoRow label="Voyageurs" value={`${reservation.guests} personne${reservation.guests > 1 ? 's' : ''}`} icon="users" />
           <InfoRow label="Durée du séjour" value={stayNightsLabel} icon="moon" />
         </View>
 
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Paiement & versement</Text>
-          <InfoRow label="Tarif par nuit" value={formatCurrency(reservation.nightlyRate)} icon="sunrise" />
-          <InfoRow label="Montant total" value={formatCurrency(reservation.totalAmount)} icon="dollar-sign" highlight />
-          <View style={styles.payoutRow}>
-            <Badge icon="check-circle" label="Réglé en ligne" value={formatCurrency(reservation.payoutBreakdown.paidOnline)} accent />
-            {hasSplitPayout && (
-              <Badge icon="info" label="À l'arrivée" value={formatCurrency(reservation.payoutBreakdown.dueOnArrival)} />
-            )}
-          </View>
-          {hasSplitPayout && (
+          <InfoRow label="Tarif par nuit" value={formatCurrency(booking.nightlyPrice)} icon="sunrise" />
+          {hasOriginalTotal && (
+            <InfoRow label="Montant initial" value={formatCurrency(originalTotalValue)} icon="trending-up" />
+          )}
+          {hasDiscount && (
+            <InfoRow
+              label="Réduction appliquée"
+              value={`-${formatCurrency(discountAmountValue)}${booking.discountPercent ? ` (${booking.discountPercent}%)` : ''}`}
+              icon="gift"
+            />
+          )}
+          <InfoRow label="Montant total" value={formatCurrency(booking.totalPrice)} icon="cash-multiple" iconLibrary="material" highlight />
+          <InfoRow label="Montant payé" value={formatCurrency(booking.amountPaid ?? 0)} icon="credit-card" />
+          {!isCancelled && isSplitPayment && booking.remainingPaymentStatus === 'paid' && (
+            <View style={styles.soldOutRow}>
+              <View style={styles.infoIcon}>
+                <Feather name="check-circle" size={14} color="#047857" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.soldOutLabel}>Séjour soldé</Text>
+                <Text style={styles.soldOutSubtitle}>Le solde a été entièrement réglé.</Text>
+              </View>
+            </View>
+          )}
+          {isSplitPayment && hasSplitPayout && booking.remainingPaymentStatus !== 'paid' && (
+            <InfoRow label="Reste à payer" value={formatCurrency(booking.amountRemaining ?? 0)} icon="check-circle" />
+          )}
+          {isCancelled && (
+            <View style={styles.cancellationNotice}>
+              <Feather name="slash" size={16} color="#991B1B" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cancellationNoticeTitle}>Réservation annulée</Text>
+                <Text style={styles.cancellationNoticeSubtitle}>Aucun versement supplémentaire n'est requis.</Text>
+              </View>
+            </View>
+          )}
+          {hasSplitPayout && !isCancelled && (
             <>
               <View style={styles.ruleBanner}>
                 <Feather name="alert-triangle" size={16} color="#92400E" />
                 <Text style={styles.ruleBannerText}>
-                  Séjour {'>'} 8 nuits : les 2 dernières nuits sont réglées sur place selon la règle PUOL.
+                  Séjour {booking.nights} nuits : les {booking.remainingNights ?? 2} dernières nuits sont réglées sur place selon la règle PUOL.
                 </Text>
               </View>
               <TouchableOpacity
                 style={paymentButtonStyle}
                 activeOpacity={0.9}
                 onPress={handleRequestPayment}
-                disabled={paymentState !== 'idle'}
+                disabled={
+                  isRequestingPayment ||
+                  (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) !== 'idle' ||
+                  isCancelled
+                }
               >
                 <Feather name={paymentButtonIcon} size={18} color="#FFFFFF" />
                 <View style={{ flex: 1 }}>
@@ -239,27 +421,80 @@ export default function HostReservationDetailsScreen() {
         </View>
 
         <View style={styles.footerActions}>
-          <TouchableOpacity style={styles.cancelButton} activeOpacity={0.85} onPress={handleCancelPress}>
-            <Feather name="slash" size={16} color="#FFFFFF" />
-            <Text style={styles.cancelButtonText}>Annuler la réservation</Text>
+          <TouchableOpacity
+            style={[styles.cancelButton, isCancelled && styles.cancelButtonDisabled]}
+            activeOpacity={isCancelled ? 1 : 0.85}
+            onPress={handleCancelPress}
+            disabled={isCancelled}
+          >
+            <Feather name="slash" size={16} color={isCancelled ? '#9CA3AF' : '#FFFFFF'} />
+            <Text style={[styles.cancelButtonText, isCancelled && styles.cancelButtonTextDisabled]}>
+              {isCancelled ? 'Réservation annulée' : 'Annuler la réservation'}
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={isGuestAvatarVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsGuestAvatarVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.avatarOverlay}
+          activeOpacity={1}
+          onPress={() => setIsGuestAvatarVisible(false)}
+        >
+          <View style={styles.avatarContent}>
+            <Image
+              source={{
+                uri:
+                  booking.guest?.avatarUrl ||
+                  (booking.guest?.username ? `https://i.pravatar.cc/240?u=${booking.guest.username}` : 'https://i.pravatar.cc/240'),
+              }}
+              style={styles.avatarFullImage}
+            />
+            <TouchableOpacity
+              style={styles.avatarCloseButton}
+              activeOpacity={0.85}
+              onPress={() => setIsGuestAvatarVisible(false)}
+            >
+              <Feather name="x" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-const InfoRow = ({ label, value, icon, highlight }: { label: string; value: string; icon: React.ComponentProps<typeof Feather>['name']; highlight?: boolean }) => (
-  <View style={styles.infoRow}>
-    <View style={styles.infoIcon}>
-      <Feather name={icon} size={14} color={COLORS.accent} />
+const InfoRow = ({
+  label,
+  value,
+  icon,
+  iconLibrary = 'feather',
+  highlight,
+}: {
+  label: string;
+  value: string;
+  icon: React.ComponentProps<typeof Feather>['name'] | React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  iconLibrary?: 'feather' | 'material';
+  highlight?: boolean;
+}) => {
+  const IconComponent = iconLibrary === 'material' ? MaterialCommunityIcons : Feather;
+  return (
+    <View style={styles.infoRow}>
+      <View style={styles.infoIcon}>
+        <IconComponent name={icon as never} size={14} color={COLORS.accent} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={[styles.infoValue, highlight && styles.infoValueHighlight]}>{value}</Text>
+      </View>
     </View>
-    <View style={{ flex: 1 }}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={[styles.infoValue, highlight && styles.infoValueHighlight]}>{value}</Text>
-    </View>
-  </View>
-);
+  );
+};
 
 const Badge = ({ icon, label, value, accent }: { icon: React.ComponentProps<typeof Feather>['name']; label: string; value: string; accent?: boolean }) => (
   <View style={[styles.badge, accent && styles.badgeAccent]}>
@@ -323,6 +558,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  guestAvatarWrapper: {
+    borderRadius: 28,
+    overflow: 'hidden',
   },
   guestAvatar: {
     width: 56,
@@ -428,6 +667,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    paddingVertical: 10,
   },
   infoIcon: {
     width: 32,
@@ -448,8 +688,25 @@ const styles = StyleSheet.create({
     color: COLORS.dark,
   },
   infoValueHighlight: {
-    color: COLORS.accent,
+    color: '#047857',
     fontWeight: '700',
+  },
+  soldOutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+  },
+  soldOutLabel: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#047857',
+  },
+  soldOutSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: '#047857',
   },
   payoutRow: {
     flexDirection: 'row',
@@ -502,6 +759,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#78350F',
     lineHeight: 19,
+  },
+  splitBadgeText: {
+    fontFamily: 'Manrope',
+    fontSize: 11,
+    color: '#92400E',
+    flexShrink: 1,
+  },
+  cancellationNotice: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(248,113,113,0.1)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  cancellationNoticeTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  cancellationNoticeSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: '#991B1B',
   },
   collectButton: {
     marginTop: 12,
@@ -575,5 +858,42 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  cancelButtonDisabled: {
+    backgroundColor: '#E5E7EB',
+    borderColor: '#E5E7EB',
+  },
+  cancelButtonTextDisabled: {
+    color: '#9CA3AF',
+  },
+  avatarOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  avatarContent: {
+    width: '100%',
+    maxWidth: 420,
+    aspectRatio: 1,
+    borderRadius: 24,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  avatarFullImage: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarCloseButton: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(17,24,39,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

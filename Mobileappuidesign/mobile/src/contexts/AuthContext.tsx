@@ -1,1 +1,1 @@
-export * from '@/src/features/auth/AuthContext';
+export * from '@/src/features/auth/hooks/AuthContext';

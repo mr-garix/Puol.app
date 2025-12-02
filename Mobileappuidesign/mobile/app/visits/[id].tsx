@@ -2,7 +2,7 @@ import React from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
-import VisitDetailsScreen from '@/components/VisitDetailsScreen';
+import VisitDetailsScreen from '@/src/features/host/components/VisitDetailsScreen';
 import { useVisits } from '@/src/contexts/VisitsContext';
 
 const VisitDetailsRoute = () => {

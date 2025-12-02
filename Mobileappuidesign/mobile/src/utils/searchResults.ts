@@ -1,6 +1,28 @@
-import { getAllProperties, type PropertyData, type PriceType, type PropertyType } from '@/src/data/properties';
+import { supabase } from '@/src/supabaseClient';
 
 import type { SearchCriteria } from '@/src/types/search';
+import type { Tables } from '@/src/types/supabase.generated';
+
+const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
+
+const PROPERTY_TYPE_LABELS = {
+  studio: 'Studio',
+  chambre: 'Chambre',
+  apartment: 'Appartement',
+  house: 'Maison',
+  villa: 'Villa',
+  boutique: 'Boutique',
+} as const;
+
+type PropertyType = keyof typeof PROPERTY_TYPE_LABELS;
+
+const normalizePropertyType = (value?: string | null): PropertyType => {
+  const key = (value ?? '').trim().toLowerCase() as PropertyType;
+  if (key && key in PROPERTY_TYPE_LABELS) {
+    return key;
+  }
+  return 'apartment';
+};
 
 export type SearchResultCard = {
   id: string;
@@ -21,79 +43,81 @@ export type SearchResultCard = {
   matchScore: number;
 };
 
-const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
-  studio: 'Studio',
-  chambre: 'Chambre',
-  apartment: 'Appartement',
-  house: 'Maison',
-  villa: 'Villa',
-  boutique: 'Boutique',
+type ListingRow = Tables<'listings'>;
+type ListingRoomsRow = Tables<'listing_rooms'>;
+type ListingFeaturesRow = Tables<'listing_features'>;
+type ListingMediaRow = Tables<'listing_media'>;
+
+type ListingWithRelations = ListingRow & {
+  listing_rooms?: ListingRoomsRow | null;
+  listing_features?: ListingFeaturesRow | null;
+  listing_media?: ListingMediaRow[] | null;
 };
 
-const formatPrice = (price: string, period: PriceType) => {
-  const numeric = Number(price.replace(/\s/g, ''));
-  const formatted = Number.isFinite(numeric) ? numeric.toLocaleString('fr-FR') : price;
-  return `${formatted} FCFA`;
+type SearchResponse = {
+  results: SearchResultCard[];
+  isFallback: boolean;
 };
 
-const periodLabel = (period: PriceType) => (period === 'daily' ? 'par nuit' : 'par mois');
+const SEARCH_SELECT = `
+  id,
+  title,
+  property_type,
+  price_per_night,
+  city,
+  district,
+  address_text,
+  is_furnished,
+  capacity,
+  cover_photo_url,
+  created_at,
+  status,
+  listing_rooms (
+    living_room,
+    bedrooms,
+    kitchen,
+    bathrooms
+  ),
+  listing_features (
+    near_main_road,
+    has_ac,
+    has_wifi,
+    has_parking,
+    generator,
+    security_guard,
+    pool,
+    elevator,
+    water_well,
+    water_heater
+  ),
+  listing_media (
+    media_url,
+    media_type,
+    position
+  )
+`;
 
-const surfaceLabel = (property: PropertyData) => {
-  if (property.surfaceArea) {
-    return `${property.surfaceArea} m²`;
-  }
-  if (property.type === 'boutique') {
-    return 'Surface ajustable';
-  }
-  return undefined;
+const MAX_SOURCE_RESULTS = 80;
+const RESULT_LIMIT = 20;
+const FALLBACK_LIMIT = 6;
+
+const AMENITY_COLUMN_MAP: Record<string, keyof ListingFeaturesRow | 'near_main_road'> = {
+  parking: 'has_parking',
+  ac: 'has_ac',
+  security: 'security_guard',
+  wifi: 'has_wifi',
+  elevator: 'elevator',
+  pool: 'pool',
+  generator: 'generator',
+  water24: 'water_well',
+  roadside: 'near_main_road',
 };
 
-const buildHashtags = (property: PropertyData) => {
-  const base = [`#${PROPERTY_TYPE_LABELS[property.type]}`, `#${property.location.city}`, `#${property.location.neighborhood}`];
-  if (property.furnishingType === 'furnished') {
-    base.push('#Meublé');
-  } else if (property.furnishingType === 'unfurnished') {
-    base.push('#NonMeublé');
-  }
-  if (property.priceType === 'daily') {
-    base.push('#CourteDurée');
-  } else {
-    base.push('#LongSéjour');
-  }
-  return base;
-};
+const PRICE_PERIOD_LABEL = 'par nuit';
 
-const buildResultCard = (property: PropertyData): SearchResultCard => {
-  const furnishingLabel = property.furnishingType === 'furnished' ? 'Meublé' : 'Non meublé';
-  const badges = [PROPERTY_TYPE_LABELS[property.type], furnishingLabel];
-  const surface = surfaceLabel(property);
-  if (surface) {
-    badges.push(surface);
-  }
+const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? '';
 
-  const matchScore = Math.min(99, 68 + (property.landlord.reviewsCount ?? 12));
-
-  return {
-    id: property.id,
-    title: property.title,
-    propertyType: property.type,
-    furnishingLabel,
-    city: property.location.city,
-    neighborhood: property.location.neighborhood,
-    priceDisplay: formatPrice(property.price, property.priceType),
-    pricePeriodLabel: periodLabel(property.priceType),
-    image: property.images[0],
-    badges,
-    hashtags: buildHashtags(property),
-    bedrooms: property.bedrooms ?? (property.type === 'studio' ? 1 : 2),
-    bathrooms: property.bathrooms ?? 1,
-    kitchens: property.kitchens ?? 1,
-    surfaceAreaLabel: surface,
-    matchScore,
-  } satisfies SearchResultCard;
-};
-
-const parseNumericValue = (value?: string | number) => {
+const parseNumericValue = (value?: string | number | null) => {
   if (value === undefined || value === null) {
     return undefined;
   }
@@ -101,97 +125,211 @@ const parseNumericValue = (value?: string | number) => {
   return Number.isFinite(numeric) ? numeric : undefined;
 };
 
-const normalize = (value?: string) => value?.trim().toLowerCase() ?? '';
-
-const AMENITY_KEYWORDS: Record<string, string[]> = {
-  parking: ['parking', 'parking clients'],
-  ac: ['climatisation', 'air conditionner', 'air-conditioner'],
-  security: ['sécurité', 'gardien', 'gardiennage'],
-  wifi: ['wifi'],
-  elevator: ['ascenseur'],
-  pool: ['piscine'],
-  generator: ['groupe électrogène'],
-  water24: ['eau 24/24'],
-  roadside: ['bord de route'],
-  groundfloor: ['rez-de-chaussée'],
-  mall: ['galerie', 'centre commercial'],
-  clientparking: ['parking clients'],
+const pickHeroImage = (listing: ListingWithRelations) => {
+  const media = listing.listing_media ?? [];
+  if (media.length) {
+    const sorted = [...media].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const photo = sorted.find((item) => item.media_type === 'photo' && item.media_url);
+    if (photo?.media_url) {
+      return photo.media_url;
+    }
+    if (sorted[0]?.media_url) {
+      return sorted[0].media_url;
+    }
+  }
+  return listing.cover_photo_url ?? FALLBACK_IMAGE;
 };
 
-const matchesAmenities = (property: PropertyData, selected: string[]) => {
-  if (!selected.length) {
+const buildBadges = (listing: ListingWithRelations) => {
+  const badges: string[] = [];
+  const typeKey = normalizePropertyType(listing.property_type);
+  badges.push(PROPERTY_TYPE_LABELS[typeKey]);
+  badges.push(listing.is_furnished ? 'Meublé' : 'Non meublé');
+  if (listing.capacity) {
+    const suffix = listing.capacity > 1 ? 'pers.' : 'pers';
+    badges.push(`${listing.capacity} ${suffix}`);
+  }
+  return badges;
+};
+
+const buildHashtags = (listing: ListingWithRelations) => {
+  const typeKey = normalizePropertyType(listing.property_type);
+  const tags = [
+    `#${PROPERTY_TYPE_LABELS[typeKey]}`,
+    listing.city ? `#${listing.city}` : null,
+    listing.district ? `#${listing.district}` : null,
+  ].filter(Boolean) as string[];
+  tags.push(listing.is_furnished ? '#Meublé' : '#NonMeublé');
+  return tags;
+};
+
+const formatPriceDisplay = (price?: number | null) => {
+  if (!price || price <= 0) {
+    return 'Tarif sur demande';
+  }
+  return `${price.toLocaleString('fr-FR')} FCFA`;
+};
+
+const buildMatchScore = (listing: ListingWithRelations) => {
+  const bedrooms = listing.listing_rooms?.bedrooms ?? 1;
+  const capacityBoost = listing.capacity ? Math.min(10, Math.round(listing.capacity / 2)) : 0;
+  return Math.min(99, 68 + bedrooms * 4 + capacityBoost);
+};
+
+const extractLocationTokens = (location: string) =>
+  location
+    .split(/[,|]/)
+    .map((token) => normalize(token))
+    .filter(Boolean);
+
+const listingMatchesLocation = (listing: ListingWithRelations, tokens: string[]) => {
+  if (!tokens.length) {
     return true;
   }
-  const propertyAmenities = (property.amenities ?? []).map((amenity) => normalize(amenity));
-  return selected.every((amenityId) => {
-    const keywords = AMENITY_KEYWORDS[amenityId];
-    if (!keywords || !keywords.length) {
+  const haystack = [listing.city, listing.district, listing.address_text, listing.title]
+    .filter(Boolean)
+    .map((value) => normalize(String(value)));
+  return tokens.every((token) => haystack.some((entry) => entry.includes(token)));
+};
+
+const listingMatchesPrice = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const minPrice = parseNumericValue(criteria.priceRange?.min) ?? 0;
+  const maxPrice = parseNumericValue(criteria.priceRange?.max) ?? Infinity;
+  const price = listing.price_per_night ?? 0;
+  return price >= minPrice && price <= maxPrice;
+};
+
+const listingMatchesRooms = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const rooms = listing.listing_rooms;
+  const bedrooms = rooms?.bedrooms ?? 0;
+  const bathrooms = rooms?.bathrooms ?? 0;
+  const kitchens = rooms?.kitchen ?? 0;
+  const livingRooms = rooms?.living_room ?? 0;
+
+  return (
+    bedrooms >= (criteria.bedrooms ?? 0) &&
+    bathrooms >= (criteria.bathrooms ?? 0) &&
+    kitchens >= (criteria.kitchens ?? 0) &&
+    livingRooms >= (criteria.livingRooms ?? 0)
+  );
+};
+
+const listingMatchesAmenities = (listing: ListingWithRelations, amenities: string[]) => {
+  if (!amenities.length) {
+    return true;
+  }
+  const features = listing.listing_features;
+  if (!features) {
+    return false;
+  }
+
+  return amenities.every((amenityId) => {
+    const column = AMENITY_COLUMN_MAP[amenityId];
+    if (!column) {
       return true;
     }
-    return keywords.some((keyword) => propertyAmenities.some((amenity) => amenity.includes(keyword)));
+    if (column === 'near_main_road') {
+      return Boolean(features.near_main_road);
+    }
+    return Boolean(features[column]);
   });
 };
 
-const propertyMatchesCriteria = (property: PropertyData, criteria: SearchCriteria) => {
-  const locationQuery = normalize(criteria.location);
-  const matchesLocation = locationQuery
-    ? [property.location.city, property.location.neighborhood, property.location.address, property.title]
-        .filter(Boolean)
-        .map((value) => normalize(String(value)))
-        .some((value) => value.includes(locationQuery))
-    : true;
+const listingMatchesFurnishing = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  if (!criteria.furnishingType || criteria.type === 'boutique') {
+    return true;
+  }
+  return listing.is_furnished === (criteria.furnishingType === 'furnished');
+};
 
-  const matchesType = criteria.type ? property.type === criteria.type : true;
-
-  const matchesFurnishing =
-    !criteria.furnishingType || property.type === 'boutique'
-      ? true
-      : property.furnishingType === criteria.furnishingType;
-
-  const minBedrooms = criteria.bedrooms ?? 0;
-  const minBathrooms = criteria.bathrooms ?? 0;
-  const minKitchens = criteria.kitchens ?? 0;
-  const minLivingRooms = criteria.livingRooms ?? 0;
-
-  const matchesRooms =
-    (property.bedrooms ?? 0) >= minBedrooms &&
-    (property.bathrooms ?? 0) >= minBathrooms &&
-    (property.kitchens ?? 0) >= minKitchens &&
-    (property.livingRooms ?? 0) >= minLivingRooms;
-
-  const priceValue = parseNumericValue(property.price);
-  const minPrice = parseNumericValue(criteria.priceRange?.min) ?? 0;
-  const maxPrice = parseNumericValue(criteria.priceRange?.max) ?? Infinity;
-  const matchesPrice = priceValue === undefined ? true : priceValue >= minPrice && priceValue <= maxPrice;
-
-  const matchesSurface = criteria.surfaceArea
-    ? (parseNumericValue(property.surfaceArea) ?? 0) >= (parseNumericValue(criteria.surfaceArea) ?? 0)
-    : true;
+const listingMatchesCriteria = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const locationTokens = extractLocationTokens(criteria.location ?? '');
+  const matchesLocation = listingMatchesLocation(listing, locationTokens);
+  const listingType = normalizePropertyType(listing.property_type);
+  const matchesType = criteria.type ? listingType === criteria.type : true;
 
   return (
     matchesLocation &&
     matchesType &&
-    matchesFurnishing &&
-    matchesRooms &&
-    matchesPrice &&
-    matchesSurface &&
-    matchesAmenities(property, criteria.amenities)
+    listingMatchesFurnishing(listing, criteria) &&
+    listingMatchesRooms(listing, criteria) &&
+    listingMatchesPrice(listing, criteria) &&
+    listingMatchesAmenities(listing, criteria.amenities ?? [])
   );
 };
 
-export const getSearchResultCards = (): SearchResultCard[] => {
-  const properties = getAllProperties();
-  return properties.map(buildResultCard);
+const mapListingToResult = (listing: ListingWithRelations): SearchResultCard => {
+  const typeKey = normalizePropertyType(listing.property_type);
+  const furnishingLabel = listing.is_furnished ? 'Meublé' : 'Non meublé';
+  const rooms = listing.listing_rooms;
+
+  return {
+    id: listing.id,
+    title: listing.title,
+    propertyType: typeKey,
+    furnishingLabel,
+    city: listing.city ?? 'Ville à venir',
+    neighborhood: listing.district ?? listing.city ?? 'Quartier à venir',
+    priceDisplay: formatPriceDisplay(listing.price_per_night),
+    pricePeriodLabel: PRICE_PERIOD_LABEL,
+    image: pickHeroImage(listing),
+    badges: buildBadges(listing),
+    hashtags: buildHashtags(listing),
+    bedrooms: rooms?.bedrooms ?? 1,
+    bathrooms: rooms?.bathrooms ?? 1,
+    kitchens: rooms?.kitchen ?? 1,
+    surfaceAreaLabel: undefined,
+    matchScore: buildMatchScore(listing),
+  } satisfies SearchResultCard;
 };
 
-export const getSearchResultsForCriteria = (criteria: SearchCriteria): SearchResultCard[] => {
-  const properties = getAllProperties();
-  return properties.filter((property) => propertyMatchesCriteria(property, criteria)).map(buildResultCard);
+const buildFallbackListings = (listings: ListingWithRelations[], criteria: SearchCriteria) => {
+  const locationTokens = extractLocationTokens(criteria.location ?? '');
+  const typeMatches = criteria.type ? listings.filter((listing) => listing.property_type === criteria.type) : [];
+  const locationMatches = locationTokens.length
+    ? listings.filter((listing) => listingMatchesLocation(listing, locationTokens))
+    : [];
+
+  const ordered = [...typeMatches, ...locationMatches, ...listings];
+  const deduped: ListingWithRelations[] = [];
+  const seen = new Set<string>();
+
+  ordered.forEach((listing) => {
+    if (!seen.has(listing.id)) {
+      seen.add(listing.id);
+      deduped.push(listing);
+    }
+  });
+
+  return deduped.slice(0, FALLBACK_LIMIT);
 };
 
-export const filterCardsByType = (cards: SearchResultCard[], filter: PropertyType | 'all') => {
-  if (filter === 'all') {
-    return cards;
+export const searchListings = async (criteria: SearchCriteria): Promise<SearchResponse> => {
+  const { data, error } = await supabase
+    .from('listings')
+    .select(SEARCH_SELECT)
+    .eq('status', 'published')
+    .order('created_at', { ascending: false })
+    .limit(MAX_SOURCE_RESULTS)
+    .returns<ListingWithRelations[]>();
+
+  if (error) {
+    throw error;
   }
-  return cards.filter((card) => card.propertyType === filter);
+
+  const listings = data ?? [];
+  const matches = listings.filter((listing) => listingMatchesCriteria(listing, criteria));
+
+  if (matches.length) {
+    return {
+      results: matches.slice(0, RESULT_LIMIT).map(mapListingToResult),
+      isFallback: false,
+    };
+  }
+
+  const fallback = buildFallbackListings(listings, criteria).map(mapListingToResult);
+  return {
+    results: fallback,
+    isFallback: true,
+  };
 };

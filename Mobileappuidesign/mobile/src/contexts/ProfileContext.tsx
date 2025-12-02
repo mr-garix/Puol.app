@@ -3,14 +3,14 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { SupabaseProfile } from '@/src/contexts/AuthContext';
 import { supabase } from '@/src/supabaseClient';
-import { uploadEnterpriseLogo, uploadProfileAvatar } from '@/src/services/profile/avatarService';
+import { uploadEnterpriseLogo, uploadProfileAvatar } from '@/src/features/auth/services/avatarService';
 import {
   checkUsernameAvailability as checkUsernameAvailabilityService,
   ensureProfileUsername,
   generateUsernameSuggestions,
   isUsernameValid,
   normalizeUsernameInput,
-} from '@/src/services/profile/usernameService';
+} from '@/src/features/auth/services/usernameService';
 import {
   DEFAULT_PHONE_COUNTRY,
   formatE164PhoneNumber,

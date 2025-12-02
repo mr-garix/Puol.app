@@ -4,8 +4,13 @@ import { Stack } from 'expo-router';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
 
-import NotificationHost from '@/components/notifications/NotificationHost';
-import VisitNotificationBridge from '@/components/notifications/VisitNotificationBridge';
+import {
+  NotificationHost,
+  VisitNotificationBridge,
+  HostBookingNotificationBridge,
+  HostCommentNotificationBridge,
+  UserCommentNotificationBridge,
+} from '@/src/infrastructure/notifications';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
 import { ReservationProvider } from '@/src/contexts/ReservationContext';
@@ -14,7 +19,8 @@ import { FeedProvider } from '@/src/contexts/FeedContext';
 import { VisitsProvider } from '@/src/contexts/VisitsContext';
 import { ProfileProvider } from '@/src/contexts/ProfileContext';
 import { PreloadProvider, usePreloadedVideo } from '@/src/contexts/PreloadContext';
-import { usePreloadFirstVideo } from '@/src/hooks/usePreloadFirstVideo';
+import { usePreloadFirstVideo } from '@/src/features/listings/hooks';
+import { RemainingPaymentHandler } from '@/src/features/payments/components/RemainingPaymentHandler';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -75,7 +81,7 @@ export default function RootLayout() {
                   <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
                     <Stack>
                     <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
-                    <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+                    <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="search" options={{ headerShown: false }} />
                     <Stack.Screen name="host" options={{ headerShown: false }} />
                     <Stack.Screen name="landlord" options={{ headerShown: false }} />
@@ -108,7 +114,11 @@ export default function RootLayout() {
                     <Stack.Screen name="support/[id]" options={{ headerShown: false }} />
                     </Stack>
                     <VisitNotificationBridge />
+                    <HostBookingNotificationBridge />
+                    <HostCommentNotificationBridge />
+                    <UserCommentNotificationBridge />
                     <NotificationHost />
+                    <RemainingPaymentHandler />
                   </ThemeProvider>
                 </NotificationProvider>
               </ProfileProvider>
