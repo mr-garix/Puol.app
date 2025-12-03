@@ -17,6 +17,7 @@ import { Feather } from '@expo/vector-icons';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useHostLikeActivities } from '@/src/features/likes/hooks';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { formatDistrictCity } from '@/src/utils/location';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -116,8 +117,7 @@ const buildLikerName = (liker: {
 const STORAGE_KEY_SEEN = '@host_like_seen_ids';
 
 const buildListingLabel = (title?: string | null, city?: string | null, district?: string | null) => {
-  const locationTokens = [district, city].filter((token) => token && token.trim());
-  const location = locationTokens.length ? locationTokens.join(', ') : null;
+  const location = formatDistrictCity(district, city);
   return location ? `${title ?? 'Annonce PUOL'} • ${location}` : title ?? 'Annonce PUOL';
 };
 

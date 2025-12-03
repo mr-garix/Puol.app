@@ -40,6 +40,13 @@ import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, ListingFeatureFlagKeys, ListingFeaturesRow } from '@/src/types/listings';
 import { createListingWithRelations, updateListingWithRelations } from '@/src/features/listings/services';
 import { MUSIC_LIBRARY } from '@/src/constants/music';
+import {
+  createPlacesSessionToken,
+  fetchPlaceSuggestions,
+  fetchPlaceDetails,
+  type PlaceSuggestion,
+  type PlaceDetails,
+} from '@/src/features/search/services/googlePlaces';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -115,6 +122,80 @@ const parseCityDistrict = (rawAddress: string) => {
   }
   const fallback = parts[0] ?? '';
   return { city: fallback, district: fallback, isValid: false };
+};
+
+const formatSuggestionAddress = (suggestion: PlaceSuggestion) => {
+  const normalize = (text?: string) =>
+    (text ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+  const [cityFromSecondary] = normalize(suggestion.secondary);
+  if (cityFromSecondary) {
+    return `${suggestion.primary}, ${cityFromSecondary}`;
+  }
+
+  const descriptionParts = normalize(suggestion.description);
+  if (descriptionParts.length >= 2) {
+    return `${descriptionParts[0]}, ${descriptionParts[1]}`;
+  }
+
+  return suggestion.description?.trim() || suggestion.primary;
+};
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const findComponentLongName = (components: PlaceDetails['components'], typeCandidates: string[]) => {
+  if (!Array.isArray(components)) {
+    return '';
+  }
+  const match = components.find((component) =>
+    component?.types?.some((type: string) => typeCandidates.includes(type)),
+  );
+  return match?.long_name ?? '';
+};
+
+const resolveCityFromComponents = (components: PlaceDetails['components']) =>
+  findComponentLongName(components, ['locality', 'administrative_area_level_2', 'administrative_area_level_1']);
+
+const resolveDistrictFromComponents = (components: PlaceDetails['components']) =>
+  findComponentLongName(components, ['sublocality_level_1', 'sublocality', 'neighborhood', 'political']);
+
+const stripTrailingCity = (addressValue: string, cityValue: string) => {
+  if (!addressValue || !cityValue) {
+    return addressValue;
+  }
+  const pattern = new RegExp(`(,?\\s*)${escapeRegExp(cityValue)}$`, 'i');
+  return addressValue.replace(pattern, '').trim();
+};
+
+const deriveDistrictValue = (params: { address: string; city: string; fallbackDistrict: string }) => {
+  const addressValue = params.address.trim();
+  const fallbackDistrict = params.fallbackDistrict.trim();
+  const cityValue = params.city.trim();
+
+  if (fallbackDistrict) {
+    const cityLower = cityValue.toLowerCase();
+    const districtLower = fallbackDistrict.toLowerCase();
+    if (!cityLower || districtLower !== cityLower) {
+      return fallbackDistrict;
+    }
+  }
+
+  if (!addressValue) {
+    return '';
+  }
+
+  if (cityValue) {
+    const stripped = stripTrailingCity(addressValue, cityValue);
+    if (stripped && stripped.toLowerCase() !== cityValue.toLowerCase()) {
+      return stripped;
+    }
+  }
+
+  const { district } = parseCityDistrict(addressValue);
+  return district || addressValue;
 };
 
 type CalendarDay = {
@@ -244,6 +325,7 @@ type FieldErrorKey =
   | 'title'
   | 'price'
   | 'address'
+  | 'city'
   | 'listingType'
   | 'rooms'
   | 'description'
@@ -255,13 +337,14 @@ const createFieldErrors = (): Record<FieldErrorKey, string | null> => ({
   title: null,
   price: null,
   address: null,
+  city: null,
   listingType: null,
   rooms: null,
   description: null,
   amenities: null,
 });
 
-const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'address', 'listingType', 'rooms', 'description', 'amenities'];
+const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'address', 'city', 'listingType', 'rooms', 'description', 'amenities'];
 
 const LONG_CLIP_THRESHOLD = 90; // seconds
 const PHOTO_TARGET_RATIO = 9 / 16;
@@ -550,6 +633,26 @@ export default function HostListingEditScreen() {
   const [selectedMusicId, setSelectedMusicId] = useState<string>(MUSIC_LIBRARY[0].id);
   const [volumePreset, setVolumePreset] = useState<VolumePresetId>('medium');
   const [coverPhotoUri, setCoverPhotoUri] = useState<string>('');
+  const [addressSearch, setAddressSearch] = useState('');
+  const [addressSuggestions, setAddressSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [isAddressLoading, setIsAddressLoading] = useState(false);
+  const addressSessionTokenRef = useRef<string | null>(null);
+  const addressDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addressBlurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cityInput, setCityInput] = useState('');
+  const [citySuggestions, setCitySuggestions] = useState<PlaceSuggestion[]>([]);
+  const [showCityDropdown, setShowCityDropdown] = useState(false);
+  const [isCityLoading, setIsCityLoading] = useState(false);
+  const citySessionTokenRef = useRef<string | null>(null);
+  const cityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cityBlurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addressDetailsRequestRef = useRef<string | null>(null);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [selectedLatitude, setSelectedLatitude] = useState<number | null>(null);
+  const [selectedLongitude, setSelectedLongitude] = useState<number | null>(null);
+  const [formattedAddress, setFormattedAddress] = useState('');
+  const [resolvedDistrict, setResolvedDistrict] = useState('');
   const soundRef = useRef<Audio.Sound | null>(null);
   const previewVideoRef = useRef<Video | null>(null);
   const previewWasPlayingRef = useRef(true);
@@ -577,19 +680,34 @@ export default function HostListingEditScreen() {
     setDescription('');
     setListingType('' as ListingType);
     setRoomCounts(createEmptyRoomCounts() as Record<RoomType, number>);
+    setGuestCapacity(1);
+    setAddress('');
+    setAddressSearch('');
+    setAddressSuggestions([]);
+    setShowAddressDropdown(false);
+    setIsAddressLoading(false);
+    setCityInput('');
+    setCitySuggestions([]);
+    setShowCityDropdown(false);
+    setIsCityLoading(false);
+    setGoogleAddress('');
+    setDescription('');
     setAmenities([]);
-    setSelectedAvailabilityMode('available');
-    setGuestCapacity(0);
-    setPromoNights('');
-    setPromoDiscount('');
-    setCalendarMonthOffset(0);
     setBlockedDates(new Set());
     setSelectedCalendarDates(new Set());
-    setMedia([]);
+    setPromoDiscount('');
     setMusicEnabled(true);
     setSelectedMusicId(MUSIC_LIBRARY[0].id);
     setVolumePreset('medium');
     setCoverPhotoUri('');
+    setSelectedPlaceId(null);
+    setSelectedLatitude(null);
+    setSelectedLongitude(null);
+    setFormattedAddress('');
+    setResolvedDistrict('');
+    addressSessionTokenRef.current = null;
+    citySessionTokenRef.current = null;
+    addressDetailsRequestRef.current = null;
     setFieldErrors(createFieldErrors());
     setPreviewMedia(null);
   }, []);
@@ -628,17 +746,26 @@ export default function HostListingEditScreen() {
     const { listing, media: listingMedia, rooms, features, availability } = existingListing;
     setTitle(listing.title ?? '');
     setPrice(listing.price_per_night ? String(listing.price_per_night) : '');
-    setAddress(listing.address_text ?? [listing.district, listing.city].filter(Boolean).join(', '));
+    const fallbackAddress = [listing.district, listing.city].filter(Boolean).join(', ');
+    const parsedLocation = parseCityDistrict(listing.address_text ?? fallbackAddress);
+    setAddress(listing.address_text ?? fallbackAddress);
     setGoogleAddress(listing.google_address ?? '');
     setDescription(listing.description ?? '');
     setListingType((listing.property_type as ListingType) ?? LISTING_TYPES[0]);
     setGuestCapacity(listing.capacity ?? 0);
+    setCityInput(listing.city ?? parsedLocation.city ?? '');
+    setResolvedDistrict(listing.district ?? parsedLocation.district ?? '');
+    setSelectedPlaceId(listing.place_id ?? null);
+    setSelectedLatitude(listing.latitude ?? null);
+    setSelectedLongitude(listing.longitude ?? null);
+    setFormattedAddress(listing.formatted_address ?? listing.address_text ?? fallbackAddress);
     setAmenities(mapFeaturesToAmenities(features));
     setRoomCounts(mapRoomsToCounts(rooms));
     const { blocked, reserved } = mapAvailability(availability);
     setBlockedDates(blocked);
     setReservedDates(reserved);
     setCoverPhotoUri(listing.cover_photo_url ?? '');
+    setAddressSearch(listing.address_text ?? fallbackAddress);
     setMusicEnabled(Boolean(listing.music_enabled));
     if (listing.music_id) {
       setSelectedMusicId(listing.music_id);
@@ -662,6 +789,119 @@ export default function HostListingEditScreen() {
   }, [ensureLeadVideo, existingListing, isCreateMode]);
 
   useEffect(() => {
+    if (addressDebounceRef.current) {
+      clearTimeout(addressDebounceRef.current);
+      addressDebounceRef.current = null;
+    }
+
+    const query = addressSearch.trim();
+    if (!query) {
+      setAddressSuggestions([]);
+      setIsAddressLoading(false);
+      addressSessionTokenRef.current = null;
+      return () => undefined;
+    }
+
+    setIsAddressLoading(true);
+    let isActive = true;
+
+    addressDebounceRef.current = setTimeout(() => {
+      const sessionToken = addressSessionTokenRef.current ?? createPlacesSessionToken();
+      addressSessionTokenRef.current = sessionToken;
+
+      fetchPlaceSuggestions(query, sessionToken)
+        .then((suggestions) => {
+          if (!isActive) {
+            return;
+          }
+          setAddressSuggestions(suggestions);
+          if (suggestions.length === 0) {
+            setShowAddressDropdown(false);
+          }
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn('[HostListingEdit] address suggestions error', error);
+          setAddressSuggestions([]);
+          setShowAddressDropdown(false);
+        })
+        .finally(() => {
+          if (!isActive) {
+            return;
+          }
+          setIsAddressLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      isActive = false;
+      if (addressDebounceRef.current) {
+        clearTimeout(addressDebounceRef.current);
+        addressDebounceRef.current = null;
+      }
+    };
+  }, [addressSearch]);
+
+  useEffect(() => {
+    if (cityDebounceRef.current) {
+      clearTimeout(cityDebounceRef.current);
+      cityDebounceRef.current = null;
+    }
+
+    const query = cityInput.trim();
+    if (!query) {
+      setCitySuggestions([]);
+      setIsCityLoading(false);
+      citySessionTokenRef.current = null;
+      setShowCityDropdown(false);
+      return () => undefined;
+    }
+
+    setIsCityLoading(true);
+    let isActive = true;
+
+    cityDebounceRef.current = setTimeout(() => {
+      const sessionToken = citySessionTokenRef.current ?? createPlacesSessionToken();
+      citySessionTokenRef.current = sessionToken;
+
+      fetchPlaceSuggestions(query, sessionToken, { types: '(cities)' })
+        .then((suggestions) => {
+          if (!isActive) {
+            return;
+          }
+          setCitySuggestions(suggestions);
+          if (suggestions.length === 0) {
+            setShowCityDropdown(false);
+          }
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn('[HostListingEdit] city suggestions error', error);
+          setCitySuggestions([]);
+          setShowCityDropdown(false);
+        })
+        .finally(() => {
+          if (!isActive) {
+            return;
+          }
+          setIsCityLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      isActive = false;
+      if (cityDebounceRef.current) {
+        clearTimeout(cityDebounceRef.current);
+        cityDebounceRef.current = null;
+      }
+    };
+  }, [cityInput]);
+
+  useEffect(() => {
     Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
       staysActiveInBackground: false,
@@ -669,6 +909,24 @@ export default function HostListingEditScreen() {
       interruptionModeIOS: InterruptionModeIOS.DoNotMix,
       shouldDuckAndroid: true,
     }).catch((error) => console.warn('[HostListingEdit] audio mode error', error));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (addressBlurTimeoutRef.current) {
+        clearTimeout(addressBlurTimeoutRef.current);
+        addressBlurTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (cityBlurTimeoutRef.current) {
+        clearTimeout(cityBlurTimeoutRef.current);
+        cityBlurTimeoutRef.current = null;
+      }
+    };
   }, []);
 
   const toggleSelection = (value: string, collection: string[], setter: (next: string[]) => void) => {
@@ -996,6 +1254,9 @@ export default function HostListingEditScreen() {
         errors.address = 'Séparez le quartier et la ville avec une virgule.';
       }
     }
+    if (!cityInput.trim()) {
+      errors.city = 'Sélectionnez ou tapez une ville.';
+    }
     if (!listingType.trim()) {
       errors.listingType = 'Sélectionnez un type de bien.';
     }
@@ -1016,7 +1277,7 @@ export default function HostListingEditScreen() {
       return false;
     }
     return true;
-  }, [amenities.length, coverPhotoUri, description, address, listingType, media, price, roomCounts, scrollToError, title]);
+  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, roomCounts, scrollToError, title]);
 
   useEffect(() => {
     setFieldErrors((prev) => {
@@ -1038,6 +1299,7 @@ export default function HostListingEditScreen() {
       clearIfValid('title', title.trim().length > 0);
       clearIfValid('price', price.trim().length > 0);
       clearIfValid('address', address.trim().length > 0);
+      clearIfValid('city', cityInput.trim().length > 0);
       clearIfValid('listingType', !!listingType.trim());
       clearIfValid('rooms', roomsTotal > 0);
       clearIfValid('description', description.trim().length >= 100);
@@ -1045,7 +1307,7 @@ export default function HostListingEditScreen() {
 
       return next ?? prev;
     });
-  }, [amenities.length, coverPhotoUri, description, address, listingType, media, price, roomCounts, title]);
+  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, roomCounts, title]);
 
   const handlePreviewMusic = useCallback(
     async (trackId: string) => {
@@ -1128,18 +1390,29 @@ export default function HostListingEditScreen() {
       Alert.alert('Tarif invalide', 'Indiquez un montant numérique valide.');
       return;
     }
-
-    const { city, district } = parseCityDistrict(address);
+    const trimmedAddress = address.trim();
+    const parsedLocation = parseCityDistrict(trimmedAddress);
+    const finalCity = cityInput.trim() || parsedLocation.city;
+    const derivedDistrict = deriveDistrictValue({
+      address: trimmedAddress,
+      city: finalCity,
+      fallbackDistrict: resolvedDistrict || parsedLocation.district || '',
+    });
+    const addressText = trimmedAddress || formattedAddress || '';
     const coverFileName = coverPhotoUri.split('/').pop();
     const promotion = promoNights && promoDiscount ? { nights: Number(promoNights), discountPercent: Number(promoDiscount) } : null;
 
     const payload = {
       hostId: firebaseUser.uid,
       title: title.trim(),
-      city,
-      district,
-      addressText: address.trim(),
+      city: finalCity,
+      district: derivedDistrict,
+      addressText,
       googleAddress: googleAddress.trim() || null,
+      placeId: selectedPlaceId,
+      latitude: selectedLatitude,
+      longitude: selectedLongitude,
+      formattedAddress: formattedAddress.trim() ? formattedAddress.trim() : null,
       propertyType: listingType || LISTING_TYPES[0],
       pricePerNight: Math.round(sanitizedPrice),
       capacity: Math.max(1, guestCapacity || 1),
@@ -1228,6 +1501,94 @@ export default function HostListingEditScreen() {
       return { ...prev, [room]: nextValue };
     });
   };
+
+  const cancelAddressDropdownClose = useCallback(() => {
+    if (addressBlurTimeoutRef.current) {
+      clearTimeout(addressBlurTimeoutRef.current);
+      addressBlurTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleAddressDropdownClose = useCallback(() => {
+    cancelAddressDropdownClose();
+    addressBlurTimeoutRef.current = setTimeout(() => {
+      setShowAddressDropdown(false);
+    }, 275);
+  }, [cancelAddressDropdownClose]);
+
+  const cancelCityDropdownClose = useCallback(() => {
+    if (cityBlurTimeoutRef.current) {
+      clearTimeout(cityBlurTimeoutRef.current);
+      cityBlurTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleCityDropdownClose = useCallback(() => {
+    cancelCityDropdownClose();
+    cityBlurTimeoutRef.current = setTimeout(() => {
+      setShowCityDropdown(false);
+    }, 275);
+  }, [cancelCityDropdownClose]);
+
+  const handleAddressSuggestionSelect = useCallback(
+    async (suggestion: PlaceSuggestion) => {
+      cancelAddressDropdownClose();
+      const formattedValue = formatSuggestionAddress(suggestion);
+      setAddressSearch(formattedValue);
+      setAddress(formattedValue);
+      setShowAddressDropdown(false);
+      setAddressSuggestions([]);
+      setIsAddressLoading(false);
+      addressSessionTokenRef.current = null;
+      const fallbackLocation = parseCityDistrict(formattedValue);
+      setFieldErrors((prev) => ({ ...prev, address: null }));
+      addressDetailsRequestRef.current = suggestion.id;
+      try {
+        const details = await fetchPlaceDetails(suggestion.id);
+        if (addressDetailsRequestRef.current !== suggestion.id) {
+          return;
+        }
+        if (details) {
+          const resolvedCity = resolveCityFromComponents(details.components) || fallbackLocation.city;
+          const resolvedDistrictValue =
+            resolveDistrictFromComponents(details.components) || fallbackLocation.district || '';
+          setCityInput(resolvedCity);
+          setFieldErrors((prev) => ({ ...prev, city: null }));
+          setSelectedPlaceId(details.placeId);
+          setSelectedLatitude(details.latitude);
+          setSelectedLongitude(details.longitude);
+          setFormattedAddress(details.formattedAddress);
+          setResolvedDistrict(resolvedDistrictValue);
+        } else {
+          setSelectedPlaceId(null);
+          setSelectedLatitude(null);
+          setSelectedLongitude(null);
+          setFormattedAddress('');
+          setResolvedDistrict(fallbackLocation.district || '');
+        }
+      } catch (error) {
+        console.warn('[HostListingEdit] place details error', error);
+        setResolvedDistrict(fallbackLocation.district || '');
+      } finally {
+        addressDetailsRequestRef.current = null;
+      }
+    },
+    [cancelAddressDropdownClose, setFieldErrors],
+  );
+
+  const handleCitySuggestionSelect = useCallback(
+    (suggestion: PlaceSuggestion) => {
+      cancelCityDropdownClose();
+      const value = suggestion.primary;
+      setCityInput(value);
+      setShowCityDropdown(false);
+      setCitySuggestions([]);
+      setIsCityLoading(false);
+      citySessionTokenRef.current = null;
+      setFieldErrors((prev) => ({ ...prev, city: null }));
+    },
+    [cancelCityDropdownClose],
+  );
 
   const currentAvailabilityMode = useMemo(() => {
     return AVAILABILITY_MODES.find((mode) => mode.key === selectedAvailabilityMode) ?? AVAILABILITY_MODES[0];
@@ -1563,6 +1924,7 @@ export default function HostListingEditScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         ref={scrollViewRef}
       >
         <View
@@ -1657,7 +2019,7 @@ export default function HostListingEditScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.mediaActionText}>Photo de couverture</Text>
                 <Text style={styles.mediaActionSubtext}>
-                  {coverPhotoUri ? 'Actualisez votre image vitrine' : 'Choisissez une photo verticale accrocheuse'}
+                  {coverPhotoUri ? 'Actualisez votre image vitrine' : 'Choisissez une photo paysage accrocheuse'}
                 </Text>
               </View>
               <Feather name="camera" size={18} color={COLORS.accent} />
@@ -1667,10 +2029,10 @@ export default function HostListingEditScreen() {
             <View style={styles.coverPreviewCard}>
               <Image source={{ uri: coverPhotoUri }} style={styles.coverPreviewImage} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.coverPreviewTitle}>Photo de couverture active</Text>
+                <Text style={styles.coverPreviewTitle}>Photo de couverture</Text>
                 <Text style={styles.coverPreviewSubtitle}>
-                  Choisissez une photo verticale, lumineuse et soignée : c’est elle qui s’affichera en premier dans les
-                  résultats de recherche et qui donnera envie aux locataires d’ouvrir votre annonce.
+                  Choisissez une photo paysage, lumineuse et soignée : c’est elle qui s’affichera en premier dans les
+                  résultats de recherche et qui donnera envie aux clients d’ouvrir votre annonce.
                 </Text>
                 <TouchableOpacity style={styles.coverPreviewAction} onPress={handleSelectCoverPhoto} activeOpacity={0.85}>
                   <Feather name="refresh-ccw" size={14} color={COLORS.accent} />
@@ -1821,7 +2183,104 @@ export default function HostListingEditScreen() {
             )}
           </View>
           <LabeledInput label="Tarif" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
-          <LabeledInput label="Quartier, ville" value={address} onChangeText={setAddress} placeholder="Ex. Bonapriso, Douala" error={fieldErrors.address} />
+          <View style={{ marginBottom: 16 }}>
+            <Label text="Quartier, ville" />
+            <View style={styles.addressInputWrapper}>
+              <TextInput
+                style={[styles.addressInput, fieldErrors.address && styles.inputError]}
+                placeholder="Ex. Bonapriso, Douala"
+                placeholderTextColor="#9CA3AF"
+                value={addressSearch}
+                onFocus={() => {
+                  cancelAddressDropdownClose();
+                  setShowAddressDropdown(true);
+                  setFieldErrors((prev) => ({ ...prev, address: null }));
+                }}
+                onBlur={scheduleAddressDropdownClose}
+                onChangeText={(text) => {
+                  setAddressSearch(text);
+                  setAddress(text);
+                  setShowAddressDropdown(true);
+                  setSelectedPlaceId(null);
+                  setSelectedLatitude(null);
+                  setSelectedLongitude(null);
+                  setFormattedAddress('');
+                  setResolvedDistrict('');
+                  addressDetailsRequestRef.current = null;
+                }}
+              />
+              {showAddressDropdown && (addressSuggestions.length > 0 || isAddressLoading) && (
+                <View style={styles.addressDropdown}>
+                  {addressSuggestions.map((suggestion) => (
+                    <TouchableOpacity
+                      key={suggestion.id}
+                      style={styles.addressDropdownItem}
+                      onPressIn={cancelAddressDropdownClose}
+                      onPress={() => handleAddressSuggestionSelect(suggestion)}
+                    >
+                      <Text style={styles.addressDropdownTitle}>{suggestion.primary}</Text>
+                      {!!suggestion.secondary && (
+                        <Text style={styles.addressDropdownSubtitle}>{suggestion.secondary}</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                  {isAddressLoading && (
+                    <View style={styles.addressDropdownFooter}>
+                      <ActivityIndicator size="small" color={COLORS.accent} />
+                      <Text style={styles.addressDropdownFooterText}>Recherche de quartiers…</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+            {fieldErrors.address && <Text style={styles.fieldErrorText}>{fieldErrors.address}</Text>}
+          </View>
+          <View style={{ marginBottom: 16 }} onLayout={handleFieldLayout('city')}>
+            <Label text="Ville" />
+            <View style={styles.addressInputWrapper}>
+              <TextInput
+                style={[styles.addressInput, fieldErrors.city && styles.inputError]}
+                placeholder="Ex. Douala"
+                placeholderTextColor="#9CA3AF"
+                value={cityInput}
+                onFocus={() => {
+                  cancelCityDropdownClose();
+                  setShowCityDropdown(true);
+                  setFieldErrors((prev) => ({ ...prev, city: null }));
+                }}
+                onBlur={scheduleCityDropdownClose}
+                onChangeText={(text) => {
+                  setCityInput(text);
+                  setFieldErrors((prev) => ({ ...prev, city: null }));
+                  setShowCityDropdown(true);
+                }}
+              />
+              {showCityDropdown && (citySuggestions.length > 0 || isCityLoading) && (
+                <View style={styles.addressDropdown}>
+                  {citySuggestions.map((suggestion) => (
+                    <TouchableOpacity
+                      key={suggestion.id}
+                      style={styles.addressDropdownItem}
+                      onPressIn={cancelCityDropdownClose}
+                      onPress={() => handleCitySuggestionSelect(suggestion)}
+                    >
+                      <Text style={styles.addressDropdownTitle}>{suggestion.primary}</Text>
+                      {!!suggestion.secondary && (
+                        <Text style={styles.addressDropdownSubtitle}>{suggestion.secondary}</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                  {isCityLoading && (
+                    <View style={styles.addressDropdownFooter}>
+                      <ActivityIndicator size="small" color={COLORS.accent} />
+                      <Text style={styles.addressDropdownFooterText}>Recherche de villes…</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+            {fieldErrors.city && <Text style={styles.fieldErrorText}>{fieldErrors.city}</Text>}
+          </View>
           <LabeledInput
             label="Adresse Google"
             value={googleAddress}
@@ -2311,6 +2770,68 @@ const styles = StyleSheet.create({
     color: COLORS.dark,
     backgroundColor: '#FFFFFF',
   },
+  addressInputWrapper: {
+    marginTop: 8,
+    position: 'relative',
+    zIndex: 10,
+  },
+  addressInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: COLORS.dark,
+    backgroundColor: '#FFFFFF',
+  },
+  addressDropdown: {
+    position: 'absolute',
+    top: '105%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000000',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+    overflow: 'hidden',
+  },
+  addressDropdownItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(15,23,42,0.08)',
+  },
+  addressDropdownTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.dark,
+  },
+  addressDropdownSubtitle: {
+    marginTop: 2,
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: COLORS.muted,
+  },
+  addressDropdownFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  addressDropdownFooterText: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: COLORS.muted,
+  },
   textArea: {
     minHeight: 120,
     textAlignVertical: 'top',
@@ -2532,7 +3053,7 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   coverPreviewImage: {
-    width: 96,
+    width: 120,
     height: 120,
     borderRadius: 12,
     backgroundColor: '#0F172A',

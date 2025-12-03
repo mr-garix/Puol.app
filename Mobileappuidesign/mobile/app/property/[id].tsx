@@ -27,6 +27,7 @@ import type { Href } from 'expo-router';
 
 import { Video, ResizeMode } from 'expo-av';
 import { openPhone, openWhatsApp, PropertyData } from '@/src/data/properties';
+import { formatAddressLine, formatDistrictCity } from '@/src/utils/location';
 import { CommentWithAuthor } from '@/src/features/comments/types';
 import { useComments } from '@/src/features/comments/hooks';
 import { CommentBottomSheet } from '@/src/features/host/components/CommentBottomSheet';
@@ -162,10 +163,13 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
     priceType: 'daily',
     deposit: undefined,
     location: {
-      address: listing.address_text ?? listing.district,
-      neighborhood: listing.district,
-      city: listing.city,
-      coordinates: FALLBACK_COORDINATES,
+      // Utiliser directement address_text comme adresse, avec un fallback sur 'quartier, ville' si nécessaire
+      address: listing.address_text ?? (listing.district && listing.city 
+        ? `${listing.district}, ${listing.city}`
+        : listing.district || listing.city || ''),
+      neighborhood: listing.district ?? '',
+      city: listing.city ?? '',
+      coordinates: listing.latitude && listing.longitude ? { lat: listing.latitude, lng: listing.longitude } : FALLBACK_COORDINATES,
     },
     images,
     landlord: {
@@ -706,7 +710,13 @@ const PropertyProfileScreen = () => {
     return <View style={styles.container} />;
   }
 
-  const propertyLocationLabel = `${property!.location.neighborhood}, ${property!.location.city}`;
+  // Construire le libellé de localisation en privilégiant l'adresse complète (address_text)
+  const primaryAddress = property.location.address?.trim();
+  const propertyLocationLabel = primaryAddress && primaryAddress.length > 0
+    ? primaryAddress
+    : property.location.neighborhood && property.location.city
+      ? `${property.location.neighborhood}, ${property.location.city}`
+      : property.location.city || property.location.neighborhood || 'Localisation à venir';
   const isFurnished = property.isFurnished;
   const isShop = property.type === 'boutique';
   const isRoadsideShop = isShop && property.amenities?.some((amenity) => amenity.toLowerCase().includes('bord'));
@@ -750,7 +760,7 @@ const PropertyProfileScreen = () => {
     try {
       await Share.share({
         title: property.title,
-        message: `${property.title} - ${property.location.neighborhood}, ${property.location.city}`,
+        message: `${property.title} - ${propertyLocationLabel}`,
         url: property.images[0],
       });
     } catch (error) {
@@ -1213,9 +1223,7 @@ const PropertyProfileScreen = () => {
             <View style={styles.locationRow}>
               <Feather name="map-pin" size={16} color="#2ECC71" style={styles.locationIcon} />
               <View style={styles.locationTextContainer}>
-                <Text style={styles.locationText}>
-                  {property.location.neighborhood}, {property.location.city}
-                </Text>
+                <Text style={styles.locationText}>{propertyLocationLabel}</Text>
                 {!isShop && isFurnished && (
                   <Text style={styles.termsText}>Caution: {formatPrice(property.price)} FCFA</Text>
                 )}

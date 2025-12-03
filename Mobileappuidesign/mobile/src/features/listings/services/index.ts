@@ -62,6 +62,10 @@ export type CreateListingPayload = {
   district: string;
   addressText: string;
   googleAddress?: string | null;
+  placeId?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  formattedAddress?: string | null;
   propertyType: string;
   pricePerNight: number;
   capacity: number;
@@ -302,6 +306,10 @@ export const createListingWithRelations = async (payload: CreateListingPayload):
       district: payload.district,
       address_text: payload.addressText,
       google_address: payload.googleAddress ?? null,
+      place_id: payload.placeId ?? null,
+      latitude: payload.latitude ?? null,
+      longitude: payload.longitude ?? null,
+      formatted_address: payload.formattedAddress ?? null,
       capacity: payload.capacity,
       description: payload.description,
       cover_photo_url: '',
@@ -392,6 +400,10 @@ export const updateListingWithRelations = async (payload: UpdateListingPayload):
       district: payload.district,
       address_text: payload.addressText,
       google_address: payload.googleAddress ?? null,
+      place_id: payload.placeId ?? null,
+      latitude: payload.latitude ?? null,
+      longitude: payload.longitude ?? null,
+      formatted_address: payload.formattedAddress ?? null,
       capacity: payload.capacity,
       description: payload.description,
       cover_photo_url: coverUrl,

@@ -16,6 +16,7 @@ import { toCdnUrl } from '@/src/utils/cdn';
 import { getListingLikeCount, hasUserLikedListing, toggleListingLike } from '@/src/features/likes/services';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { getListingCommentCounts } from '@/src/features/comments/services';
+import { formatListingLocation } from '@/src/utils/location';
 
 const FALLBACK_AVATAR = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format';
 const FALLBACK_COVER = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
@@ -128,10 +129,13 @@ const formatPriceDisplay = (price?: number | null) => {
   return `${price.toLocaleString('fr-FR')} FCFA / NUIT`;
 };
 
-const buildLocationLabel = (listing: ListingRow) => {
-  const tokens = [listing.district, listing.city].filter((value) => value?.trim()) as string[];
-  return tokens.length ? tokens.join(', ') : 'Localisation à venir';
-};
+const buildLocationLabel = (listing: ListingRow) =>
+  formatListingLocation({
+    district: listing.district,
+    city: listing.city,
+    addressText: listing.address_text,
+    fallback: 'Localisation à venir',
+  }) || 'Localisation à venir';
 
 const buildListingTags = (listing: ListingRow): string[] => {
   const tags: string[] = [];

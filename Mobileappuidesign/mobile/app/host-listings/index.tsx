@@ -18,6 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { supabase } from '@/src/supabaseClient';
 import type { ListingMediaRow } from '@/src/types/listings';
+import { formatListingLocation } from '@/src/utils/location';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -60,10 +61,11 @@ export default function HostListingsScreen() {
     return `${value.toLocaleString('fr-FR')} FCFA / nuit`;
   }, []);
 
-  const formatLocation = useCallback((district?: string | null, city?: string | null) => {
-    const tokens = [district, city].filter(Boolean);
-    return tokens.length ? tokens.join(' • ') : 'Localisation indisponible';
-  }, []);
+  const formatLocation = useCallback(
+    (addressText?: string | null, district?: string | null, city?: string | null) =>
+      formatListingLocation({ addressText, district, city, fallback: 'Localisation indisponible' }) || 'Localisation indisponible',
+    [],
+  );
 
   const formatCreatedAt = useCallback((iso: string) => {
     const date = new Date(iso);
@@ -154,7 +156,7 @@ export default function HostListingsScreen() {
         return {
           id: listing.id,
           title: listing.title,
-          locationLabel: formatLocation(listing.district, listing.city),
+          locationLabel: formatLocation(listing.address_text, listing.district, listing.city),
           priceLabel: formatPrice(listing.price_per_night),
           statusLabel: listing.status ?? 'Brouillon',
           previewUrl,

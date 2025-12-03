@@ -272,12 +272,12 @@ export default function HomeScreen() {
 
   const [searchResults, setSearchResults] = useState<SearchResultCard[] | null>(null);
   const [searchCriteria, setSearchCriteria] = useState<SearchCriteria | null>(null);
-  const [isResultsOverlayVisible, setIsResultsOverlayVisible] = useState(false);
-  const [isResultsOverlayMounted, setIsResultsOverlayMounted] = useState(false);
-  const [resultsContext, setResultsContext] = useState<'exact' | 'fallback'>('exact');
-  const [shouldReopenSearch, setShouldReopenSearch] = useState(false);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [isResultsOverlayVisible, setIsResultsOverlayVisible] = useState(false);
+  const [isResultsOverlayMounted, setIsResultsOverlayMounted] = useState(false);
+  const [shouldReopenSearch, setShouldReopenSearch] = useState(false);
+  const [resultsContext, setResultsContext] = useState<'exact' | 'fallback'>('exact');
 
   const searchChips = buildCriteriaChips(searchCriteria);
   const overlayOpacity = useRef(new Animated.Value(0)).current;
@@ -1018,9 +1018,7 @@ export default function HomeScreen() {
                   color={PUOL_GREEN}
                   style={styles.searchResultLocationIcon}
                 />
-                <Text style={styles.searchResultLocation}>
-                  {item.city} • {item.neighborhood}
-                </Text>
+                <Text style={styles.searchResultLocation}>{item.locationLabel}</Text>
               </View>
             </View>
 
@@ -1068,6 +1066,7 @@ export default function HomeScreen() {
     const resultCount = searchResults?.length ?? 0;
     const hasResults = resultCount > 0;
     const showingFallback = resultsContext === 'fallback';
+    const modalHeaderPaddingTop = Math.max(insets.top, 20);
 
     return (
       <Modal
@@ -1084,7 +1083,7 @@ export default function HomeScreen() {
           >
             <Animated.View style={[styles.searchOverlayBackdrop, { opacity: overlayOpacity }]} />
             <Animated.View style={[styles.searchOverlayPanel, { transform: [{ translateY: overlayTranslateY }] }]}>
-              <SafeAreaView style={styles.searchOverlaySafeArea}>
+              <SafeAreaView style={[styles.searchOverlaySafeArea, { paddingTop: modalHeaderPaddingTop }]}>
                 <View style={styles.searchOverlayHeader}>
                   <TouchableOpacity style={styles.overlayIconButton} onPress={handleHideResults}>
                     <Text style={styles.overlayIconButtonText}>←</Text>
@@ -1949,16 +1948,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   searchErrorBanner: {
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#B91C1C',
     borderWidth: 1,
-    borderColor: '#FECACA',
+    borderColor: '#7F1D1D',
     borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 10,
     marginBottom: 16,
   },
   searchErrorText: {
-    color: '#B91C1C',
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'center',

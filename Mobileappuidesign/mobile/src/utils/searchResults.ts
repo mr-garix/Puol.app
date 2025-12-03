@@ -2,6 +2,7 @@ import { supabase } from '@/src/supabaseClient';
 
 import type { SearchCriteria } from '@/src/types/search';
 import type { Tables } from '@/src/types/supabase.generated';
+import { formatListingLocation } from '@/src/utils/location';
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
 
@@ -29,8 +30,7 @@ export type SearchResultCard = {
   title: string;
   propertyType: PropertyType;
   furnishingLabel: 'Meublé' | 'Non meublé';
-  city: string;
-  neighborhood: string;
+  locationLabel: string;
   priceDisplay: string;
   pricePeriodLabel: string;
   image: string;
@@ -125,19 +125,25 @@ const parseNumericValue = (value?: string | number | null) => {
   return Number.isFinite(numeric) ? numeric : undefined;
 };
 
+const isUsableUrl = (value?: string | null) => Boolean(value && value.trim().length > 0);
+
 const pickHeroImage = (listing: ListingWithRelations) => {
+  if (isUsableUrl(listing.cover_photo_url)) {
+    return listing.cover_photo_url as string;
+  }
+
   const media = listing.listing_media ?? [];
   if (media.length) {
     const sorted = [...media].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-    const photo = sorted.find((item) => item.media_type === 'photo' && item.media_url);
+    const photo = sorted.find((item) => item.media_type === 'photo' && isUsableUrl(item.media_url));
     if (photo?.media_url) {
       return photo.media_url;
     }
-    if (sorted[0]?.media_url) {
+    if (isUsableUrl(sorted[0]?.media_url)) {
       return sorted[0].media_url;
     }
   }
-  return listing.cover_photo_url ?? FALLBACK_IMAGE;
+  return FALLBACK_IMAGE;
 };
 
 const buildBadges = (listing: ListingWithRelations) => {
@@ -170,26 +176,138 @@ const formatPriceDisplay = (price?: number | null) => {
   return `${price.toLocaleString('fr-FR')} FCFA`;
 };
 
-const buildMatchScore = (listing: ListingWithRelations) => {
-  const bedrooms = listing.listing_rooms?.bedrooms ?? 1;
-  const capacityBoost = listing.capacity ? Math.min(10, Math.round(listing.capacity / 2)) : 0;
-  return Math.min(99, 68 + bedrooms * 4 + capacityBoost);
+type LocationMatchQuality = 'exact_address' | 'district_partial' | 'city_only' | 'none';
+
+const LOCATION_STOP_TOKENS = new Set(['cameroun', 'cameroon']);
+
+type ParsedLocationQuery = {
+  tokens: string[];
+  districtToken: string;
+  cityToken: string;
 };
 
 const extractLocationTokens = (location: string) =>
   location
-    .split(/[,|]/)
-    .map((token) => normalize(token))
-    .filter(Boolean);
+    .replace(/[|]/g, ',')
+    .split(',')
+    .flatMap((segment) => segment.split(/\s+/))
+    .map((token) => normalize(token.replace(/[^a-zA-ZÀ-ÿ0-9]/g, '')))
+    .filter((token) => token.length >= 3);
 
-const listingMatchesLocation = (listing: ListingWithRelations, tokens: string[]) => {
-  if (!tokens.length) {
-    return true;
-  }
-  const haystack = [listing.city, listing.district, listing.address_text, listing.title]
+const parseLocationQuery = (location: string): ParsedLocationQuery => {
+  const segments = location
+    .split(',')
+    .map((segment) => normalize(segment))
+    .filter((segment) => segment && !LOCATION_STOP_TOKENS.has(segment));
+
+  const districtToken = segments[0] ?? '';
+  const cityToken = segments.length > 1 ? segments[segments.length - 1] : '';
+  const tokens = extractLocationTokens(location).filter((token) => !LOCATION_STOP_TOKENS.has(token));
+
+  return {
+    tokens,
+    districtToken,
+    cityToken,
+  };
+};
+
+const buildLocationHaystack = (listing: ListingWithRelations) =>
+  [listing.city, listing.district, listing.address_text, listing.title]
     .filter(Boolean)
     .map((value) => normalize(String(value)));
-  return tokens.every((token) => haystack.some((entry) => entry.includes(token)));
+
+const hasTokenMatch = (haystack: string[], token: string) => haystack.some((entry) => entry.includes(token));
+
+const matchesPriorityDistrictToken = (listing: ListingWithRelations, token: string) => {
+  if (!token) {
+    return false;
+  }
+
+  const normalizedToken = normalize(token);
+  if (!normalizedToken) {
+    return false;
+  }
+
+  const normalizedAddress = normalize(listing.address_text ?? '');
+  if (normalizedAddress.includes(normalizedToken)) {
+    return true;
+  }
+
+  const listingDistrict = normalize(listing.district ?? '');
+  if (listingDistrict.includes(normalizedToken)) {
+    return true;
+  }
+
+  return false;
+};
+
+const compressAddress = (value: string) => value.replace(/[,\s]+/g, '');
+
+const evaluateLocationMatch = (listing: ListingWithRelations, criteria: SearchCriteria): LocationMatchQuality => {
+  const rawCriteria = criteria.location ?? '';
+  const query = parseLocationQuery(rawCriteria);
+
+  if (!query.tokens.length && !query.districtToken) {
+    return 'none';
+  }
+
+  const normalizedCriteria = normalize(rawCriteria);
+  const normalizedAddress = normalize(listing.address_text ?? '');
+  const normalizedDistrict = normalize(listing.district ?? '');
+  const normalizedCity = normalize(listing.city ?? '');
+  const normalizedDistrictToken = normalize(query.districtToken);
+  const normalizedCityToken = normalize(query.cityToken);
+
+  const compactCriteria = compressAddress(normalizedCriteria);
+  const compactAddress = compressAddress(normalizedAddress);
+  const compactDistrictCity = compressAddress(
+    normalize([listing.district, listing.city].filter(Boolean).join(', ')),
+  );
+
+  if (compactCriteria && compactCriteria.length >= 3) {
+    if (compactAddress && compactCriteria === compactAddress) {
+      return 'exact_address';
+    }
+    if (compactDistrictCity && compactCriteria === compactDistrictCity) {
+      return 'exact_address';
+    }
+  }
+
+  const tokensExcludingCity = query.tokens.filter((token) => token && token !== normalizedCityToken);
+  const hasAddressTokenMatch = tokensExcludingCity.some(
+    (token) => normalizedAddress.includes(token) || normalizedDistrict.includes(token),
+  );
+
+  if (!hasAddressTokenMatch && normalizedDistrictToken) {
+    if (normalizedAddress.includes(normalizedDistrictToken) || normalizedDistrict.includes(normalizedDistrictToken)) {
+      return 'district_partial';
+    }
+  }
+
+  if (hasAddressTokenMatch) {
+    return 'district_partial';
+  }
+
+  if (normalizedCityToken && normalizedCity.includes(normalizedCityToken)) {
+    return 'city_only';
+  }
+
+  return 'none';
+};
+
+const matchesPropertyTypePreference = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const requestedType = normalize(criteria.type ?? '');
+  if (!requestedType) {
+    return true;
+  }
+  return normalizePropertyType(listing.property_type) === requestedType;
+};
+
+const matchesFurnishingPreference = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  if (!criteria.furnishingType) {
+    return true;
+  }
+  return listing.is_furnished === (criteria.furnishingType === 'furnished');
 };
 
 const listingMatchesPrice = (listing: ListingWithRelations, criteria: SearchCriteria) => {
@@ -199,77 +317,184 @@ const listingMatchesPrice = (listing: ListingWithRelations, criteria: SearchCrit
   return price >= minPrice && price <= maxPrice;
 };
 
-const listingMatchesRooms = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+const computeRoomCoverageScore = (listing: ListingWithRelations, criteria: SearchCriteria) => {
   const rooms = listing.listing_rooms;
-  const bedrooms = rooms?.bedrooms ?? 0;
-  const bathrooms = rooms?.bathrooms ?? 0;
-  const kitchens = rooms?.kitchen ?? 0;
-  const livingRooms = rooms?.living_room ?? 0;
+  if (!rooms) {
+    return 0;
+  }
 
-  return (
-    bedrooms >= (criteria.bedrooms ?? 0) &&
-    bathrooms >= (criteria.bathrooms ?? 0) &&
-    kitchens >= (criteria.kitchens ?? 0) &&
-    livingRooms >= (criteria.livingRooms ?? 0)
-  );
+  const requirements = [
+    { actual: rooms.bedrooms ?? 0, required: criteria.bedrooms ?? 0 },
+    { actual: rooms.bathrooms ?? 0, required: criteria.bathrooms ?? 0 },
+    { actual: rooms.kitchen ?? 0, required: criteria.kitchens ?? 0 },
+    { actual: rooms.living_room ?? 0, required: criteria.livingRooms ?? 0 },
+  ];
+
+  const requested = requirements.filter((entry) => entry.required > 0);
+  if (!requested.length) {
+    return 0;
+  }
+
+  const satisfied = requested.filter((entry) => entry.actual >= entry.required).length;
+  return Math.round((satisfied / requested.length) * 6);
 };
 
-const listingMatchesAmenities = (listing: ListingWithRelations, amenities: string[]) => {
-  if (!amenities.length) {
-    return true;
+const computeAmenityMatchScore = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const requested = criteria.amenities ?? [];
+  if (!requested.length) {
+    return 0;
   }
+
   const features = listing.listing_features;
   if (!features) {
-    return false;
+    return 0;
   }
 
-  return amenities.every((amenityId) => {
+  let satisfied = 0;
+  requested.forEach((amenityId) => {
     const column = AMENITY_COLUMN_MAP[amenityId];
     if (!column) {
-      return true;
+      return;
     }
-    if (column === 'near_main_road') {
-      return Boolean(features.near_main_road);
+    const hasAmenity =
+      column === 'near_main_road' ? Boolean(features.near_main_road) : Boolean(features[column]);
+    if (hasAmenity) {
+      satisfied += 1;
     }
-    return Boolean(features[column]);
   });
+
+  return Math.round((satisfied / requested.length) * 4);
 };
 
-const listingMatchesFurnishing = (listing: ListingWithRelations, criteria: SearchCriteria) => {
-  if (!criteria.furnishingType || criteria.type === 'boutique') {
-    return true;
+const computePriceScore = (
+  listing: ListingWithRelations,
+  criteria: SearchCriteria,
+  { prioritize }: { prioritize: boolean },
+) => {
+  const matches = listingMatchesPrice(listing, criteria);
+  if (prioritize) {
+    return matches ? 12 : -8;
   }
-  return listing.is_furnished === (criteria.furnishingType === 'furnished');
+  return matches ? 8 : -3;
 };
 
-const listingMatchesCriteria = (listing: ListingWithRelations, criteria: SearchCriteria) => {
-  const locationTokens = extractLocationTokens(criteria.location ?? '');
-  const matchesLocation = listingMatchesLocation(listing, locationTokens);
-  const listingType = normalizePropertyType(listing.property_type);
-  const matchesType = criteria.type ? listingType === criteria.type : true;
-
-  return (
-    matchesLocation &&
-    matchesType &&
-    listingMatchesFurnishing(listing, criteria) &&
-    listingMatchesRooms(listing, criteria) &&
-    listingMatchesPrice(listing, criteria) &&
-    listingMatchesAmenities(listing, criteria.amenities ?? [])
-  );
+type ListingEvaluation = {
+  listing: ListingWithRelations;
+  score: number;
+  matchedPrimary: boolean;
+  locationQuality: LocationMatchQuality;
+  prioritizedDistrictMatch: boolean;
+  hasLocationFilter: boolean;
 };
 
-const mapListingToResult = (listing: ListingWithRelations): SearchResultCard => {
+const computeMatchScore = (
+  listing: ListingWithRelations,
+  criteria: SearchCriteria,
+  options: {
+    locationQuality: LocationMatchQuality;
+    matchesType: boolean;
+    matchesFurnishing: boolean;
+    prioritizePrice: boolean;
+    hasLocationFilter: boolean;
+  },
+) => {
+  let score = 8;
+
+  if (options.hasLocationFilter) {
+    switch (options.locationQuality) {
+      case 'exact_address':
+        score += 65;
+        break;
+      case 'district_partial':
+        score += 55;
+        break;
+      case 'city_only':
+        score += 10;
+        break;
+      default:
+        score -= 30;
+        break;
+    }
+  }
+
+  if (options.matchesType) {
+    score += 20;
+  } else if (criteria.type) {
+    score -= 10;
+  }
+
+  if (options.matchesFurnishing) {
+    score += 10;
+  } else if (criteria.furnishingType) {
+    score -= 5;
+  }
+
+  score += computePriceScore(listing, criteria, { prioritize: options.prioritizePrice });
+
+  const roomScore = computeRoomCoverageScore(listing, criteria);
+  if (roomScore > 0) {
+    score += roomScore;
+  }
+
+  const amenityScore = computeAmenityMatchScore(listing, criteria);
+  if (amenityScore > 0) {
+    score += amenityScore;
+  }
+
+  if (listing.capacity) {
+    score += Math.min(4, Math.round(listing.capacity / 2));
+  }
+
+  return Math.min(99, Math.max(0, Math.round(score)));
+};
+
+const evaluateListing = (
+  listing: ListingWithRelations,
+  criteria: SearchCriteria,
+  options: { priorityDistrictToken: string },
+): ListingEvaluation => {
+  const locationQuality = evaluateLocationMatch(listing, criteria);
+  const matchesType = matchesPropertyTypePreference(listing, criteria);
+  const matchesFurnishing = matchesFurnishingPreference(listing, criteria);
+  const prioritizePrice = (criteria.furnishingType ?? '') === 'furnished';
+  const prioritizedDistrictMatch = matchesPriorityDistrictToken(listing, options.priorityDistrictToken);
+  const hasLocationFilter = Boolean(normalize(criteria.location ?? ''));
+  const score = computeMatchScore(listing, criteria, {
+    locationQuality,
+    matchesType,
+    matchesFurnishing,
+    prioritizePrice,
+    hasLocationFilter,
+  });
+
+  return {
+    listing,
+    score,
+    matchedPrimary: locationQuality === 'exact_address' && matchesType && matchesFurnishing,
+    locationQuality,
+    prioritizedDistrictMatch,
+    hasLocationFilter,
+  };
+};
+
+const mapListingToResult = (listing: ListingWithRelations, score: number): SearchResultCard => {
   const typeKey = normalizePropertyType(listing.property_type);
   const furnishingLabel = listing.is_furnished ? 'Meublé' : 'Non meublé';
   const rooms = listing.listing_rooms;
+  const locationLabel =
+    formatListingLocation({
+      district: listing.district,
+      city: listing.city,
+      addressText: listing.address_text,
+      fallback: 'Localisation à venir',
+    }) || 'Localisation à venir';
 
   return {
     id: listing.id,
     title: listing.title,
     propertyType: typeKey,
     furnishingLabel,
-    city: listing.city ?? 'Ville à venir',
-    neighborhood: listing.district ?? listing.city ?? 'Quartier à venir',
+    locationLabel,
     priceDisplay: formatPriceDisplay(listing.price_per_night),
     pricePeriodLabel: PRICE_PERIOD_LABEL,
     image: pickHeroImage(listing),
@@ -279,32 +504,14 @@ const mapListingToResult = (listing: ListingWithRelations): SearchResultCard => 
     bathrooms: rooms?.bathrooms ?? 1,
     kitchens: rooms?.kitchen ?? 1,
     surfaceAreaLabel: undefined,
-    matchScore: buildMatchScore(listing),
+    matchScore: score,
   } satisfies SearchResultCard;
 };
 
-const buildFallbackListings = (listings: ListingWithRelations[], criteria: SearchCriteria) => {
-  const locationTokens = extractLocationTokens(criteria.location ?? '');
-  const typeMatches = criteria.type ? listings.filter((listing) => listing.property_type === criteria.type) : [];
-  const locationMatches = locationTokens.length
-    ? listings.filter((listing) => listingMatchesLocation(listing, locationTokens))
-    : [];
-
-  const ordered = [...typeMatches, ...locationMatches, ...listings];
-  const deduped: ListingWithRelations[] = [];
-  const seen = new Set<string>();
-
-  ordered.forEach((listing) => {
-    if (!seen.has(listing.id)) {
-      seen.add(listing.id);
-      deduped.push(listing);
-    }
-  });
-
-  return deduped.slice(0, FALLBACK_LIMIT);
-};
-
 export const searchListings = async (criteria: SearchCriteria): Promise<SearchResponse> => {
+  const parsedLocationQuery = parseLocationQuery(criteria.location ?? '');
+  const priorityDistrictToken = parsedLocationQuery.districtToken || parsedLocationQuery.tokens[0] || '';
+
   const { data, error } = await supabase
     .from('listings')
     .select(SEARCH_SELECT)
@@ -318,18 +525,113 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
   }
 
   const listings = data ?? [];
-  const matches = listings.filter((listing) => listingMatchesCriteria(listing, criteria));
+  const evaluations = listings.map((listing) =>
+    evaluateListing(listing, criteria, { priorityDistrictToken }),
+  );
+  const hasPrimaryMatch = evaluations.some((evaluation) => evaluation.matchedPrimary);
+  const bestScore = evaluations.reduce((max, evaluation) => Math.max(max, evaluation.score), 0);
 
-  if (matches.length) {
+  const sortByScoreDesc = (a: ListingEvaluation, b: ListingEvaluation) => b.score - a.score;
+  const toResult = (evaluation: ListingEvaluation) => mapListingToResult(evaluation.listing, evaluation.score);
+
+  const rankEvaluations = (
+    pool: ListingEvaluation[],
+    limit: number,
+    fallbackLimitOverride?: number,
+  ): { ordered: ListingEvaluation[]; usedFallback: boolean } => {
+    if (!pool.length || limit <= 0) {
+      return { ordered: [], usedFallback: false };
+    }
+
+    const primaryMatches = pool.filter((evaluation) => evaluation.matchedPrimary);
+    if (primaryMatches.length) {
+      const orderedPrimary = [...primaryMatches].sort(sortByScoreDesc);
+      const filled: ListingEvaluation[] = orderedPrimary.slice(0, limit);
+
+      if (filled.length < limit) {
+        const locationWeight = (quality: LocationMatchQuality) => {
+          switch (quality) {
+            case 'exact_address':
+              return 3;
+            case 'district_partial':
+              return 2;
+            case 'city_only':
+              return 1;
+            default:
+              return 0;
+          }
+        };
+        const secondary = pool
+          .filter((evaluation) => !evaluation.matchedPrimary)
+          .sort((a, b) => {
+            const diff = locationWeight(b.locationQuality) - locationWeight(a.locationQuality);
+            if (diff !== 0) {
+              return diff;
+            }
+            return sortByScoreDesc(a, b);
+          });
+
+        for (const evaluation of secondary) {
+          if (filled.length >= limit) {
+            break;
+          }
+          filled.push(evaluation);
+        }
+      }
+
+      return { ordered: filled.slice(0, limit), usedFallback: false };
+    }
+
+    const fallbackLimit = Math.min(limit, fallbackLimitOverride ?? FALLBACK_LIMIT);
+    const fallbackCandidates = pool
+      .filter((evaluation) => evaluation.locationQuality !== 'none')
+      .sort((a, b) => {
+        const weight = (quality: LocationMatchQuality) => {
+          switch (quality) {
+            case 'exact_address':
+              return 3;
+            case 'district_partial':
+              return 2;
+            case 'city_only':
+              return 1;
+            default:
+              return 0;
+          }
+        };
+
+        const locationDiff = weight(b.locationQuality) - weight(a.locationQuality);
+        if (locationDiff !== 0) {
+          return locationDiff;
+        }
+
+        return sortByScoreDesc(a, b);
+      });
+
+    const fallbackSource = fallbackCandidates.length ? fallbackCandidates : [...pool].sort(sortByScoreDesc);
     return {
-      results: matches.slice(0, RESULT_LIMIT).map(mapListingToResult),
-      isFallback: false,
+      ordered: fallbackSource.slice(0, fallbackLimit),
+      usedFallback: true,
     };
-  }
+  };
 
-  const fallback = buildFallbackListings(listings, criteria).map(mapListingToResult);
+  const hasPriorityToken = Boolean(priorityDistrictToken);
+  const prioritizedEvaluations = hasPriorityToken
+    ? evaluations.filter((evaluation) => evaluation.prioritizedDistrictMatch)
+    : [];
+  const secondaryPool = hasPriorityToken
+    ? evaluations.filter((evaluation) => !evaluation.prioritizedDistrictMatch)
+    : evaluations;
+
+  const prioritizedRank = rankEvaluations(prioritizedEvaluations, RESULT_LIMIT);
+  const remainingLimit = RESULT_LIMIT - prioritizedRank.ordered.length;
+  const secondaryRank = remainingLimit > 0
+    ? rankEvaluations(secondaryPool, remainingLimit, remainingLimit)
+    : { ordered: [], usedFallback: false };
+
+  const combined = [...prioritizedRank.ordered, ...secondaryRank.ordered];
+
   return {
-    results: fallback,
-    isFallback: true,
+    results: combined.map(toResult),
+    isFallback: !hasPrimaryMatch && bestScore < 65,
   };
 };

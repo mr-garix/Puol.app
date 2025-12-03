@@ -138,15 +138,21 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
   const hasDiscount = (reservation.discountAmount ?? 0) > 0;
   const hasOriginalPrice = (reservation.originalTotal ?? reservation.totalPrice) > reservation.totalPrice;
 
-  const displayAddress = reservation.propertyAddress || reservation.propertyLocation;
-  const displayLocation = reservation.propertyLocation || reservation.propertyAddress;
+  const trimmedAddress = reservation.propertyAddress?.trim();
+  const displayLocation = trimmedAddress && trimmedAddress.length > 0
+    ? trimmedAddress
+    : reservation.propertyLocation;
+  const displayAddress = displayLocation || '';
   const hostName = hostProfile?.name || reservation.hostName;
   const hostAvatar = hostProfile?.avatarUrl ?? reservation.hostAvatar ?? reservation.propertyImage;
   const hostRole = hostProfile?.username ?? reservation.hostUsername ?? 'Hôte';
   const hostPhone = hostProfile?.phone ?? reservation.hostPhone;
 
   const handleOpenMaps = () => {
-    const encoded = encodeURIComponent(displayAddress);
+    if (!displayLocation) {
+      return;
+    }
+    const encoded = encodeURIComponent(displayLocation);
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encoded}`);
   };
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Modal,
@@ -20,23 +21,16 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 import type { SearchCriteria, FurnishingPreference } from '@/src/types/search';
+import { createPlacesSessionToken, fetchPlaceSuggestions, type PlaceSuggestion } from '@/src/features/search/services/googlePlaces';
+import { fetchListingAddressSuggestions, type ListingAddressSuggestion } from '@/src/features/search/services/listingAddresses';
+import { formatAddressLine, formatDistrictCity } from '@/src/utils/location';
+import { trackAnalyticsEvent } from '@/src/infrastructure/analytics';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const isIOS = Platform.OS === 'ios';
 const SCROLL_BASE_OFFSET = 48;
 const STAGGER_BLOCKS = ['location', 'type', 'criteria', 'options'] as const;
 type StaggerKey = (typeof STAGGER_BLOCKS)[number];
-
-const cameroonLocations = [
-  { name: 'Bonamoussadi', city: 'Douala', description: 'Quartier résidentiel calme et moderne' },
-  { name: 'Bonapriso', city: 'Douala', description: 'Quartier huppé avec commodités' },
-  { name: 'Akwa', city: 'Douala', description: 'Centre-ville dynamique' },
-  { name: 'Bepanda', city: 'Douala', description: 'Quartier animé et accessible' },
-  { name: 'Makepe', city: 'Douala', description: 'Zone commerciale et résidentielle' },
-  { name: 'Bastos', city: 'Yaoundé', description: 'Quartier diplomatique de prestige' },
-  { name: 'Odza', city: 'Yaoundé', description: 'Quartier universitaire vivant' },
-  { name: 'Melen', city: 'Yaoundé', description: 'Zone populaire et accessible' },
-];
 
 type FeatherIconName = React.ComponentProps<typeof Feather>['name'];
 type MaterialIconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -96,6 +90,16 @@ type SearchModalProps = {
   onSearch: (criteria: SearchCriteria) => void;
 };
 
+type FieldErrorKey = 'location' | 'type' | 'furnishing';
+
+type SuggestionSelectionMeta = {
+  source: 'google' | 'internal';
+  primary?: string;
+  secondary?: string;
+  listingId?: string | null;
+  placeId?: string | null;
+};
+
 export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSearch }) => {
   const [locationSearch, setLocationSearch] = useState('');
   const [selectedLocation, setSelectedLocation] = useState('');
@@ -112,8 +116,14 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
   const [maxPrice, setMaxPrice] = useState('300000');
   const [selectedAmenities, setSelectedAmenities] = useState<string[]>([]);
   const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+  const [placesSuggestions, setPlacesSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [internalSuggestions, setInternalSuggestions] = useState<ListingAddressSuggestion[]>([]);
+  const [isPlacesLoading, setIsPlacesLoading] = useState(false);
+  const [isInternalLoading, setIsInternalLoading] = useState(false);
+  const suggestionsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const placesSessionTokenRef = useRef<string | null>(null);
   const [openSection, setOpenSection] = useState(1);
-  const [showValidationError, setShowValidationError] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldErrorKey, string>>>({});
   const [iosDatePicker, setIosDatePicker] = useState<{ mode: 'arrival' | 'departure'; date: Date } | null>(null);
 
   const today = useMemo(() => {
@@ -141,6 +151,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
     [blockAnimations],
   );
   const scrollViewRef = useRef<ScrollView | null>(null);
+  const locationInputRef = useRef<TextInput | null>(null);
   const sectionLayouts = useRef<Record<number, number>>({});
   const anchorLayouts = useRef<Record<string, number>>({});
   const previousOpenSection = useRef(openSection);
@@ -151,6 +162,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
 
   useEffect(() => {
     if (visible) {
+      setFieldErrors({});
       Animated.parallel([
         Animated.timing(fadeAnim, {
           toValue: 1,
@@ -318,16 +330,72 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
     }
   }, [openSection, hasCriteriaInput]);
 
-  const filteredLocations = useMemo(() => {
-    if (!locationSearch) return cameroonLocations;
-    const query = locationSearch.toLowerCase();
-    return cameroonLocations.filter(
-      (loc) =>
-        loc.name.toLowerCase().includes(query) ||
-        loc.city.toLowerCase().includes(query) ||
-        loc.description.toLowerCase().includes(query),
-    );
-  }, [locationSearch]);
+  type CombinedSuggestion = {
+    id: string;
+    primary: string;
+    secondary?: string;
+    description?: string;
+    source: 'google' | 'internal';
+    payload: PlaceSuggestion | ListingAddressSuggestion;
+  };
+
+  const combinedSuggestions = useMemo<CombinedSuggestion[]>(() => {
+    const seen = new Set<string>();
+    const entries: CombinedSuggestion[] = [];
+
+    internalSuggestions.forEach((suggestion) => {
+      const id = suggestion.id;
+      if (seen.has(id)) {
+        return;
+      }
+      entries.push({
+        id,
+        primary: suggestion.primary,
+        secondary: suggestion.secondary,
+        description: suggestion.description,
+        source: 'internal',
+        payload: suggestion,
+      });
+      seen.add(id);
+    });
+
+    placesSuggestions.forEach((suggestion) => {
+      const id = suggestion.id || `${suggestion.primary}-${suggestion.secondary ?? ''}`;
+      if (seen.has(id)) {
+        return;
+      }
+      entries.push({
+        id,
+        primary: suggestion.primary,
+        secondary: suggestion.secondary,
+        description: suggestion.description,
+        source: 'google',
+        payload: suggestion,
+      });
+      seen.add(id);
+    });
+
+    return entries;
+  }, [internalSuggestions, placesSuggestions]);
+
+  const hasDynamicSuggestions = combinedSuggestions.length > 0;
+  const isAnySuggestionsLoading = isPlacesLoading || isInternalLoading;
+  const showEmptyState = !isAnySuggestionsLoading && !hasDynamicSuggestions && locationSearch.trim().length > 0;
+
+  const logSuggestionSelection = useCallback(
+    (meta: SuggestionSelectionMeta) => {
+      const query = locationSearch.trim();
+      trackAnalyticsEvent({
+        name: 'search_suggestion_selected',
+        properties: {
+          ...meta,
+          query,
+          queryLength: query.length,
+        },
+      });
+    },
+    [locationSearch],
+  );
 
   const formatDateForDisplay = useCallback((value: string) => {
     if (!value) return 'Sélectionner';
@@ -389,15 +457,165 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
     [arrivalDate, departureDate, parseStoredDate, applyDateSelection, today],
   );
 
-  const handleLocationSelect = (location: (typeof cameroonLocations)[0]) => {
-    const value = `${location.name}, ${location.city}`;
-    setSelectedLocation(value);
-    setLocationSearch(value);
-    setShowLocationDropdown(false);
-    Keyboard.dismiss();
-    setOpenSection((prev) => (prev < 2 ? 2 : prev));
-    gentlyRevealSection(2);
+  const normalizeToken = useCallback((value?: string | null) => value?.trim().toLowerCase() ?? '', []);
+
+  const stripCountrySegments = useCallback(
+    (value?: string | null) => {
+      if (!value) {
+        return undefined;
+      }
+
+      const parts = String(value)
+        .split(',')
+        .map((part) => part.trim())
+        .filter((part) => {
+          const normalized = normalizeToken(part);
+          return normalized && normalized !== 'cameroun' && normalized !== 'cameroon';
+        });
+
+      if (!parts.length) {
+        return undefined;
+      }
+
+      return parts.join(', ');
+    },
+    [normalizeToken],
+  );
+
+  const clearFieldError = useCallback((key: FieldErrorKey) => {
+    setFieldErrors((prev) => {
+      if (!prev[key]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const applyLocationSelection = useCallback(
+    (value: string) => {
+      setSelectedLocation(value);
+      setLocationSearch(value);
+      setShowLocationDropdown(false);
+      setPlacesSuggestions([]);
+      setInternalSuggestions([]);
+      setIsPlacesLoading(false);
+      setIsInternalLoading(false);
+      locationInputRef.current?.blur();
+      Keyboard.dismiss();
+      clearFieldError('location');
+      setOpenSection((prev) => (prev < 2 ? 2 : prev));
+      gentlyRevealSection(2);
+    },
+    [clearFieldError, gentlyRevealSection],
+  );
+
+  const handlePlaceSuggestionSelect = (suggestion: PlaceSuggestion) => {
+    logSuggestionSelection({
+      source: 'google',
+      primary: suggestion.primary,
+      secondary: suggestion.secondary,
+      placeId: suggestion.id ?? null,
+    });
+    const sanitizedPrimary = stripCountrySegments(suggestion.primary) ?? suggestion.primary;
+    const sanitizedSecondary = stripCountrySegments(suggestion.secondary);
+    const sanitizedDescription = stripCountrySegments(suggestion.description) ?? suggestion.description;
+
+    const value =
+      formatDistrictCity(sanitizedPrimary, sanitizedSecondary, { fallback: sanitizedDescription }) ||
+      sanitizedDescription ||
+      sanitizedPrimary;
+    applyLocationSelection(value);
   };
+
+  const handleListingSuggestionSelect = (suggestion: ListingAddressSuggestion) => {
+    logSuggestionSelection({
+      source: 'internal',
+      primary: suggestion.primary,
+      secondary: suggestion.secondary,
+      listingId: suggestion.listingId ?? null,
+    });
+    const value =
+      formatAddressLine(suggestion.description, suggestion.district, suggestion.city, { fallback: suggestion.primary }) ||
+      suggestion.primary;
+    applyLocationSelection(value);
+  };
+
+  useEffect(() => {
+    if (suggestionsDebounceRef.current) {
+      clearTimeout(suggestionsDebounceRef.current);
+      suggestionsDebounceRef.current = null;
+    }
+
+    const query = locationSearch.trim();
+    if (!query) {
+      setPlacesSuggestions([]);
+      setInternalSuggestions([]);
+      setIsPlacesLoading(false);
+      setIsInternalLoading(false);
+      return;
+    }
+
+    setIsPlacesLoading(true);
+    setIsInternalLoading(true);
+    let isActive = true;
+
+    suggestionsDebounceRef.current = setTimeout(() => {
+      const sessionToken = placesSessionTokenRef.current ?? createPlacesSessionToken();
+      placesSessionTokenRef.current = sessionToken;
+
+      fetchPlaceSuggestions(query, sessionToken)
+        .then((suggestions) => {
+          if (!isActive) {
+            return;
+          }
+          setPlacesSuggestions(suggestions);
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn('[SearchModal] Google Places suggestions failed', error);
+          setPlacesSuggestions([]);
+        })
+        .finally(() => {
+          if (!isActive) {
+            return;
+          }
+          setIsPlacesLoading(false);
+        });
+
+      fetchListingAddressSuggestions(query)
+        .then((suggestions) => {
+          if (!isActive) {
+            return;
+          }
+          setInternalSuggestions(suggestions);
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn('[SearchModal] internal suggestions failed', error);
+          setInternalSuggestions([]);
+        })
+        .finally(() => {
+          if (!isActive) {
+            return;
+          }
+          setIsInternalLoading(false);
+        });
+    }, 220);
+
+    return () => {
+      isActive = false;
+      if (suggestionsDebounceRef.current) {
+        clearTimeout(suggestionsDebounceRef.current);
+        suggestionsDebounceRef.current = null;
+      }
+    };
+  }, [locationSearch]);
 
   const toggleAmenity = (amenityId: string) => {
     setSelectedAmenities((prev) =>
@@ -421,21 +639,35 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
     setSelectedAmenities([]);
     setSurfaceArea('');
     setOpenSection(1);
+    setFieldErrors({});
     gentlyRevealSection(1);
   };
 
   const handleSearch = () => {
-    const missing: string[] = [];
+    const errors: Partial<Record<FieldErrorKey, string>> = {};
 
-    if (!selectedLocation) missing.push('lieu');
-    if (!selectedType) missing.push('type de logement');
-    if (!isBoutique && !furnishingType) missing.push('meublé / non meublé');
+    if (!selectedLocation.trim()) {
+      errors.location = 'Veuillez indiquer un lieu.';
+    }
+    if (!selectedType) {
+      errors.type = 'Veuillez choisir un type de logement.';
+    }
+    if (!isBoutique && !furnishingType) {
+      errors.furnishing = 'Veuillez préciser Meublé ou Non meublé.';
+    }
 
-    if (missing.length) {
-      setShowValidationError(true);
-      setTimeout(() => setShowValidationError(false), 3500);
+    const hasErrors = Object.keys(errors).length > 0;
+    if (hasErrors) {
+      setFieldErrors(errors);
+      if (errors.location) {
+        setOpenSection(1);
+      } else if (errors.type || errors.furnishing) {
+        setOpenSection((prev) => (prev < 2 ? 2 : prev));
+      }
       return;
     }
+
+    setFieldErrors({});
 
     const criteria: SearchCriteria = {
       location: selectedLocation,
@@ -451,6 +683,26 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
       amenities: selectedAmenities,
       surfaceArea: isBoutique ? surfaceArea : '',
     };
+
+    trackAnalyticsEvent({
+      name: 'search_submitted',
+      properties: {
+        location: criteria.location,
+        type: criteria.type,
+        furnishingType: criteria.furnishingType || 'any',
+        hasArrivalDate: Boolean(arrivalDate),
+        hasDepartureDate: Boolean(departureDate),
+        bedrooms: bedrooms || 0,
+        bathrooms: bathrooms || 0,
+        kitchens: kitchens || 0,
+        livingRooms: livingRooms || 0,
+        minPrice: criteria.priceRange.min,
+        maxPrice: criteria.priceRange.max,
+        amenitiesCount: criteria.amenities.length,
+        queryLength: selectedLocation.trim().length,
+        isBoutique,
+      },
+    });
 
     onSearch(criteria);
     onClose();
@@ -512,20 +764,21 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                 style={styles.scrollView}
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
+                keyboardShouldPersistTaps="always"
               >
                 {/* Section 1 - Lieu */}
                 <Animated.View style={[styles.section, blockStyle('location')]} onLayout={handleSectionLayout(1)}>
                   <TouchableOpacity style={styles.sectionHeader} onPress={() => setOpenSection(openSection >= 1 ? 0 : 1)}>
                     <Text style={styles.sectionTitle}>Où souhaites-tu louer ?</Text>
-                    {!!selectedLocation && <Text style={styles.checkMark}>✓</Text>}
+                    {!!selectedLocation && !fieldErrors.location && <Text style={styles.checkMark}>✓</Text>}
                   </TouchableOpacity>
 
                   {openSection >= 1 && (
                     <View style={styles.sectionContent}>
-                      <View style={styles.searchInputWrapper}>
+                      <View style={[styles.searchInputWrapper, fieldErrors.location ? styles.fieldErrorOutline : undefined]}>
                         <View style={styles.leadingIconWrapper}>{renderIcon(ICONS.search, 16, '#7D8897')}</View>
                         <TextInput
+                          ref={locationInputRef}
                           placeholder="Rechercher par quartier / ville"
                           placeholderTextColor="#8C8C8C"
                           style={styles.searchInput}
@@ -537,25 +790,46 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                           onChangeText={(text) => {
                             setLocationSearch(text);
                             setShowLocationDropdown(true);
+                            if (text.trim().length > 0) {
+                              clearFieldError('location');
+                            }
                           }}
                         />
                       </View>
+                      {fieldErrors.location ? <Text style={styles.fieldErrorText}>{fieldErrors.location}</Text> : null}
 
-                      {showLocationDropdown && filteredLocations.length > 0 && (
+                      {showLocationDropdown && (
                         <View style={styles.dropdown}>
-                          {filteredLocations.slice(0, 6).map((location) => (
-                            <TouchableOpacity
-                              key={location.name}
-                              style={styles.dropdownItem}
-                              onPress={() => handleLocationSelect(location)}
-                            >
-                              <View style={styles.dropdownIconBubble}>{renderIcon(ICONS.location, 20)}</View>
-                              <View style={styles.dropdownTexts}>
-                                <Text style={styles.dropdownTitle}>{`${location.name}, ${location.city}`}</Text>
-                                <Text style={styles.dropdownSubtitle}>{location.description}</Text>
+                          {hasDynamicSuggestions ? (
+                            combinedSuggestions.slice(0, 6).map((suggestion, index) => {
+                              const isGoogle = suggestion.source === 'google';
+                              const key = `${suggestion.id}-${index}`;
+                              return (
+                                <TouchableOpacity
+                                  key={key}
+                                  style={styles.dropdownItem}
+                                  onPress={() =>
+                                    isGoogle
+                                      ? handlePlaceSuggestionSelect(suggestion.payload as PlaceSuggestion)
+                                      : handleListingSuggestionSelect(suggestion.payload as ListingAddressSuggestion)
+                                  }
+                                >
+                                  <View style={styles.dropdownIconBubble}>{renderIcon(ICONS.location, 20)}</View>
+                                  <View style={styles.dropdownTexts}>
+                                    <Text style={styles.dropdownTitle}>{suggestion.primary}</Text>
+                                    {!!suggestion.secondary && <Text style={styles.dropdownSubtitle}>{suggestion.secondary}</Text>}
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })
+                          ) : (
+                            showEmptyState && (
+                              <View style={styles.dropdownEmpty}>
+                                <Text style={styles.dropdownEmptyTitle}>Aucune suggestion</Text>
+                                <Text style={styles.dropdownEmptySubtitle}>Essayez un autre mot-clé ou une autre orthographe.</Text>
                               </View>
-                            </TouchableOpacity>
-                          ))}
+                            )
+                          )}
                         </View>
                       )}
                     </View>
@@ -566,48 +840,56 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                 <Animated.View style={[styles.section, blockStyle('type')]} onLayout={handleSectionLayout(2)}>
                   <TouchableOpacity style={styles.sectionHeader} onPress={() => setOpenSection(openSection >= 2 ? 1 : 2)}>
                     <Text style={styles.sectionTitle}>Quel type de logement ?</Text>
-                    {!!selectedType && <Text style={styles.checkMark}>✓</Text>}
+                    {!!selectedType && !fieldErrors.type && <Text style={styles.checkMark}>✓</Text>}
                   </TouchableOpacity>
 
                   {openSection >= 2 && (
                     <View style={styles.sectionContent}>
-                      <View style={styles.typeGrid}>
-                        {propertyTypes.map((type) => {
-                          const isSelected = selectedType === type.id;
-                          return (
-                            <TouchableOpacity
-                              key={type.id}
-                              style={[styles.typeCard, isSelected && styles.typeCardSelected]}
-                              onPress={() => {
-                                setSelectedType(type.id);
-                                if (type.id === 'boutique') {
-                                  setFurnishingType('');
-                                  setArrivalDate('');
-                                  setDepartureDate('');
-                                  setOpenSection((prev) => (prev < 3 ? 3 : prev));
-                                  gentlyRevealSection(3);
-                                } else {
-                                  setFurnishingType('');
-                                  setArrivalDate('');
-                                  setDepartureDate('');
-                                  gentlyRevealAnchor('furnishingSelector');
-                                }
-                              }}
-                            >
-                              <View style={styles.typeIconWrapper}>{renderIcon(type.icon, 20, isSelected ? '#2ECC71' : '#5C6675')}</View>
-                              <Text style={[styles.typeLabel, isSelected && styles.typeLabelSelected]}>{type.label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
+                      <View style={[styles.typeGridWrapper, fieldErrors.type ? styles.fieldErrorOutline : undefined]}>
+                        <View style={styles.typeGrid}>
+                          {propertyTypes.map((type) => {
+                            const isSelected = selectedType === type.id;
+                            return (
+                              <TouchableOpacity
+                                key={type.id}
+                                style={[styles.typeCard, isSelected && styles.typeCardSelected]}
+                                onPress={() => {
+                                  setSelectedType(type.id);
+                                  if (type.id === 'boutique') {
+                                    setFurnishingType('');
+                                    setArrivalDate('');
+                                    setDepartureDate('');
+                                    setOpenSection((prev) => (prev < 3 ? 3 : prev));
+                                    gentlyRevealSection(3);
+                                  } else {
+                                    setFurnishingType('');
+                                    setArrivalDate('');
+                                    setDepartureDate('');
+                                    gentlyRevealAnchor('furnishingSelector');
+                                  }
+                                  clearFieldError('type');
+                                  clearFieldError('furnishing');
+                                }}
+                              >
+                                <View style={styles.typeIconWrapper}>{renderIcon(type.icon, 20, isSelected ? '#2ECC71' : '#5C6675')}</View>
+                                <Text style={[styles.typeLabel, isSelected && styles.typeLabelSelected]}>{type.label}</Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
                       </View>
+                      {fieldErrors.type ? <Text style={styles.fieldErrorText}>{fieldErrors.type}</Text> : null}
 
                       {showFurnishingSelector && (
                         <View style={styles.subSection} onLayout={handleAnchorLayout('furnishingSelector')}>
                           <Text style={styles.subSectionLabel}>Type de location</Text>
-                          <View style={styles.inlineOptions}>
+                          <View style={[styles.inlineOptions, fieldErrors.furnishing ? styles.fieldErrorOutline : undefined]}>
                             <TouchableOpacity
                               style={[styles.inlineOption, furnishingType === 'furnished' && styles.inlineOptionActive]}
-                              onPress={() => setFurnishingType('furnished')}
+                              onPress={() => {
+                                setFurnishingType('furnished');
+                                clearFieldError('furnishing');
+                              }}
                             >
                               <Text
                                 style={[
@@ -627,6 +909,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                                 Keyboard.dismiss();
                                 setOpenSection((prev) => (prev < 3 ? 3 : prev));
                                 gentlyRevealSection(3);
+                                clearFieldError('furnishing');
                               }}
                             >
                               <Text
@@ -639,32 +922,9 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                               </Text>
                             </TouchableOpacity>
                           </View>
-                        </View>
-                      )}
-
-                      {furnishingType === 'furnished' && (
-                        <View style={styles.subSection} onLayout={handleAnchorLayout('datesSection')}>
-                          <Text style={styles.subSectionLabel}>Quand ?</Text>
-                          <View style={styles.dateRow}>
-                            <TouchableOpacity style={styles.datePickerButton} onPress={() => openDatePicker('arrival')}>
-                              <View style={styles.datePickerIcon}>{renderIcon(ICONS.calendar, 16, '#5C6675')}</View>
-                              <View style={styles.datePickerTexts}>
-                                <Text style={styles.dateLabel}>Arrivée</Text>
-                                <Text style={[styles.dateValueText, !arrivalDate && styles.dateValuePlaceholder]} numberOfLines={1}>
-                                  {formatDateForDisplay(arrivalDate)}
-                                </Text>
-                              </View>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={styles.datePickerButton} onPress={() => openDatePicker('departure')}>
-                              <View style={styles.datePickerIcon}>{renderIcon(ICONS.calendar, 16, '#5C6675')}</View>
-                              <View style={styles.datePickerTexts}>
-                                <Text style={styles.dateLabel}>Départ</Text>
-                                <Text style={[styles.dateValueText, !departureDate && styles.dateValuePlaceholder]} numberOfLines={1}>
-                                  {formatDateForDisplay(departureDate)}
-                                </Text>
-                              </View>
-                            </TouchableOpacity>
-                          </View>
+                          {fieldErrors.furnishing ? (
+                            <Text style={styles.fieldErrorText}>{fieldErrors.furnishing}</Text>
+                          ) : null}
                         </View>
                       )}
                     </View>
@@ -832,13 +1092,6 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
           )}
         </Animated.View>
 
-        {showValidationError && (
-          <View style={styles.validationToast}>
-            <Text style={styles.validationText}>
-              Merci de sélectionner un lieu, un type de logement et (si nécessaire) Meublé / Non meublé.
-            </Text>
-          </View>
-        )}
       </View>
     </Modal>
   );
@@ -991,14 +1244,51 @@ const styles = StyleSheet.create({
     color: '#121212',
   },
   dropdownSubtitle: {
+    marginTop: 2,
     fontSize: 12,
-    color: '#7D7D7D',
+    color: '#6B7280',
+  },
+  fieldErrorOutline: {
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
+  },
+  fieldErrorText: {
+    marginTop: 6,
+    fontSize: 12,
+    color: '#B91C1C',
+    fontWeight: '500',
+  },
+  dropdownEmpty: {
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    gap: 6,
+  },
+  dropdownEmptyTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111111',
+  },
+  dropdownEmptySubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: '#6B7280',
+    textAlign: 'center',
   },
   typeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     rowGap: 12,
+  },
+  typeGridWrapper: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    padding: 8,
+    backgroundColor: '#FFFFFF',
   },
   typeCard: {
     width: '31%',
@@ -1313,7 +1603,7 @@ const styles = StyleSheet.create({
     bottom: SCREEN_HEIGHT * 0.18,
     left: 20,
     right: 20,
-    backgroundColor: '#FF4D4F',
+    backgroundColor: '#B91C1C',
     borderRadius: 20,
     padding: 16,
     shadowColor: '#000',
@@ -1321,11 +1611,26 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
+    borderWidth: 1,
+    borderColor: '#7F1D1D',
   },
   validationText: {
+    marginTop: 12,
     color: '#FFFFFF',
     fontSize: 13,
     textAlign: 'center',
+    fontWeight: '600',
+  },
+  dropdownFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  dropdownFooterText: {
+    color: '#6B7280',
+    fontSize: 12,
   },
 });
-
