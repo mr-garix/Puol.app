@@ -19,9 +19,6 @@ type TrackListingViewParams = {
 };
 
 const VIEW_DURATION_THRESHOLD = 1; // secondes
-const VIEW_THROTTLE_MS = 5_000; // 5 secondes pour éviter les remounts rapides
-
-const lastRecordedViewAt = new Map<string, number>();
 
 function resolveDeviceCategory(): ListingViewInsert['device_category'] {
   const { width, height } = Dimensions.get('window');
@@ -69,26 +66,17 @@ function buildPayload(params: TrackListingViewParams): ListingViewInsert {
 
 export async function trackListingView(params: TrackListingViewParams): Promise<void> {
   if (!params.listingId || params.durationSeconds < VIEW_DURATION_THRESHOLD) {
-    return;
-  }
-
-  const now = Date.now();
-  const lastRecorded = lastRecordedViewAt.get(params.listingId);
-  if (lastRecorded && now - lastRecorded < VIEW_THROTTLE_MS) {
-    trackAnalyticsEvent({
-      name: 'listing_view_skipped_throttle',
-      properties: {
-        listingId: params.listingId,
-        source: params.source,
-        durationSeconds: params.durationSeconds,
-        sinceLastMs: now - lastRecorded,
-      },
+    console.log('[ListingView] skip - below threshold or missing listing', {
+      listingId: params.listingId,
+      durationSeconds: params.durationSeconds,
+      threshold: VIEW_DURATION_THRESHOLD,
     });
     return;
   }
 
   try {
     const payload = buildPayload(params);
+    console.log('[ListingView] attempting insert', payload);
 
     const { error } = await supabase.from('listing_views').insert(payload);
 
@@ -107,7 +95,6 @@ export async function trackListingView(params: TrackListingViewParams): Promise<
       return;
     }
 
-    lastRecordedViewAt.set(params.listingId, now);
     trackAnalyticsEvent({
       name: 'listing_view_recorded',
       properties: {

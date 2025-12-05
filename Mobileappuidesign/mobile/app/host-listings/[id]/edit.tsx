@@ -27,6 +27,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { PROPERTY_AMENITIES, type AmenityOption } from '@/src/constants/amenities';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 /*
@@ -251,42 +252,7 @@ type FeatherIconName = React.ComponentProps<typeof Feather>['name'];
 type MaterialIconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 type IconDescriptor = { library: 'Feather'; name: FeatherIconName } | { library: 'MaterialCommunityIcons'; name: MaterialIconName };
 
-type AmenityOption = {
-  id: string;
-  label: string;
-  icon: IconDescriptor;
-};
-
-const AMENITY_OPTIONS: AmenityOption[] = [
-  { id: 'ac', label: 'Climatisation', icon: { library: 'MaterialCommunityIcons', name: 'air-conditioner' } },
-  { id: 'wifi', label: 'Wifi', icon: { library: 'MaterialCommunityIcons', name: 'wifi' } },
-  { id: 'parking', label: 'Parking', icon: { library: 'MaterialCommunityIcons', name: 'parking' } },
-  { id: 'generator', label: 'Groupe électrogène', icon: { library: 'MaterialCommunityIcons', name: 'lightning-bolt-outline' } },
-  { id: 'housekeeping', label: 'Service ménage', icon: { library: 'MaterialCommunityIcons', name: 'broom' } },
-  { id: 'road-100', label: 'À 100 m de la route', icon: { library: 'MaterialCommunityIcons', name: 'road-variant' } },
-  { id: 'road-200', label: 'À +200 m de la route', icon: { library: 'MaterialCommunityIcons', name: 'map-marker-distance' } },
-  { id: 'prepaid-meter', label: 'Compteur prépayé', icon: { library: 'MaterialCommunityIcons', name: 'flash-outline' } },
-  { id: 'sonel-meter', label: 'Compteur SONEL', icon: { library: 'MaterialCommunityIcons', name: 'flash' } },
-  { id: 'borehole', label: 'Forage', icon: { library: 'MaterialCommunityIcons', name: 'water-pump' } },
-  { id: 'water-heater', label: 'Chauffe-eau', icon: { library: 'MaterialCommunityIcons', name: 'water-boiler' } },
-  { id: 'guard', label: 'Gardien', icon: { library: 'MaterialCommunityIcons', name: 'shield-account' } },
-  { id: 'cctv', label: 'Caméras de surveillance', icon: { library: 'MaterialCommunityIcons', name: 'cctv' } },
-  { id: 'fan', label: 'Ventilateur', icon: { library: 'MaterialCommunityIcons', name: 'fan' } },
-  { id: 'tv', label: 'Télévision', icon: { library: 'MaterialCommunityIcons', name: 'television' } },
-  { id: 'smart-tv', label: 'Smart TV', icon: { library: 'MaterialCommunityIcons', name: 'television-play' } },
-  { id: 'netflix', label: 'Netflix', icon: { library: 'MaterialCommunityIcons', name: 'netflix' } },
-  { id: 'washer', label: 'Machine à laver', icon: { library: 'MaterialCommunityIcons', name: 'washing-machine' } },
-  { id: 'balcony', label: 'Balcon', icon: { library: 'MaterialCommunityIcons', name: 'home-group' } },
-  { id: 'terrace', label: 'Terrasse', icon: { library: 'MaterialCommunityIcons', name: 'home-city-outline' } },
-  { id: 'veranda', label: 'Véranda', icon: { library: 'MaterialCommunityIcons', name: 'home-variant-outline' } },
-  { id: 'mezzanine', label: 'Mezzanine', icon: { library: 'MaterialCommunityIcons', name: 'stairs-up' } },
-  { id: 'garden', label: 'Jardin', icon: { library: 'MaterialCommunityIcons', name: 'flower' } },
-  { id: 'pool', label: 'Piscine', icon: { library: 'MaterialCommunityIcons', name: 'pool' } },
-  { id: 'gym', label: 'Salle de sport', icon: { library: 'MaterialCommunityIcons', name: 'dumbbell' } },
-  { id: 'rooftop', label: 'Rooftop', icon: { library: 'MaterialCommunityIcons', name: 'office-building' } },
-  { id: 'elevator', label: 'Ascenseur', icon: { library: 'MaterialCommunityIcons', name: 'elevator-passenger' } },
-  { id: 'accessible', label: 'Accès handicapé', icon: { library: 'MaterialCommunityIcons', name: 'wheelchair-accessibility' } },
-] as const;
+const AMENITY_OPTIONS: AmenityOption[] = [...PROPERTY_AMENITIES];
 
 const renderAmenityIcon = (icon: IconDescriptor, color: string): React.ReactNode => {
   if (icon.library === 'Feather') {

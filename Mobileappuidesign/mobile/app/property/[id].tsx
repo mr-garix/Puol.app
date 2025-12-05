@@ -1,11 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated as RNAnimated,
   Dimensions,
+  FlatList,
   Image,
   Modal,
   PanResponder,
+  Platform,
+  RefreshControl,
   ScrollView,
   Share,
   StatusBar,
@@ -15,14 +18,15 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { KeyboardAvoidingView } from 'react-native';
+import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import type { Href } from 'expo-router';
 
 import { Video, ResizeMode } from 'expo-av';
@@ -45,8 +49,13 @@ import type { AuthUser } from '@/src/contexts/AuthContext';
 import { useVisits } from '@/src/contexts/VisitsContext';
 import { useReservations, type NewReservationInput } from '@/src/contexts/ReservationContext';
 import { computeUpfrontPayment } from '@/src/utils/reservationPayment';
+import { buildListingShareUrl } from '@/src/utils/helpers';
 import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, HostProfileSummary } from '@/src/types/listings';
+import { hasUserLikedListing, toggleListingLike } from '@/src/features/likes/services';
+import { recordListingShare, resolveShareChannel } from '@/src/features/listings/services/shareService';
+import { useListingReviews } from '@/src/features/reviews/hooks/useListingReviews';
+import { supabase } from '@/src/supabaseClient';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HERO_HEIGHT = SCREEN_HEIGHT * 0.58;
@@ -56,8 +65,11 @@ const VERIFIED_BADGE_ICON = require('@/assets/icons/feed-icon-verified.png');
 const VISIT_PRICE_FCFA = 5000;
 const PROFILE_TAB_ROUTE: Href = '/';
 const VISITS_ROUTE: Href = '/visits';
-type AuthPurpose = 'visit' | 'reservation' | 'chat' | 'follow';
+type AuthPurpose = 'visit' | 'reservation' | 'chat' | 'follow' | 'like' | 'review';
 const FEATURE_PREVIEW_COUNT = 9;
+const REVIEW_FORM_RADIUS = 28;
+const REVIEW_FORM_IDLE_OFFSET = 40;
+const REVIEW_FORM_CARD_WIDTH = Math.min(SCREEN_WIDTH - 48, 400);
 const NEAR_MAIN_ROAD_LABELS: Record<string, string> = {
   within_100m: 'À moins de 100 m',
   beyond_200m: 'À plus de 200 m',
@@ -83,6 +95,61 @@ const normalizeAvailabilityDate = (value?: string | null): string | null => {
   return trimmed.length >= 10 ? trimmed.slice(0, 10) : trimmed;
 };
 
+const formatReviewDate = (value?: string | null) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  const now = new Date();
+  const diffMs = now.getTime() - parsed.getTime();
+  if (diffMs < 0) {
+    return parsed.toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  }
+
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays <= 0) {
+    return "Aujourd'hui";
+  }
+  if (diffDays === 1) {
+    return 'Il y a 1 jour';
+  }
+  if (diffDays < 7) {
+    return `Il y a ${diffDays} jours`;
+  }
+  if (diffDays === 7) {
+    return 'Il y a une semaine';
+  }
+
+  return parsed.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+type SortOption = 'pertinents' | 'recents' | 'haute' | 'basse';
+
+const SORT_OPTION_LABELS: Record<SortOption, string> = {
+  pertinents: 'Les plus pertinents',
+  recents: 'Les plus récents',
+  haute: 'Note la plus élevée',
+  basse: 'Note la plus basse',
+};
+
+type RatingBreakdown = {
+  1: number;
+  2: number;
+  3: number;
+  4: number;
+  5: number;
+};
+
 const CHARACTERISTIC_PRIORITY_KEYWORDS = [
   'salon',
   'cuisine',
@@ -91,6 +158,59 @@ const CHARACTERISTIC_PRIORITY_KEYWORDS = [
   'parking',
   'prépayé',
 ].map((keyword) => normalizeLabel(keyword));
+
+const formatMemberTenure = (joinedAt: string | null): string | null => {
+  if (!joinedAt) {
+    return null;
+  }
+
+  const joinedDate = new Date(joinedAt);
+  if (Number.isNaN(joinedDate.getTime())) {
+    return null;
+  }
+
+  const formatTenureUnit = (count: number, singular: string, plural: string) => {
+    return count === 1 ? `1 ${singular}` : `${count} ${plural}`;
+  };
+
+  const now = new Date();
+  const diffMs = now.getTime() - joinedDate.getTime();
+  if (diffMs <= 0) {
+    return 'Activité très récente sur PUOL';
+  }
+
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+  if (diffMinutes < 60) {
+    return `${formatTenureUnit(diffMinutes, 'minute', 'minutes')} d’activité sur PUOL`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${formatTenureUnit(diffHours, 'heure', 'heures')} d’activité sur PUOL`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) {
+    return `${formatTenureUnit(diffDays, 'jour', 'jours')} d’activité sur PUOL`;
+  }
+
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 4) {
+    return `${formatTenureUnit(diffWeeks, 'semaine', 'semaines')} d’activité sur PUOL`;
+  }
+
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) {
+    return `${formatTenureUnit(diffMonths, 'mois', 'mois')} d’activité sur PUOL`;
+  }
+
+  const diffYears = Math.floor(diffDays / 365);
+  if (diffYears < 10) {
+    return `${formatTenureUnit(diffYears, 'an', 'ans')} d’activité sur PUOL`;
+  }
+
+  return 'Plus de 10 ans d’activité sur PUOL';
+};
 
 const FALLBACK_LANDLORD_AVATAR = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format';
 const FALLBACK_LANDLORD_NAME = 'Hôte PUOL';
@@ -249,10 +369,14 @@ const ICONS = {
   terrace: { library: 'Feather', name: 'grid' as FeatherIconName },
   garden: { library: 'MaterialCommunityIcons', name: 'flower' as MaterialIconName },
   pool: { library: 'MaterialCommunityIcons', name: 'pool' as MaterialIconName },
-  gym: { library: 'Feather', name: 'activity' as FeatherIconName },
-  rooftop: { library: 'Feather', name: 'layers' as FeatherIconName },
-  elevator: { library: 'Feather', name: 'chevrons-up' as FeatherIconName },
+  faucet: { library: 'MaterialCommunityIcons', name: 'faucet' as MaterialIconName },
+  gym: { library: 'MaterialCommunityIcons', name: 'dumbbell' as MaterialIconName },
+  rooftop: { library: 'MaterialCommunityIcons', name: 'office-building' as MaterialIconName },
+  elevator: { library: 'MaterialCommunityIcons', name: 'elevator-passenger' as MaterialIconName },
   accessibility: { library: 'MaterialCommunityIcons', name: 'wheelchair-accessibility' as MaterialIconName },
+  mezzanine: { library: 'MaterialCommunityIcons', name: 'stairs-up' as MaterialIconName },
+  netflix: { library: 'MaterialCommunityIcons', name: 'netflix' as MaterialIconName },
+  sonnelMeter: { library: 'MaterialCommunityIcons', name: 'meter-electric' as MaterialIconName },
 } satisfies Record<string, IconDescriptor>;
 
 const FEATURE_ICON_MAP: Record<string, IconDescriptor> = {
@@ -261,20 +385,20 @@ const FEATURE_ICON_MAP: Record<string, IconDescriptor> = {
   Parking: ICONS.parking,
   'Groupe électrogène': ICONS.generator,
   'Compteur prépayé': ICONS.prepaid,
-  'Compteur SONNEL': ICONS.generator,
-  Forage: ICONS.water,
+  'Compteur SONNEL': ICONS.sonnelMeter,
+  Forage: ICONS.faucet,
   'Chauffe-eau': ICONS.heater,
   'Sécurité 24/7': ICONS.security,
   CCTV: ICONS.camera,
   Ventilateur: ICONS.ceilingFan,
   TV: { library: 'MaterialCommunityIcons', name: 'television' as MaterialIconName },
   'Smart TV': ICONS.monitor,
-  Netflix: ICONS.film,
+  Netflix: ICONS.netflix,
   'Lave-linge': ICONS.washer,
   Balcon: ICONS.balcony,
   Terrasse: ICONS.terrace,
   Véranda: ICONS.balcony,
-  Mezzanine: ICONS.rooftop,
+  Mezzanine: ICONS.mezzanine,
   Jardin: ICONS.garden,
   Piscine: ICONS.pool,
   'Salle de sport': ICONS.gym,
@@ -360,6 +484,8 @@ const PropertyProfileScreen = () => {
   const { isLoggedIn, refreshProfile, supabaseProfile } = useAuth();
   const isAuthenticated = isLoggedIn;
   const wasLoggedInRef = useRef(isLoggedIn);
+  const supabaseProfileRef = useRef(supabaseProfile);
+  const [listingStats, setListingStats] = useState({ views: 0, likes: 0 });
 
   const {
     data: listingData,
@@ -375,6 +501,11 @@ const PropertyProfileScreen = () => {
     return null;
   }, [listingData]);
 
+  const propertyId = property?.id ?? null;
+  const isFurnished = property?.isFurnished ?? false;
+  const isShop = property?.type === 'boutique';
+  const shouldLoadReviews = isFurnished && !isShop;
+
   const { addVisit, updateVisit, getVisitByPropertyId } = useVisits();
   const { reservations, addReservation, refreshReservations } = useReservations();
 
@@ -388,6 +519,10 @@ const PropertyProfileScreen = () => {
   }, [reservations, property?.id]);
 
   const hasReservation = Boolean(existingReservation);
+
+  useEffect(() => {
+    supabaseProfileRef.current = supabaseProfile;
+  }, [supabaseProfile]);
 
   useEffect(() => {
     if (!existingReservation) {
@@ -419,9 +554,29 @@ const PropertyProfileScreen = () => {
     const heroMedia = mediaItems.find((item) => item.type === 'video');
     return heroMedia?.id ?? null;
   }, [mediaItems]);
-  const propertyId = property?.id ?? null;
   const existingVisit = propertyId ? getVisitByPropertyId(propertyId) : undefined;
   const hasVisit = Boolean(existingVisit);
+
+  const {
+    averageRating,
+    totalCount: reviewsCount,
+    userReview,
+    eligibility,
+  } = useListingReviews(propertyId, supabaseProfile?.id ?? null);
+
+  const canReview = shouldLoadReviews && eligibility?.status !== 'no_booking' && eligibility?.status !== 'not_authenticated';
+
+  const handleOpenReviews = useCallback(
+    (intent?: 'write') => {
+      if (!propertyId) {
+        return;
+      }
+
+      const params = intent ? { id: propertyId, intent } : { id: propertyId };
+      router.push({ pathname: '/property/[id]/reviews', params } as never);
+    },
+    [propertyId, router],
+  );
 
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -629,7 +784,7 @@ const PropertyProfileScreen = () => {
     toggleCommentLike,
     isCommentLiked,
     getCommentLikeCount,
-  } = useComments(property?.id ?? '', supabaseProfile?.id ?? null, property?.landlord?.id ?? null);
+  } = useComments(propertyId ?? '', supabaseProfile?.id ?? null, property?.landlord?.id ?? null);
 
   useEffect(() => {
     if (property?.id) {
@@ -692,6 +847,157 @@ const PropertyProfileScreen = () => {
     [galleryPan, handleCloseGallery, isGalleryVisible],
   );
 
+  // Hooks qui doivent être avant tout retour anticipé
+  const applyStatDelta = useCallback(
+    (field: 'views' | 'likes', delta: number) => {
+      setListingStats((current) => {
+        const nextValue = Math.max(0, current[field] + delta);
+        if (nextValue === current[field]) {
+          return current;
+        }
+        return {
+          ...current,
+          [field]: nextValue,
+        };
+      });
+    },
+    [],
+  );
+
+  const loadListingStats = useCallback(async () => {
+    if (!propertyId) {
+      setListingStats({ views: 0, likes: 0 });
+      return;
+    }
+
+    try {
+      const [viewsRes, likesRes] = await Promise.all([
+        supabase
+          .from('listing_views')
+          .select('listing_id', { count: 'exact', head: true })
+          .eq('listing_id', propertyId),
+        supabase
+          .from('listing_likes')
+          .select('listing_id', { count: 'exact', head: true })
+          .eq('listing_id', propertyId),
+      ]);
+
+      if (viewsRes.error) throw viewsRes.error;
+      if (likesRes.error) throw likesRes.error;
+
+      setListingStats({
+        views: viewsRes.count ?? 0,
+        likes: likesRes.count ?? 0,
+      });
+    } catch (error) {
+      console.error('[PropertyProfileScreen] Failed to load listing stats', error);
+      setListingStats({ views: 0, likes: 0 });
+    }
+  }, [propertyId]);
+
+  const refreshLikeState = useCallback(async () => {
+    if (!propertyId || !supabaseProfile?.id) {
+      setIsLiked(false);
+      return;
+    }
+
+    try {
+      const liked = await hasUserLikedListing(propertyId, supabaseProfile.id);
+      setIsLiked(liked);
+    } catch (error) {
+      console.error('[PropertyProfileScreen] Failed to load like state', error);
+    }
+  }, [propertyId, supabaseProfile?.id]);
+
+  useEffect(() => {
+    if (!propertyId) {
+      setListingStats({ views: 0, likes: 0 });
+      setIsLiked(false);
+      return;
+    }
+
+    loadListingStats();
+  }, [loadListingStats, propertyId]);
+
+  useEffect(() => {
+    if (!propertyId) {
+      setIsLiked(false);
+      return;
+    }
+
+    void refreshLikeState();
+  }, [propertyId, refreshLikeState]);
+
+  useEffect(() => {
+    if (!propertyId) {
+      return undefined;
+    }
+
+    const extractProfileId = (record: unknown): string | null => {
+      if (!record || typeof record !== 'object') {
+        return null;
+      }
+      const value = (record as { profile_id?: string | number | null }).profile_id;
+      if (typeof value === 'string') {
+        return value;
+      }
+      if (typeof value === 'number') {
+        return value.toString();
+      }
+      return null;
+    };
+
+    const channel = supabase
+      .channel(`listing-detail:${propertyId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'listing_views', filter: `listing_id=eq.${propertyId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            applyStatDelta('views', 1);
+          } else if (payload.eventType === 'DELETE') {
+            applyStatDelta('views', -1);
+          } else {
+            void loadListingStats();
+          }
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'listing_likes', filter: `listing_id=eq.${propertyId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            applyStatDelta('likes', 1);
+          } else if (payload.eventType === 'DELETE') {
+            applyStatDelta('likes', -1);
+          } else {
+            void loadListingStats();
+          }
+
+          const currentProfileId = supabaseProfileRef.current?.id ?? null;
+          if (!currentProfileId) {
+            return;
+          }
+
+          const newProfileId = extractProfileId(payload.new);
+          const oldProfileId = extractProfileId(payload.old);
+
+          if (payload.eventType === 'INSERT' && newProfileId === currentProfileId) {
+            setIsLiked(true);
+          } else if (payload.eventType === 'DELETE' && oldProfileId === currentProfileId) {
+            setIsLiked(false);
+          } else if (payload.eventType === 'UPDATE' && (newProfileId === currentProfileId || oldProfileId === currentProfileId)) {
+            void refreshLikeState();
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [applyStatDelta, loadListingStats, propertyId, refreshLikeState]);
+
   if (!property) {
     if (listingError) {
       return (
@@ -717,8 +1023,6 @@ const PropertyProfileScreen = () => {
     : property.location.neighborhood && property.location.city
       ? `${property.location.neighborhood}, ${property.location.city}`
       : property.location.city || property.location.neighborhood || 'Localisation à venir';
-  const isFurnished = property.isFurnished;
-  const isShop = property.type === 'boutique';
   const isRoadsideShop = isShop && property.amenities?.some((amenity) => amenity.toLowerCase().includes('bord'));
 
   const priceLabel = property.priceType === 'daily' ? ' / NUIT' : ' / MOIS';
@@ -753,18 +1057,57 @@ const PropertyProfileScreen = () => {
   const shouldShowFeatureToggle = combinedCharacteristics.length > FEATURE_PREVIEW_COUNT;
 
   const handleLike = () => {
-    setIsLiked((prev) => !prev);
+    if (!propertyId) {
+      return;
+    }
+
+    ensureAuthenticated('like', () => {
+      const profileId = supabaseProfileRef.current?.id;
+      if (!profileId) {
+        console.warn('[PropertyProfileScreen] toggle like skipped (missing profile)');
+        return;
+      }
+
+      void (async () => {
+        try {
+          const nextLiked = await toggleListingLike(propertyId, profileId);
+          setIsLiked(nextLiked);
+          await loadListingStats();
+        } catch (error) {
+          console.error('[PropertyProfileScreen] toggleListingLike error', error);
+        }
+      })();
+    });
   };
 
   const handleShare = async () => {
+    if (!property?.id) {
+      return;
+    }
+
+    const shareUrl = buildListingShareUrl(property.id);
+    const message = `Regarde ce logement sur Puol 👇\n${shareUrl}`;
+    const payload = {
+      title: property.title,
+      message,
+      url: shareUrl,
+    };
+
     try {
-      await Share.share({
-        title: property.title,
-        message: `${property.title} - ${propertyLocationLabel}`,
-        url: property.images[0],
-      });
+      const result = await Share.share(payload);
+
+      if (result.action === Share.sharedAction) {
+        const channel =
+          Platform.OS === 'ios' ? resolveShareChannel(result.activityType) : 'system_share_sheet';
+        const profileId = supabaseProfileRef.current?.id ?? null;
+        void recordListingShare({
+          listingId: property.id,
+          profileId,
+          channel,
+        });
+      }
     } catch (error) {
-      console.warn('Share error', error);
+      console.warn('[PropertyProfileScreen] Share error', error);
     }
   };
 
@@ -971,37 +1314,6 @@ const PropertyProfileScreen = () => {
     setShowLoginScreen(false);
   };
 
-  const closeAuthModal = () => {
-    setShowAuthModal(false);
-  };
-
-  const authMessages: Record<AuthPurpose, string> = {
-    visit: 'Connectez-vous pour programmer une visite',
-    reservation: 'Connectez-vous pour réserver ce logement',
-    chat: 'Connectez-vous pour contacter le propriétaire',
-    follow: 'Connectez-vous pour suivre cet hôte',
-  };
-
-  // Si pas de property et pas d'erreur, on attend le chargement sans afficher de loader
-  if (!property) {
-    if (listingError) {
-      return (
-        <SafeAreaView style={styles.container}>
-          <StatusBar barStyle="dark-content" />
-          <View style={styles.statusWrapper}>
-            <Text style={styles.statusTitle}>Impossible de charger l'annonce</Text>
-            {listingError && <Text style={styles.statusSubtitle}>{listingError}</Text>}
-            <TouchableOpacity style={styles.retryButton} onPress={refreshListing}>
-              <Text style={styles.retryButtonText}>Réessayer</Text>
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
-      );
-    }
-    // Pendant le chargement, on retourne un composant vide mais typé correctement
-    return <View style={styles.container} />;
-  }
-
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
@@ -1178,11 +1490,11 @@ const PropertyProfileScreen = () => {
           <View style={[styles.stats, styles.sectionSpacing]}>
             <View style={styles.statItem}>
               {renderIcon(ICONS.views, 18, '#6B7280')}
-              <Text style={styles.statValue}>{property.views.toLocaleString('fr-FR')}</Text>
+              <Text style={styles.statValue}>{listingStats.views.toLocaleString('fr-FR')}</Text>
             </View>
             <View style={styles.statItem}>
               {renderIcon(ICONS.heartOutline, 18, '#6B7280')}
-              <Text style={styles.statValue}>{property.likes.toLocaleString('fr-FR')}</Text>
+              <Text style={styles.statValue}>{listingStats.likes.toLocaleString('fr-FR')}</Text>
             </View>
             <TouchableOpacity
               style={styles.statItem}
@@ -1197,10 +1509,17 @@ const PropertyProfileScreen = () => {
               <Text style={styles.statValue}>{totalCommentsCount ?? comments.length}</Text>
             </TouchableOpacity>
             {isFurnished && !isShop && (
-              <View style={styles.statItem}>
+              <TouchableOpacity
+                style={styles.statItem}
+                onPress={() => {
+                  handleOpenReviews();
+                }}
+              >
                 {renderIcon(ICONS.star, 18, '#F59E0B')}
-                <Text style={styles.statValue}>{property.landlord.rating.toFixed(1)}</Text>
-              </View>
+                <Text style={styles.statValue}>
+                  {reviewsCount > 0 ? `${averageRating.toFixed(1)} · ${reviewsCount}` : 'Avis'}
+                </Text>
+              </TouchableOpacity>
             )}
           </View>
 
@@ -1506,6 +1825,7 @@ const PropertyProfileScreen = () => {
           </View>
         </TouchableOpacity>
       </Modal>
+
     </SafeAreaView>
   );
 };
@@ -1731,6 +2051,590 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#2ECC71',
     fontWeight: '600',
+  },
+  reviewsModalContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  reviewsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  reviewsCloseButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F3F4F6',
+  },
+  reviewsListHeader: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+    width: '100%',
+    alignSelf: 'stretch',
+    gap: 16,
+  },
+  reviewsList: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 32,
+  },
+  reviewsInfoBubble: {
+    alignSelf: 'stretch',
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+  },
+  reviewsInfoBubbleText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#475569',
+    lineHeight: 16,
+  },
+  reviewsStatsGrid: {
+    alignSelf: 'stretch',
+    width: '100%',
+    flexDirection: 'column',
+    gap: 18,
+  },
+  reviewsStatCard: {
+    alignSelf: 'stretch',
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E8E8E8',
+    padding: 16,
+    gap: 12,
+  },
+  reviewsStatCardLarge: {
+    flex: 1.4,
+  },
+  reviewsStatHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  reviewsStatHeaderText: {
+    flex: 1,
+    gap: 4,
+  },
+  reviewsStatValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  reviewsStatMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  reviewsStatValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1A1A1A',
+  },
+  reviewsStatSubtext: {
+    fontSize: 11,
+    color: '#6B7280',
+  },
+  reviewsStatMetaSeparator: {
+    fontSize: 11,
+    color: '#D1D5DB',
+  },
+  reviewsStatMetaNote: {
+    fontSize: 11,
+    color: '#9CA3AF',
+  },
+  reviewsRatingBars: {
+    gap: 6,
+  },
+  reviewsRatingBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  reviewsRatingBarLabel: {
+    width: 12,
+    fontSize: 11,
+    color: '#1A1A1A',
+  },
+  reviewsRatingBarTrack: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E5E7EB',
+    overflow: 'hidden',
+  },
+  reviewsRatingBarFill: {
+    height: '100%',
+    borderRadius: 2,
+    backgroundColor: '#1A1A1A',
+  },
+  reviewsCommentsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  reviewsCommentsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+  reviewsSortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#FFFFFF',
+  },
+  reviewsSortButtonText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+  reviewsSortMenu: {
+    marginTop: -4,
+    marginBottom: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  reviewsSortMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+  },
+  reviewsSortMenuItemActive: {
+    backgroundColor: '#F9FAFB',
+  },
+  reviewsSortMenuItemText: {
+    fontSize: 14,
+    color: '#1A1A1A',
+  },
+  reviewsSortMenuCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#1A1A1A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewsEmptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 80,
+    gap: 12,
+  },
+  reviewsEmptyText: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  reviewsEmptyCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: '#2ECC71',
+  },
+  reviewsEmptyCtaText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  reviewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(17, 24, 39, 0.06)',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+    marginBottom: 18,
+  },
+  reviewHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  reviewAuthorBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  reviewAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F3F4F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewAvatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  reviewAuthor: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  reviewDate: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 5,
+  },
+  reviewTenure: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  reviewNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  reviewMineBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    backgroundColor: 'rgba(46, 204, 113, 0.16)',
+  },
+  reviewMineBadgeText: {
+    fontSize: 10,
+    color: '#166534',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  reviewRatingStars: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  reviewContent: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#374151',
+  },
+  reviewOwnerReply: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(46, 204, 113, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 204, 113, 0.18)',
+    gap: 6,
+  },
+  reviewOwnerReplyTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#065F46',
+  },
+  reviewOwnerReplyDate: {
+    fontSize: 12,
+    color: '#0F766E',
+  },
+  reviewOwnerReplyText: {
+    fontSize: 13,
+    color: '#064E3B',
+    lineHeight: 18,
+  },
+  reviewActionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 14,
+    flexWrap: 'wrap',
+  },
+  reviewActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+  },
+  reviewActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  reviewFormCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: REVIEW_FORM_RADIUS,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(17, 24, 39, 0.08)',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+    gap: 12,
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: Math.min(SCREEN_WIDTH - 48, 400),
+  },
+  reviewsFormTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  reviewsFormSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    lineHeight: 18,
+  },
+  reviewsStarsInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  reviewsStarInput: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  reviewsStarInputActive: {
+    borderColor: '#F59E0B',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+  },
+  reviewsCommentInput: {
+    minHeight: 110,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.45)',
+    backgroundColor: '#F9FAFB',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 14,
+    color: '#111827',
+  },
+  reviewsFormFooter: {
+    gap: 8,
+  },
+  reviewsSubmitButton: {
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#2ECC71',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewsSubmitButtonDisabled: {
+    backgroundColor: '#A7F3D0',
+  },
+  reviewsSubmitText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  reviewsHelperText: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  reviewsSuccessText: {
+    fontSize: 12,
+    color: '#047857',
+    fontWeight: '600',
+  },
+  reviewsErrorText: {
+    fontSize: 12,
+    color: '#DC2626',
+    fontWeight: '600',
+  },
+  reviewsMessageCard: {
+    backgroundColor: '#F1F5F9',
+    padding: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.35)',
+    alignItems: 'center',
+    gap: 10,
+  },
+  reviewsMessageText: {
+    fontSize: 13,
+    color: '#334155',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  reviewsFooter: {
+    gap: 16,
+    paddingVertical: 24,
+  },
+  reviewsGuidelinesBox: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#D1FAE5',
+    padding: 16,
+    gap: 10,
+  },
+  reviewsGuidelineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  reviewsGuidelineTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+  reviewsGuidelineText: {
+    fontSize: 13,
+    color: '#4B5563',
+    lineHeight: 20,
+  },
+  reviewsConditionsBox: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 16,
+  },
+  reviewsConditionsText: {
+    fontSize: 12,
+    color: '#6B7280',
+    lineHeight: 18,
+  },
+  reviewFormOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  reviewFormContainer: {
+    width: '100%',
+    borderRadius: 20,
+    padding: 20,
+    backgroundColor: '#FFFFFF',
+    gap: 16,
+  },
+  reviewFormTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  reviewFormStarsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewFormStarButton: {
+    padding: 3,
+  },
+  reviewFormTextarea: {
+    minHeight: 100,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.5)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: '#0F172A',
+    textAlignVertical: 'top',
+  },
+  reviewFormError: {
+    fontSize: 12,
+    color: '#DC2626',
+    fontWeight: '600',
+  },
+  reviewFormActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  reviewFormCancelButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: REVIEW_FORM_RADIUS,
+    backgroundColor: '#E2E8F0',
+  },
+  reviewFormCancelText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  reviewFormSubmitButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: REVIEW_FORM_RADIUS,
+    backgroundColor: '#2ECC71',
+  },
+  reviewFormSubmitButtonDisabled: {
+    backgroundColor: '#86EFAC',
+  },
+  reviewFormSubmitText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  reviewFormHelperText: {
+    fontSize: 12,
+    color: '#6B7280',
+    lineHeight: 18,
+  },
+  reviewFormPortal: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  reviewFormBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  reviewFormScrollContainer: {
+    width: '100%',
+    alignItems: 'center',
   },
   priceBox: {
     backgroundColor: '#2ECC71',

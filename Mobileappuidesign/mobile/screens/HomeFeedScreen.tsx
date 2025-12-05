@@ -45,6 +45,7 @@ import { useFeed, type PropertyListing } from '@/src/contexts/FeedContext';
 import { useListingDetails } from '@/features/listings/hooks/useListingDetails';
 import { prefetchListingData } from '@/features/listings/hooks/useListingDetails';
 import { VideoWithThumbnail } from '@/src/components/VideoWithThumbnail';
+import { LoadingImageBackground } from '@/src/components/LoadingImageBackground';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { trackListingView } from '@/src/features/listings/services/viewService';
 
@@ -362,6 +363,7 @@ export default function HomeScreen() {
       if (!listingId) {
         return;
       }
+
       const durationSeconds = Math.max(1, Math.round(durationMs / 1000));
       void trackListingView({
         listingId,
@@ -388,6 +390,28 @@ export default function HomeScreen() {
 
     activeListingViewRef.current = null;
   }, [trackListingViewWithDuration]);
+
+  useEffect(() => {
+    if (!allowFeedPlayback) {
+      flushActiveListingView();
+      activeListingViewRef.current = null;
+      return;
+    }
+
+    if (!activeListingId) {
+      activeListingViewRef.current = null;
+      return;
+    }
+
+    const currentView = activeListingViewRef.current;
+
+    if (!currentView || currentView.listingId !== activeListingId) {
+      if (currentView) {
+        flushActiveListingView();
+      }
+      activeListingViewRef.current = { listingId: activeListingId, startedAt: Date.now() };
+    }
+  }, [activeListingId, allowFeedPlayback, flushActiveListingView]);
 
   const flushSearchViewEntry = useCallback(
     (listingId: string) => {
@@ -841,8 +865,8 @@ export default function HomeScreen() {
                         </View>
                       )
                     ) : (
-                      <ImageBackground
-                        source={{ uri: mediaItem.url }}
+                      <LoadingImageBackground
+                        uri={mediaItem.url}
                         style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
                         imageStyle={styles.cardImage}
                       />
@@ -881,6 +905,40 @@ export default function HomeScreen() {
               resizeMode="contain"
             />
           </Animated.View>
+
+          <View style={styles.bottomInfo} pointerEvents="box-none">
+            <TagChips tags={tagTokens} />
+
+            <View style={styles.textBlock}>
+              <Text
+                style={[styles.titleText, styles.textMediumShadow]}
+                numberOfLines={2}
+                ellipsizeMode="tail"
+              >
+                {formattedTitle}
+              </Text>
+              <View style={styles.locationRow}>
+                <Image
+                  source={require('../assets/icons/feed-icon-location.png')}
+                  style={styles.locationPinImage}
+                  resizeMode="contain"
+                />
+                <Text numberOfLines={1} style={[styles.locationText, styles.textLightShadow]}>
+                  {listing.location}
+                </Text>
+              </View>
+              <Text style={[styles.priceText, styles.textMediumShadow]}>{listing.price}</Text>
+            </View>
+
+            <TouchableOpacity
+              activeOpacity={0.9}
+              style={styles.ctaButton}
+              onPress={() => navigateToListing(listing.id)}
+            >
+              <Text style={styles.ctaText}>DÉCOUVRIR L'OFFRE</Text>
+              <Text style={styles.ctaArrow}>›</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.rightColumn} pointerEvents="box-none">
             <TouchableOpacity
@@ -925,54 +983,14 @@ export default function HomeScreen() {
 
             <View style={styles.shareWrapper}>
               <ShareFeature
-                propertyTitle={listing.title}
-                propertyUrl={shareUrl}
+                listingId={listing.id}
+                listingTitle={listing.title}
                 shareCount={shareCount}
                 buttonColor="#FFFFFF"
+                profileId={supabaseProfile?.id ?? null}
               />
             </View>
-          </View>
 
-          <View style={[styles.bottomInfo, { marginBottom: 16 }]}>
-            <View style={styles.tagsRow}>
-              {tagTokens.map((tag, tokenIndex) => (
-                <BlurView key={`${listing.id}-${tokenIndex}`} intensity={28} tint="light" style={styles.tagChip}>
-                  <View style={styles.tagInner}>
-                    <Text style={styles.tagText}>{tag}</Text>
-                  </View>
-                </BlurView>
-              ))}
-            </View>
-
-            <View style={styles.textBlock}>
-              <Text
-                style={[styles.titleText, styles.textMediumShadow]}
-                numberOfLines={2}
-                ellipsizeMode="tail"
-              >
-                {formattedTitle}
-              </Text>
-              <View style={styles.locationRow}>
-                <Image
-                  source={require('../assets/icons/feed-icon-location.png')}
-                  style={styles.locationPinImage}
-                  resizeMode="contain"
-                />
-                <Text numberOfLines={1} style={[styles.locationText, styles.textLightShadow]}>
-                  {listing.location}
-                </Text>
-              </View>
-              <Text style={[styles.priceText, styles.textMediumShadow]}>{listing.price}</Text>
-            </View>
-
-            <TouchableOpacity
-              activeOpacity={0.9}
-              style={styles.ctaButton}
-              onPress={() => navigateToListing(listing.id)}
-            >
-              <Text style={styles.ctaText}>DÉCOUVRIR L'OFFRE</Text>
-              <Text style={styles.ctaArrow}>›</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </View>

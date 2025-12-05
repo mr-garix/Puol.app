@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar } from 'react-native-calendars';
-import { Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 
 interface ReservationModalProps {
@@ -87,6 +87,37 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
 
   const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
 
+  const today = new Date();
+
+  const pastDateMarkedDates = useMemo(() => {
+    if (Platform.OS !== 'android') {
+      return {};
+    }
+
+    const todayStart = startOfDay(today);
+    const startCursor = new Date(todayStart.getTime());
+    startCursor.setMonth(startCursor.getMonth() - 6);
+    const marked: Record<string, any> = {};
+    const cursor = new Date(startCursor.getTime());
+
+    while (cursor < todayStart) {
+      const key = formatDateForCalendar(cursor);
+      if (!marked[key]) {
+        marked[key] = {
+          disabled: true,
+          disableTouchEvent: true,
+          customStyles: {
+            text: {
+              color: '#9CA3AF',
+            },
+          },
+        };
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return marked;
+  }, [today]);
+
   const handleCheckInSelect = (day: any) => {
     const selected = new Date(day.dateString);
     if (isDateUnavailable(selected)) return;
@@ -109,7 +140,6 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
     hasUserSelectionRef.current = true;
   };
 
-  const today = new Date();
   const minDate =
     step === 'check-in'
       ? formatDateForCalendar(today)
@@ -117,7 +147,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
       ? formatDateForCalendar(new Date(checkInDate.getTime() + 24 * 60 * 60 * 1000))
       : formatDateForCalendar(today);
 
-  const strikeMarkedDates: Record<string, any> = {};
+  const strikeMarkedDates: Record<string, any> = { ...pastDateMarkedDates };
   const unavailableColor = '#D1D5DB';
   const strikeStyle = (color: string) => ({
     disabled: true,

@@ -14,6 +14,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNotifications } from '@/src/contexts/NotificationContext';
 import {
   type SupportThread,
@@ -39,6 +40,8 @@ const RESPONSE_TAGS = ['Moins de 24h', 'Support humain', 'Multicanal'];
 
 export default function ContactSupportScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const { showNotification } = useNotifications();
   const [selectedTopic, setSelectedTopic] = useState(SUPPORT_TOPICS[0]);
   const [subject, setSubject] = useState('');
@@ -132,14 +135,31 @@ export default function ContactSupportScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 6 : 0}
       >
-        <View style={styles.pageHeader}>
-          <TouchableOpacity style={styles.navButton} onPress={() => router.back()} activeOpacity={0.8}>
+        <View
+          style={[
+            styles.pageHeader,
+            isAndroid && {
+              paddingTop: Math.max(insets.top, 16),
+              paddingBottom: 16,
+              borderBottomWidth: 1,
+              borderBottomColor: BORDER,
+              backgroundColor: '#FFFFFF',
+              justifyContent: 'space-between',
+              gap: 0,
+            },
+          ]}
+        >
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            onPress={() => router.back()} activeOpacity={0.8}
+          >
             <Feather name="chevron-left" size={20} color={DARK} />
           </TouchableOpacity>
-          <View>
+          <View style={[styles.pageTitleContainer, isAndroid && styles.pageTitleContainerAndroid]}>
             <Text style={styles.pageTitle}>Contactez le support</Text>
             <Text style={styles.pageSubtitle}>On vous répond en quelques temps</Text>
           </View>
+          {isAndroid ? <View style={styles.pageHeaderSpacerAndroid} /> : null}
         </View>
 
         <ScrollView
@@ -327,6 +347,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#FFFFFF',
   },
+  navButtonAndroid: {
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  pageTitleContainer: {
+    flex: 1,
+  },
+  pageTitleContainerAndroid: {
+    marginLeft: 4,
+  },
   pageTitle: {
     fontFamily: 'Manrope',
     fontSize: 20,
@@ -338,6 +370,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: MUTED,
     marginTop: 2,
+  },
+  pageHeaderSpacerAndroid: {
+    width: 40,
   },
   scrollView: {
     flex: 1,

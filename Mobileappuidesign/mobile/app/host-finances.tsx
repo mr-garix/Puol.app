@@ -1,5 +1,15 @@
 import React, { useMemo, useState } from 'react';
-import { SafeAreaView, View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
+import {
+  Modal,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar as RNStatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -101,6 +111,7 @@ const getDateRange = (filter: string, reference: Date) => {
 export default function HostFinancesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const [selectedFilter, setSelectedFilter] = useState(filterOptions[2]);
   const [policyVisible, setPolicyVisible] = useState(false);
   const [currentDate] = useState(() => new Date());
@@ -148,13 +159,26 @@ export default function HostFinancesScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
-      <View style={[styles.headerWrapper, { paddingTop: Math.max(insets.top - 40, 2) }]}>
+      <RNStatusBar barStyle="dark-content" />
+      <View
+        style={[
+          styles.headerWrapper,
+          {
+            paddingTop: isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top - 40, 2),
+          },
+          isAndroid && styles.headerWrapperAndroid,
+        ]}
+      >
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[styles.backButton, isAndroid && styles.backButtonAndroid]}
+            onPress={handleBack}
+            activeOpacity={0.85}
+          >
             <Feather name="chevron-left" size={22} color="#111827" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Recettes & versements</Text>
-          <View style={{ width: 44 }} />
+          <Text style={[styles.headerTitle, isAndroid && styles.headerTitleAndroid]}>Recettes & versements</Text>
+          {isAndroid ? <View style={styles.headerSpacerAndroid} /> : <View style={{ width: 44 }} />}
         </View>
       </View>
 
@@ -283,6 +307,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
   },
+  headerWrapperAndroid: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -301,11 +337,28 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  backButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    shadowOpacity: 0,
+    elevation: 0,
+    marginRight: 12,
+  },
   headerTitle: {
     fontFamily: 'Manrope',
     fontSize: 20,
     fontWeight: '700',
     color: '#0F172A',
+  },
+  headerTitleAndroid: {
+    flex: 1,
+    fontSize: 18,
+    marginLeft: 4,
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   scrollContent: {
     paddingHorizontal: 16,

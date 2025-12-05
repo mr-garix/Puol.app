@@ -14,7 +14,8 @@ import {
   HostPendingOverlay,
 } from '@/src/features/host/components';
 import { useHostCommentThreads } from '@/src/features/comments/hooks';
-import { useHostBookings } from '@/src/features/host/hooks';
+import { useHostBookings, useHostViewStats } from '@/src/features/host/hooks';
+import { useHostReviews } from '@/src/features/reviews/hooks/useHostReviews';
 import { useHostLikeActivities } from '@/src/features/likes/hooks';
 import { supabase } from '@/src/supabaseClient';
 
@@ -54,6 +55,10 @@ export default function HostDashboardScreen() {
   const { profile } = useProfile();
   const { totalCount: hostCommentsCount } = useHostCommentThreads(supabaseProfile?.id ?? null);
   const { summary: hostLikeSummary } = useHostLikeActivities(supabaseProfile?.id ?? null);
+  const { total: hostViewsTotal, isLoading: areHostViewsLoading, hasLoaded: hasHostViewsLoaded } = useHostViewStats(
+    supabaseProfile?.id ?? null,
+  );
+  const { totalCount: hostReviewsCount } = useHostReviews(supabaseProfile?.id ?? null);
 
   const [fallbackHostProfile, setFallbackHostProfile] = useState<HostProfileSnapshot | null>(null);
   const [fallbackVerificationStatus, setFallbackVerificationStatus] = useState<VerificationStatus>('pending');
@@ -74,8 +79,10 @@ export default function HostDashboardScreen() {
   const managedUnits = listingCountLoaded ? listingCount : fallbackListingCount;
 
   const baseEngagementStats = profile?.stats ?? fallbackHostProfile?.stats ?? { views: 0, likes: 0, comments: 0 };
+  const viewsFromHook = hasHostViewsLoaded ? hostViewsTotal : baseEngagementStats.views ?? 0;
+  const viewsDisplay = areHostViewsLoading && !hasHostViewsLoaded ? baseEngagementStats.views ?? 0 : viewsFromHook;
   const engagementStats = {
-    views: baseEngagementStats.views ?? 0,
+    views: viewsDisplay,
     likes: hostLikeSummary.total ?? baseEngagementStats.likes ?? 0,
     comments: hostCommentsCount,
   };
@@ -204,11 +211,11 @@ export default function HostDashboardScreen() {
         icon: 'star',
         tint: '#FFF7ED',
         iconColor: '#EA580C',
-        countLabel: '0 avis',
+        countLabel: `${hostReviewsCount} avis`,
         route: '/host-reviews',
       },
     ],
-    [listingsCountDisplay, totalReservationsCount],
+    [hostReviewsCount, listingsCountDisplay, totalReservationsCount],
   );
 
   const handleSectionPress = (route: string) => {

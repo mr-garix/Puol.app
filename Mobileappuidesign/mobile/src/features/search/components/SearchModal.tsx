@@ -25,16 +25,19 @@ import { createPlacesSessionToken, fetchPlaceSuggestions, type PlaceSuggestion }
 import { fetchListingAddressSuggestions, type ListingAddressSuggestion } from '@/src/features/search/services/listingAddresses';
 import { formatAddressLine, formatDistrictCity } from '@/src/utils/location';
 import { trackAnalyticsEvent } from '@/src/infrastructure/analytics';
+import {
+  PROPERTY_AMENITIES,
+  SHOP_AMENITIES,
+  type AmenityOption,
+  type IconDescriptor,
+  type FeatherIconName,
+} from '@/src/constants/amenities';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const isIOS = Platform.OS === 'ios';
 const SCROLL_BASE_OFFSET = 48;
 const STAGGER_BLOCKS = ['location', 'type', 'criteria', 'options'] as const;
 type StaggerKey = (typeof STAGGER_BLOCKS)[number];
-
-type FeatherIconName = React.ComponentProps<typeof Feather>['name'];
-type MaterialIconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-type IconDescriptor = { library: 'Feather'; name: FeatherIconName } | { library: 'MaterialCommunityIcons'; name: MaterialIconName };
 
 const renderIcon = (icon: IconDescriptor, size = 18, color = '#2ECC71') => {
   if (icon.library === 'Feather') {
@@ -65,24 +68,8 @@ const propertyTypes: { id: string; label: string; icon: IconDescriptor }[] = [
   { id: 'boutique', label: 'Boutique', icon: { library: 'MaterialCommunityIcons', name: 'storefront-outline' } },
 ];
 
-const amenities: { id: string; label: string; icon: IconDescriptor }[] = [
-  { id: 'parking', label: 'Parking', icon: { library: 'MaterialCommunityIcons', name: 'car' } },
-  { id: 'ac', label: 'Climatisation', icon: { library: 'MaterialCommunityIcons', name: 'air-conditioner' } },
-  { id: 'security', label: 'Sécurité 24/24', icon: { library: 'MaterialCommunityIcons', name: 'shield-check-outline' } },
-  { id: 'wifi', label: 'Wifi', icon: { library: 'MaterialCommunityIcons', name: 'wifi' } },
-  { id: 'elevator', label: 'Ascenseur', icon: { library: 'MaterialCommunityIcons', name: 'elevator-passenger' } },
-  { id: 'pool', label: 'Piscine', icon: { library: 'MaterialCommunityIcons', name: 'pool' } },
-  { id: 'generator', label: 'Groupe électrogène', icon: { library: 'MaterialCommunityIcons', name: 'lightning-bolt-outline' } },
-  { id: 'water24', label: 'Eau 24/24', icon: { library: 'MaterialCommunityIcons', name: 'water' } },
-];
-
-const shopAmenities: { id: string; label: string; icon: IconDescriptor }[] = [
-  { id: 'roadside', label: 'En bord de route', icon: { library: 'MaterialCommunityIcons', name: 'map-marker-path' } },
-  { id: 'groundfloor', label: 'Rez-de-chaussée', icon: { library: 'MaterialCommunityIcons', name: 'office-building-marker' } },
-  { id: 'mall', label: 'Galerie / Centre commercial', icon: { library: 'MaterialCommunityIcons', name: 'storefront-outline' } },
-  { id: 'clientparking', label: 'Parking clients', icon: { library: 'MaterialCommunityIcons', name: 'parking' } },
-  { id: 'security', label: 'Sécurité / Gardiennage', icon: { library: 'MaterialCommunityIcons', name: 'shield-check-outline' } },
-];
+const amenities: AmenityOption[] = [...PROPERTY_AMENITIES];
+const shopAmenities: AmenityOption[] = [...SHOP_AMENITIES];
 
 type SearchModalProps = {
   visible: boolean;
@@ -422,7 +409,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
           }
         }
         if (furnishingType === 'furnished') {
-          gentlyRevealAnchor('datesSection', 16);
+          gentlyRevealAnchor('datesSection', 10);
         }
       } else {
         setDepartureDate(iso);
@@ -661,8 +648,24 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
       setFieldErrors(errors);
       if (errors.location) {
         setOpenSection(1);
-      } else if (errors.type || errors.furnishing) {
+        scheduleScroll(() => {
+          scrollToSection(1);
+          locationInputRef.current?.focus();
+        });
+      } else if (errors.type) {
         setOpenSection((prev) => (prev < 2 ? 2 : prev));
+        scheduleScroll(() => {
+          scrollToSection(2);
+        });
+      } else if (errors.furnishing) {
+        setOpenSection((prev) => (prev < 2 ? 2 : prev));
+        scheduleScroll(() => {
+          if (showFurnishingSelector) {
+            scrollToAnchor('furnishingSelector', 12);
+          } else {
+            scrollToSection(2);
+          }
+        });
       }
       return;
     }
@@ -748,8 +751,9 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
         <Animated.View style={[styles.sheet, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}> 
           <SafeAreaView style={styles.safeArea}>
             <KeyboardAvoidingView
-              behavior={isIOS ? 'padding' : 'height'}
-              keyboardVerticalOffset={isIOS ? 0 : 30}
+              behavior={isIOS ? 'padding' : undefined}
+              keyboardVerticalOffset={isIOS ? 0 : 0}
+              enabled={isIOS}
               style={styles.flex}
             >
               <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
@@ -786,7 +790,10 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                           returnKeyType="done"
                           blurOnSubmit
                           onSubmitEditing={Keyboard.dismiss}
-                          onFocus={() => setShowLocationDropdown(true)}
+                          onFocus={() => {
+                            setShowLocationDropdown(true);
+                            gentlyRevealSection(1, 32);
+                          }}
                           onChangeText={(text) => {
                             setLocationSearch(text);
                             setShowLocationDropdown(true);
@@ -889,6 +896,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                               onPress={() => {
                                 setFurnishingType('furnished');
                                 clearFieldError('furnishing');
+                                gentlyRevealAnchor('datesSection', 10);
                               }}
                             >
                               <Text
@@ -925,6 +933,49 @@ export const SearchModal: React.FC<SearchModalProps> = ({ visible, onClose, onSe
                           {fieldErrors.furnishing ? (
                             <Text style={styles.fieldErrorText}>{fieldErrors.furnishing}</Text>
                           ) : null}
+
+                          {furnishingType === 'furnished' && (
+                            <View style={styles.datesSection} onLayout={handleAnchorLayout('datesSection')}>
+                              <Text style={styles.subSectionLabel}>Période du séjour</Text>
+                              <View style={styles.dateRow}>
+                                <TouchableOpacity
+                                  style={styles.datePickerButton}
+                                  onPress={() => openDatePicker('arrival')}
+                                  activeOpacity={0.85}
+                                >
+                                  <View style={styles.datePickerTexts}>
+                                    <Text style={styles.dateLabel}>Arrivée</Text>
+                                    <Text
+                                      style={[
+                                        styles.dateValueText,
+                                        !arrivalDate && styles.dateValuePlaceholder,
+                                      ]}
+                                    >
+                                      {formatDateForDisplay(arrivalDate)}
+                                    </Text>
+                                  </View>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[styles.datePickerButton, !arrivalDate && styles.datePickerButtonDisabled]}
+                                  onPress={() => openDatePicker('departure')}
+                                  activeOpacity={arrivalDate ? 0.85 : 0.6}
+                                  disabled={!arrivalDate}
+                                >
+                                  <View style={styles.datePickerTexts}>
+                                    <Text style={styles.dateLabel}>Départ</Text>
+                                    <Text
+                                      style={[
+                                        styles.dateValueText,
+                                        (!departureDate || !arrivalDate) && styles.dateValuePlaceholder,
+                                      ]}
+                                    >
+                                      {arrivalDate ? formatDateForDisplay(departureDate) : 'Sélectionner'}
+                                    </Text>
+                                  </View>
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          )}
                         </View>
                       )}
                     </View>
@@ -1108,8 +1159,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8F9FB',
     borderTopLeftRadius: 0,
     borderTopRightRadius: 0,
-    height: SCREEN_HEIGHT,
     width: '100%',
+    maxHeight: SCREEN_HEIGHT,
+    flex: 1,
     paddingBottom: isIOS ? 24 : 16,
     overflow: 'hidden',
   },
@@ -1352,6 +1404,9 @@ const styles = StyleSheet.create({
     color: '#2ECC71',
     fontWeight: '600',
   },
+  datesSection: {
+    gap: 14,
+  },
   dateRow: {
     flexDirection: 'row',
     gap: 12,
@@ -1365,6 +1420,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  datePickerButtonDisabled: {
+    backgroundColor: '#ECEFF4',
   },
   datePickerIcon: {
     width: 28,

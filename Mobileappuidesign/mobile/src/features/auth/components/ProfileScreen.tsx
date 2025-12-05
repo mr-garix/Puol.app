@@ -9,6 +9,7 @@ import {
   SafeAreaView,
   StatusBar,
   Modal,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -88,6 +89,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const insets = useSafeAreaInsets();
   const [isScrolled, setIsScrolled] = useState(false);
+  const isAndroid = Platform.OS === 'android';
 
   const stats = {
     listings: userData.stats?.listings ?? 0,
@@ -97,6 +99,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     likes: userData.stats?.likes ?? 0,
     comments: userData.stats?.comments ?? 0,
   };
+
+  const publicationLabel = 'publications';
 
   const reservationsSubtitle = reservationsLoading
     ? 'Chargement...'
@@ -119,18 +123,48 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   const showHostDashboard = hostDashboardStatus === 'approved';
   const showHostApplicationInfo = !showHostDashboard && Boolean(hostStatusMessage);
+  const topFoldHeight = isAndroid ? 0 : 360;
+  const headerPaddingTop = isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top, 0) + 4;
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+      {!isAndroid && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.topBackground,
+            {
+              height: topFoldHeight + Math.max(insets.top, 0),
+            },
+          ]}
+        />
+      )}
 
       <View
         style={[
           styles.header,
-          {
-            paddingTop: Math.max(insets.top, 0) + 4,
-            borderBottomColor: isScrolled ? '#E5E7EB' : 'transparent',
-          },
+          isAndroid
+            ? {
+                marginTop: 0,
+                paddingHorizontal: 20,
+                paddingTop: headerPaddingTop,
+                paddingBottom: 16,
+                backgroundColor: '#FFFFFF',
+                borderBottomColor: '#E5E7EB',
+                shadowOpacity: isScrolled ? 0.08 : 0,
+                shadowRadius: isScrolled ? 4 : 0,
+                elevation: isScrolled ? 2 : 0,
+              }
+            : {
+                paddingTop: headerPaddingTop,
+                backgroundColor: isScrolled ? '#FFFFFF' : 'transparent',
+                borderBottomColor: isScrolled ? '#E5E7EB' : 'transparent',
+                shadowOpacity: isScrolled ? 0.05 : 0,
+                shadowRadius: isScrolled ? 4 : 0,
+                elevation: isScrolled ? 4 : 0,
+              },
         ]}
       >
         <Text style={styles.headerTitle}>Profil</Text>
@@ -152,13 +186,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, isAndroid && styles.scrollContentAndroid]}
         onScroll={({ nativeEvent }) => {
           setIsScrolled(nativeEvent.contentOffset.y > 2);
         }}
         scrollEventThrottle={16}
       >
-        <View style={[styles.profileInfo, isScrolled && styles.profileInfoDivider]}>
+        <View
+          style={[
+            styles.profileInfo,
+            isScrolled && (isAndroid ? styles.profileInfoDividerAndroid : styles.profileInfoDividerIos),
+            isAndroid && styles.profileInfoAndroid,
+          ]}
+        >
           <TouchableOpacity onPress={onProfileImagePress} activeOpacity={0.8}>
             <Image source={{ uri: userData.photo }} style={styles.profilePhoto} />
           </TouchableOpacity>
@@ -189,21 +229,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{stats.listings}</Text>
-                <Text style={styles.statLabel}>annonce{stats.listings > 1 ? 's' : ''}</Text>
+                <Text style={[styles.statLabel, styles.statLabelCentered]}>{publicationLabel}</Text>
               </View>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{stats.followers}</Text>
-                <Text style={styles.statLabel}>abonnés</Text>
+                <Text style={[styles.statLabel, styles.statLabelCentered]}>followers</Text>
               </View>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{stats.following}</Text>
-                <Text style={styles.statLabel}>abonnements</Text>
+                <Text style={[styles.statLabel, styles.statLabelCentered]}>suivi(e)s</Text>
               </View>
             </View>
           </View>
         </View>
 
-        <View style={styles.actionButtons}>
+        <View style={[styles.actionButtons, isAndroid && styles.actionButtonsAndroid, !isAndroid && styles.actionButtonsIos]}>
           <TouchableOpacity style={styles.editButton} onPress={onEditProfile} activeOpacity={0.8}>
             <Feather name="edit-2" size={16} color="#FFFFFF" />
             <Text style={styles.editButtonText}>Éditer le profil</Text>
@@ -329,7 +369,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </View>
                 <View style={styles.menuTextContainer}>
                   <Text style={styles.menuItemTitle}>Annonces</Text>
-                  <Text style={styles.menuItemSubtitle}>{stats.listings} annonce</Text>
+                  <Text style={styles.menuItemSubtitle}>
+                    {stats.listings} annonces
+                  </Text>
                 </View>
               </View>
               <Text style={styles.chevronIcon}>›</Text>
@@ -426,8 +468,27 @@ const styles = StyleSheet.create({
     paddingBottom: 120,
     backgroundColor: '#F9FAFB',
   },
-  header: {
+  scrollContentAndroid: {
+    paddingTop: 24,
+    paddingBottom: 96,
+  },
+  topBackground: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     backgroundColor: '#FFFFFF',
+    borderBottomLeftRadius: 44,
+    borderBottomRightRadius: 44,
+    shadowColor: '#000000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 16,
+    elevation: 6,
+    zIndex: 0,
+  },
+  header: {
+    backgroundColor: 'transparent',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -437,10 +498,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'transparent',
     shadowColor: '#000',
-    shadowOpacity: 0.05,
+    shadowOpacity: 0,
     shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
+    shadowRadius: 0,
+    elevation: 0,
     marginTop: -40,
+  },
+  profileInfoAndroid: {
+    marginTop: -30,
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    borderBottomColor: 'transparent',
+    borderBottomWidth: 0,
   },
   headerTitle: {
     fontFamily: 'Manrope',
@@ -479,9 +548,15 @@ const styles = StyleSheet.create({
     borderBottomColor: 'transparent',
     marginTop: -42,
   },
-  profileInfoDivider: {
+  profileInfoDividerIos: {
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
+    borderBottomWidth: 0,
+  },
+  profileInfoDividerAndroid: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
   },
   profilePhoto: {
@@ -563,6 +638,10 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     textAlign: 'center',
   },
+  statLabelCentered: {
+    alignSelf: 'center',
+    textAlign: 'center',
+  },
   actionButtons: {
     backgroundColor: '#FFFFFF',
     flexDirection: 'row',
@@ -571,6 +650,15 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
+  },
+  actionButtonsIos: {
+    borderTopWidth: 0,
+  },
+  actionButtonsAndroid: {
+    borderBottomWidth: 0,
+    paddingTop: 0,
+    paddingBottom: 16,
+    transform: [{ translateY: -10 }],
   },
   editButton: {
     flex: 1,

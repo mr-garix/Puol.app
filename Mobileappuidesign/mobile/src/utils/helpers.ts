@@ -133,3 +133,13 @@ export const generateId = (): string => {
 export const sleep = (ms: number): Promise<void> => {
   return new Promise(resolve => setTimeout(resolve, ms));
 };
+
+/**
+ * Génère l'URL de partage canonique pour une annonce
+ */
+export const buildListingShareUrl = (listingId: string): string => {
+  if (!listingId) {
+    return 'https://puol.app';
+  }
+  return `https://puol.app/l/${listingId}`;
+};

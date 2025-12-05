@@ -10,6 +10,7 @@ import { useReservations } from '@/src/contexts/ReservationContext';
 import { useAuth, type AuthUser } from '@/src/contexts/AuthContext';
 import { useProfile } from '@/src/contexts/ProfileContext';
 import { getUserCommentConversations } from '@/src/features/comments/services';
+import { useUserReviews } from '@/src/features/reviews/hooks/useUserReviews';
 import { supabase } from '@/src/supabaseClient';
 
 const buildFallbackAvatar = (firstName: string, lastName: string) => {
@@ -28,6 +29,7 @@ export default function ProfileTabScreen() {
   const reservationsCount = reservations.length;
   const [commentsCount, setCommentsCount] = useState(0);
   const [isAvatarVisible, setIsAvatarVisible] = useState(false);
+  const { totalCount: userReviewsCount } = useUserReviews(supabaseProfile?.id ?? null);
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -236,7 +238,7 @@ export default function ProfileTabScreen() {
         reservationsLoading={reservationsLoading}
         reservationsError={reservationsError}
         onRetryReservations={refreshReservations}
-        reviewsCount={profile.stats?.comments ?? 0}
+        reviewsCount={userReviewsCount}
         unreadMessagesCount={0}
         unreadCommentsCount={0}
         onEditProfile={() => router.push('/profile/edit' as never)}

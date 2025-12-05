@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Platform,
+  StatusBar as RNStatusBar,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
@@ -124,6 +126,7 @@ const buildListingLabel = (title?: string | null, city?: string | null, district
 export default function HostLikesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const { supabaseProfile } = useAuth();
   const hostId = supabaseProfile?.id ?? null;
   const { activities, summary, isLoading } = useHostLikeActivities(hostId);
@@ -131,7 +134,7 @@ export default function HostLikesScreen() {
   const [seenLoaded, setSeenLoaded] = useState(false);
   const sessionSeenRef = useRef<Set<string>>(new Set());
 
-  const topPadding = Math.max(insets.top - 40, 2);
+  const topPadding = isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top - 40, 2);
   const likedListingCount = useMemo(() => Object.keys(summary.byListing ?? {}).length, [summary.byListing]);
   const latestActivity = activities[0] ?? null;
   const latestRelative = latestActivity ? formatRelativeTime(new Date(latestActivity.createdAt)) : 'En attente de likes…';
@@ -270,16 +273,27 @@ export default function HostLikesScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
-      <View style={[styles.headerWrapper, { paddingTop: topPadding }]}>
-        <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.navButton} activeOpacity={0.85} onPress={handleNavigateBack}>
+      <RNStatusBar barStyle="dark-content" />
+      <View
+        style={[
+          styles.headerWrapper,
+          { paddingTop: topPadding },
+          isAndroid && styles.headerWrapperAndroid,
+        ]}
+      >
+        <View style={[styles.headerRow, isAndroid && styles.headerRowAndroid]}>
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            activeOpacity={0.85}
+            onPress={handleNavigateBack}
+          >
             <Feather name="chevron-left" size={22} color={COLORS.dark} />
           </TouchableOpacity>
-          <View style={{ flex: 1 }}>
+          <View style={[styles.headerTextGroup, isAndroid && styles.headerTextGroupAndroid]}>
             <Text style={styles.headerTitle}>Likes reçus</Text>
             <Text style={styles.headerSubtitle}>Suivez l’engagement sur toutes vos annonces</Text>
           </View>
-          <View style={{ width: 44 }} />
+          {isAndroid ? <View style={styles.headerSpacerAndroid} /> : <View style={{ width: 44 }} />}
         </View>
       </View>
 
@@ -356,10 +370,26 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     backgroundColor: COLORS.background,
   },
+  headerWrapperAndroid: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: COLORS.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  headerRowAndroid: {
+    justifyContent: 'space-between',
+    gap: 0,
   },
   navButton: {
     width: 44,
@@ -370,6 +400,20 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+    marginRight: 12,
+  },
+  headerTextGroup: {
+    flex: 1,
+  },
+  headerTextGroupAndroid: {
+    marginLeft: 4,
   },
   headerTitle: {
     fontFamily: 'Manrope',
@@ -382,6 +426,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.muted,
     marginTop: 2,
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   content: {
     paddingHorizontal: 16,

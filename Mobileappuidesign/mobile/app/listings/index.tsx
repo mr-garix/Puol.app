@@ -9,10 +9,12 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PRIMARY = '#2ECC71';
 const DARK = '#111827';
@@ -21,6 +23,8 @@ const BORDER = '#E5E7EB';
 
 export default function UserListingsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const [modalType, setModalType] = useState<'bailleur' | 'hote' | null>(null);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -52,14 +56,31 @@ export default function UserListingsScreen() {
       <StatusBar style="dark" />
       <RNStatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={{ paddingBottom: 48 }} showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.navButton} onPress={() => router.back()} activeOpacity={0.8}>
+        <View
+          style={[
+            styles.header,
+            isAndroid && {
+              paddingTop: Math.max(insets.top, 16),
+              paddingBottom: 16,
+              backgroundColor: '#FFFFFF',
+              borderBottomWidth: 1,
+              borderBottomColor: BORDER,
+              justifyContent: 'space-between',
+            },
+          ]}
+        >
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            onPress={() => router.back()}
+            activeOpacity={0.8}
+          >
             <Feather name="chevron-left" size={20} color={DARK} />
           </TouchableOpacity>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>Mes annonces</Text>
             <Text style={styles.headerSubtitle}>Publiez vos biens meublés ou non meublés</Text>
           </View>
+          {isAndroid ? <View style={styles.headerSpacerAndroid} /> : null}
         </View>
 
         <View style={styles.summaryCard}>
@@ -215,6 +236,14 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navButtonAndroid: {
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 20,
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   headerTitle: {
     fontFamily: 'Manrope',

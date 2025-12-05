@@ -1,17 +1,17 @@
 import { useEffect, useRef } from 'react';
+import { useColorScheme } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
 
-import {
-  NotificationHost,
-  VisitNotificationBridge,
-  HostBookingNotificationBridge,
-  HostCommentNotificationBridge,
-  UserCommentNotificationBridge,
-} from '@/src/infrastructure/notifications';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import VisitNotificationBridge from '@/src/infrastructure/notifications/VisitNotificationBridge';
+import HostBookingNotificationBridge from '@/src/infrastructure/notifications/HostBookingNotificationBridge';
+import HostCommentNotificationBridge from '@/src/infrastructure/notifications/HostCommentNotificationBridge';
+import UserCommentNotificationBridge from '@/src/infrastructure/notifications/UserCommentNotificationBridge';
+import HostReviewNotificationBridge from '@/src/infrastructure/notifications/HostReviewNotificationBridge';
+import UserReviewReplyNotificationBridge from '@/src/infrastructure/notifications/UserReviewReplyNotificationBridge';
+import NotificationHost from '@/src/infrastructure/notifications/NotificationHost';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
 import { ReservationProvider } from '@/src/contexts/ReservationContext';
 import { AuthProvider } from '@/src/contexts/AuthContext';
@@ -98,6 +98,7 @@ export default function RootLayout() {
                     <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="profile/edit" options={{ headerShown: false }} />
                     <Stack.Screen name="property/[id]" options={{ headerShown: false }} />
+                    <Stack.Screen name="property/[id]/reviews" options={{ headerShown: false }} />
                     <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
                     <Stack.Screen name="visits/index" options={{ headerShown: false }} />
                     <Stack.Screen name="visits/[id]" options={{ headerShown: false }} />
@@ -117,6 +118,8 @@ export default function RootLayout() {
                     <HostBookingNotificationBridge />
                     <HostCommentNotificationBridge />
                     <UserCommentNotificationBridge />
+                    <HostReviewNotificationBridge />
+                    <UserReviewReplyNotificationBridge />
                     <NotificationHost />
                     <RemainingPaymentHandler />
                   </ThemeProvider>

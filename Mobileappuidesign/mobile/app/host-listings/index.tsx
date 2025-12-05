@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   SafeAreaView,
   View,
@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Video, ResizeMode } from 'expo-av';
@@ -40,19 +41,46 @@ type HostListingCardData = {
   createdAtLabel: string;
   propertyTypeLabel: string;
   capacityLabel: string;
-  viewCountLabel: string;
-  likeCountLabel: string;
+  viewCount: number;
+  likeCount: number;
 };
 
 export default function HostListingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const topPadding = Math.max(insets.top - 40, 2);
+  const isAndroid = Platform.OS === 'android';
+  const headerPaddingTop = Math.max(insets.top, 16);
   const { supabaseProfile, isLoggedIn } = useAuth();
 
   const [listings, setListings] = useState<HostListingCardData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const listingIdsRef = useRef<Set<string>>(new Set());
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  const applyListingDelta = useCallback(
+    (listingId: string, field: 'viewCount' | 'likeCount', delta: number) => {
+      setListings((current) => {
+        let mutated = false;
+        const next = current.map((listing) => {
+          if (listing.id !== listingId) {
+            return listing;
+          }
+          mutated = true;
+          const nextCount = Math.max(0, listing[field] + delta);
+          if (nextCount === listing[field]) {
+            return listing;
+          }
+          return {
+            ...listing,
+            [field]: nextCount,
+          };
+        });
+        return mutated ? next : current;
+      });
+    },
+    [setListings],
+  );
 
   const formatPrice = useCallback((value?: number | null) => {
     if (!value || Number.isNaN(value)) {
@@ -111,19 +139,42 @@ export default function HostListingsScreen() {
       const rows = listingRows ?? [];
 
       if (!rows.length) {
+        listingIdsRef.current = new Set();
         setListings([]);
         return;
       }
 
       const listingIds = rows.map((row) => row.id);
-      const { data: mediaRows, error: mediaError } = await supabase
-        .from('listing_media')
-        .select('*')
-        .in('listing_id', listingIds)
-        .order('position', { ascending: true });
+      listingIdsRef.current = new Set(listingIds);
+      const [mediaResult, viewResult, likeResult] = await Promise.all([
+        supabase
+          .from('listing_media')
+          .select('*')
+          .in('listing_id', listingIds)
+          .order('position', { ascending: true }),
+        supabase
+          .from('listing_views')
+          .select('listing_id')
+          .in('listing_id', listingIds),
+        supabase
+          .from('listing_likes')
+          .select('listing_id')
+          .in('listing_id', listingIds),
+      ]);
 
+      const { data: mediaRows, error: mediaError } = mediaResult;
       if (mediaError) {
         throw mediaError;
+      }
+
+      const { data: viewRows, error: viewRowsError } = viewResult;
+      if (viewRowsError) {
+        throw viewRowsError;
+      }
+
+      const { data: likeRows, error: likeRowsError } = likeResult;
+      if (likeRowsError) {
+        throw likeRowsError;
       }
 
       const mediaByListing = (mediaRows ?? []).reduce<Record<string, ListingMediaRow[]>>((acc, media) => {
@@ -131,6 +182,24 @@ export default function HostListingsScreen() {
           acc[media.listing_id] = [];
         }
         acc[media.listing_id].push(media as ListingMediaRow);
+        return acc;
+      }, {});
+
+      const viewCountByListing = (viewRows ?? []).reduce<Record<string, number>>((acc, row) => {
+        const listingId = typeof row?.listing_id === 'string' ? row.listing_id : null;
+        if (!listingId) {
+          return acc;
+        }
+        acc[listingId] = (acc[listingId] ?? 0) + 1;
+        return acc;
+      }, {});
+
+      const likeCountByListing = (likeRows ?? []).reduce<Record<string, number>>((acc, row) => {
+        const listingId = typeof row?.listing_id === 'string' ? row.listing_id : null;
+        if (!listingId) {
+          return acc;
+        }
+        acc[listingId] = (acc[listingId] ?? 0) + 1;
         return acc;
       }, {});
 
@@ -164,8 +233,8 @@ export default function HostListingsScreen() {
           createdAtLabel: formatCreatedAt(listing.created_at),
           propertyTypeLabel: listing.property_type ?? 'Type non défini',
           capacityLabel: listing.capacity ? `${listing.capacity} pers.` : 'Capacité inconnue',
-          viewCountLabel: Number.isFinite(listing.view_count) ? Number(listing.view_count).toString() : '0',
-          likeCountLabel: Number.isFinite(listing.like_count) ? Number(listing.like_count).toString() : '0',
+          viewCount: viewCountByListing[listing.id] ?? 0,
+          likeCount: likeCountByListing[listing.id] ?? 0,
         };
       });
 
@@ -189,25 +258,100 @@ export default function HostListingsScreen() {
     }, [fetchHostListings]),
   );
 
+  useEffect(() => {
+    const hostId = supabaseProfile?.id;
+    if (!hostId) {
+      return undefined;
+    }
+
+    type ListingEdge = { listing_id?: string | null } | null;
+
+    const channel = supabase
+      .channel(`host-listings:${hostId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'listings', filter: `host_id=eq.${hostId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'DELETE' || payload.eventType === 'UPDATE') {
+            void fetchHostListings();
+          }
+        },
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'listing_views' }, (payload) => {
+        const next = (payload.new as ListingEdge) ?? null;
+        const prev = (payload.old as ListingEdge) ?? null;
+        const listingId = next?.listing_id ?? prev?.listing_id ?? null;
+        if (listingId && listingIdsRef.current.has(listingId)) {
+          if (payload.eventType === 'INSERT') {
+            applyListingDelta(listingId, 'viewCount', 1);
+          } else if (payload.eventType === 'DELETE') {
+            applyListingDelta(listingId, 'viewCount', -1);
+          } else {
+            void fetchHostListings();
+          }
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'listing_likes' }, (payload) => {
+        const next = (payload.new as ListingEdge) ?? null;
+        const prev = (payload.old as ListingEdge) ?? null;
+        const listingId = next?.listing_id ?? prev?.listing_id ?? null;
+        if (listingId && listingIdsRef.current.has(listingId)) {
+          if (payload.eventType === 'INSERT') {
+            applyListingDelta(listingId, 'likeCount', 1);
+          } else if (payload.eventType === 'DELETE') {
+            applyListingDelta(listingId, 'likeCount', -1);
+          } else {
+            void fetchHostListings();
+          }
+        }
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [applyListingDelta, fetchHostListings, supabaseProfile?.id]);
+
   const isEmpty = useMemo(() => !isLoading && listings.length === 0 && !error, [isLoading, listings.length, error]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar hidden />
-      <View style={[styles.headerWrapper, { paddingTop: topPadding }]}> 
-        <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.navButton} activeOpacity={0.85} onPress={() => router.back()}>
+    <SafeAreaView style={[styles.safeArea, isAndroid && styles.safeAreaAndroid]}>
+      <StatusBar style="dark" backgroundColor="transparent" translucent />
+      <View
+        style={[
+          styles.headerWrapper,
+          { paddingTop: headerPaddingTop },
+          isAndroid && styles.headerWrapperAndroid,
+          isAndroid && isScrolled && styles.headerWrapperAndroidScrolled,
+        ]}
+      >
+        <View style={[styles.headerRow, isAndroid && styles.headerRowAndroid]}>
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            activeOpacity={0.85}
+            onPress={() => router.back()}
+          >
             <Feather name="chevron-left" size={22} color={COLORS.dark} />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>Mes annonces</Text>
             <Text style={styles.headerSubtitle}>Retrouvez tous vos logements publiés</Text>
           </View>
-          <View style={{ width: 44 }} />
+          <View style={isAndroid ? styles.headerSpacerAndroid : { width: 44 }} />
         </View>
       </View>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        onScroll={({ nativeEvent }) => {
+          if (isAndroid) {
+            setIsScrolled(nativeEvent.contentOffset.y > 2);
+          }
+        }}
+        scrollEventThrottle={16}
+      >
         {isLoading && (
           <View style={styles.loaderWrapper}>
             <ActivityIndicator size="large" color={COLORS.accent} />
@@ -246,8 +390,8 @@ export default function HostListingsScreen() {
           const statItems = [
             { key: 'type', label: 'Type', value: listing.propertyTypeLabel, icon: 'home' as const },
             { key: 'capacity', label: 'Capacité', value: listing.capacityLabel, icon: 'users' as const },
-            { key: 'views', label: 'Vues', value: listing.viewCountLabel, icon: 'eye' as const },
-            { key: 'likes', label: 'Likes', value: listing.likeCountLabel, icon: 'heart' as const },
+            { key: 'views', label: 'Vues', value: listing.viewCount.toString(), icon: 'eye' as const },
+            { key: 'likes', label: 'Likes', value: listing.likeCount.toString(), icon: 'heart' as const },
           ];
 
           return (
@@ -342,15 +486,36 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  safeAreaAndroid: {
+    backgroundColor: '#F9FAFB',
+  },
   headerWrapper: {
     paddingHorizontal: 16,
     paddingBottom: 12,
     backgroundColor: COLORS.background,
   },
+  headerWrapperAndroid: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  headerWrapperAndroidScrolled: {
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  headerRowAndroid: {
+    justifyContent: 'space-between',
+    gap: 0,
   },
   navButton: {
     width: 44,
@@ -361,6 +526,16 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   headerTitle: {
     fontFamily: 'Manrope',

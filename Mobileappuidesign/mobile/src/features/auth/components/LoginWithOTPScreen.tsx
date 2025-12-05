@@ -15,6 +15,7 @@ import {
 import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { Feather, FontAwesome } from '@expo/vector-icons';
 
+import { useAuth } from '@/src/contexts/AuthContext';
 import {
   confirmOtpCode,
   findSupabaseProfileByPhone,
@@ -44,6 +45,7 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
   onAuthenticated,
   onRequestSignUp,
 }) => {
+  const { refreshProfile } = useAuth();
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [phoneCountry, setPhoneCountry] = useState<PhoneCountryOption>(DEFAULT_PHONE_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -193,6 +195,7 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
         return;
       }
 
+      await refreshProfile();
       resetState();
       onAuthenticated?.();
     } catch (error) {

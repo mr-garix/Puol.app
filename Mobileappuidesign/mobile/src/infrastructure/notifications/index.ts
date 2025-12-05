@@ -4,3 +4,4 @@ export { default as HostBookingNotificationBridge } from './HostBookingNotificat
 export { default as VisitNotificationBridge } from './VisitNotificationBridge';
 export { default as HostCommentNotificationBridge } from './HostCommentNotificationBridge';
 export { default as UserCommentNotificationBridge } from './UserCommentNotificationBridge';
+export { default as UserReviewReplyNotificationBridge } from './UserReviewReplyNotificationBridge';

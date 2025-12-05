@@ -8,10 +8,12 @@ import {
   Image,
   FlatList,
   TextInput,
+  Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Conversation } from './mockData';
 import { MOCK_CONVERSATIONS } from './mockData';
 
@@ -26,6 +28,8 @@ const CONVERSATIONS: Conversation[] = MOCK_CONVERSATIONS;
 
 export default function MessagesScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const [activeFilter, setActiveFilter] = useState(FILTER_TABS[0]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -60,16 +64,34 @@ export default function MessagesScreen() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
 
-      <View style={styles.pageHeader}>
-        <View style={styles.pageHeaderLeft}>
-          <TouchableOpacity style={styles.navButton} onPress={() => router.back()} activeOpacity={0.75}>
+      <View
+        style={[
+          styles.pageHeader,
+          isAndroid && {
+            paddingTop: Math.max(insets.top, 16),
+            paddingBottom: 16,
+            borderBottomWidth: 1,
+            borderBottomColor: BORDER,
+            backgroundColor: '#FFFFFF',
+            justifyContent: 'space-between',
+            gap: 0,
+          },
+        ]}
+      >
+        <View style={[styles.pageHeaderLeft, isAndroid && styles.pageHeaderLeftAndroid]}>
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            onPress={() => router.back()}
+            activeOpacity={0.75}
+          >
             <Feather name="chevron-left" size={20} color={DARK} />
           </TouchableOpacity>
-          <View>
+          <View style={[styles.pageTitleContainer, isAndroid && styles.pageTitleContainerAndroid]}>
             <Text style={styles.pageTitle}>Messages</Text>
             <Text style={styles.pageSubtitle}>Tous vos échanges avec les bailleurs</Text>
           </View>
         </View>
+        {isAndroid ? <View style={styles.pageHeaderSpacerAndroid} /> : null}
       </View>
 
       <View style={styles.container}>
@@ -185,6 +207,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  navButtonAndroid: {
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+  },
   pageHeader: {
     paddingHorizontal: 20,
     paddingTop: 8,
@@ -197,6 +223,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  pageHeaderLeftAndroid: {
+    gap: 12,
+  },
+  pageTitleContainer: {
+    flex: 1,
+  },
+  pageTitleContainerAndroid: {
+    marginLeft: 4,
+  },
+  pageHeaderSpacerAndroid: {
+    width: 40,
   },
   pageTitle: {
     fontFamily: 'Manrope',

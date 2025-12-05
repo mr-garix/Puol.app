@@ -7,6 +7,7 @@ import {
   SafeAreaView,
   ScrollView,
   Share,
+  StatusBar as RNStatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -33,7 +34,8 @@ const COLORS = {
 export default function HostReservationsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const topPadding = Math.max(insets.top - 40, 2);
+  const isAndroid = Platform.OS === 'android';
+  const topPadding = isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top - 40, 2);
   const { bookings, isLoading, error, refresh } = useHostBookings();
   const [activeFilter, setActiveFilter] = useState<'en-cours' | 'termines' | 'annules' | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -157,16 +159,27 @@ const contentState = useMemo(() => {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
-      <View style={[styles.headerWrapper, { paddingTop: topPadding }]}> 
-        <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.navButton} activeOpacity={0.85} onPress={() => router.back()}>
+      <RNStatusBar barStyle="dark-content" />
+      <View
+        style={[
+          styles.headerWrapper,
+          { paddingTop: topPadding },
+          isAndroid && styles.headerWrapperAndroid,
+        ]}
+      >
+        <View style={[styles.headerRow, isAndroid && styles.headerRowAndroid]}>
+          <TouchableOpacity
+            style={[styles.navButton, isAndroid && styles.navButtonAndroid]}
+            activeOpacity={0.85}
+            onPress={() => router.back()}
+          >
             <Feather name="chevron-left" size={22} color={COLORS.dark} />
           </TouchableOpacity>
-          <View style={{ flex: 1 }}>
+          <View style={[styles.headerTextGroup, isAndroid && styles.headerTextGroupAndroid]}>
             <Text style={styles.headerTitle}>Réservations reçues</Text>
             <Text style={styles.headerSubtitle}>Consultez vos réservations confirmées</Text>
           </View>
-          <View style={{ width: 44 }} />
+          {isAndroid ? <View style={styles.headerSpacerAndroid} /> : <View style={{ width: 44 }} />}
         </View>
       </View>
 
@@ -388,6 +401,18 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     backgroundColor: COLORS.background,
   },
+  headerWrapperAndroid: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: COLORS.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
   notificationBanner: {
     marginTop: 12,
     backgroundColor: 'rgba(248,113,113,0.12)',
@@ -423,6 +448,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  headerRowAndroid: {
+    justifyContent: 'space-between',
+    gap: 0,
+  },
   navButton: {
     width: 44,
     height: 44,
@@ -432,6 +461,20 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+    marginRight: 12,
+  },
+  headerTextGroup: {
+    flex: 1,
+  },
+  headerTextGroupAndroid: {
+    marginLeft: 4,
   },
   headerTitle: {
     fontFamily: 'Manrope',
@@ -444,6 +487,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.muted,
     marginTop: 2,
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   content: {
     padding: 16,

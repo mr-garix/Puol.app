@@ -83,17 +83,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [fetchSupabaseProfile]);
 
   const refreshProfile = useCallback(async () => {
-    if (!firebaseUser) {
+    const currentUser = firebaseAuth.currentUser ?? firebaseUser;
+
+    if (!currentUser) {
       setSupabaseProfile(null);
       return null;
     }
 
     // Synchroniser à nouveau la session Supabase au cas où le token Firebase a été rafraîchi
-    await syncSupabaseSession(firebaseUser);
+    await syncSupabaseSession(currentUser);
 
     setIsRefreshingProfile(true);
     try {
-      return await fetchSupabaseProfile(firebaseUser.uid);
+      return await fetchSupabaseProfile(currentUser.uid);
     } finally {
       setIsRefreshingProfile(false);
     }

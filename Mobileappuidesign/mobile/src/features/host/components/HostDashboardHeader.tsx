@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -19,7 +19,8 @@ export const HostDashboardHeader: React.FC<HostDashboardHeaderProps> = ({
 }) => {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const headerTopPadding = Math.max(insets.top - 40, 2);
+  const isAndroid = Platform.OS === 'android';
+  const headerTopPadding = isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top - 40, 2);
   const displayBusinessName = hostBusinessName && hostBusinessName.trim().length > 0 ? hostBusinessName : 'Entreprise PUOL';
   const displayHostName = hostName && hostName.trim().length > 0 ? hostName : 'Hôte PUOL';
 
@@ -31,13 +32,25 @@ export const HostDashboardHeader: React.FC<HostDashboardHeaderProps> = ({
 
   return (
     <>
-      <View style={[styles.headerWrapper, { paddingTop: headerTopPadding }]}>
+      <View
+        style={[
+          styles.headerWrapper,
+          {
+            paddingTop: headerTopPadding,
+          },
+          isAndroid && styles.headerWrapperAndroid,
+        ]}
+      >
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[styles.backButton, isAndroid && styles.backButtonAndroid]}
+            onPress={handleBack}
+            activeOpacity={0.85}
+          >
             <Feather name="chevron-left" size={22} color="#111827" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Tableau de bord</Text>
-          <View style={{ width: 44 }} />
+          <Text style={[styles.headerTitle, isAndroid && styles.headerTitleAndroid]}>Tableau de bord</Text>
+          {isAndroid ? <View style={styles.headerSpacerAndroid} /> : <View style={{ width: 44 }} />}
         </View>
       </View>
 
@@ -97,6 +110,18 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     backgroundColor: '#F9FAFB',
   },
+  headerWrapperAndroid: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -115,11 +140,28 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  backButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    shadowOpacity: 0,
+    elevation: 0,
+    marginRight: 12,
+  },
   headerTitle: {
     fontFamily: 'Manrope',
     fontSize: 20,
     fontWeight: '700',
     color: '#0F172A',
+  },
+  headerTitleAndroid: {
+    flex: 1,
+    fontSize: 18,
+    marginLeft: 4,
+  },
+  headerSpacerAndroid: {
+    width: 40,
   },
   summaryCard: {
     backgroundColor: '#FFFFFF',
