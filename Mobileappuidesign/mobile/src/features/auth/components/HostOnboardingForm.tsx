@@ -35,6 +35,7 @@ export interface HostOnboardingData {
   lastName: string;
   phoneCountry: PhoneCountryOption;
   phoneNumber: string;
+  district: string;
   city: string;
   selectedTypes: string[];
   inventory: string;
@@ -46,6 +47,7 @@ export const HostOnboardingForm: React.FC<HostOnboardingFormProps> = ({ onSubmit
   const [phoneCountry, setPhoneCountry] = useState<PhoneCountryOption>(DEFAULT_PHONE_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [isCountryPickerOpen, setIsCountryPickerOpen] = useState(false);
+  const [district, setDistrict] = useState('');
   const [city, setCity] = useState('');
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [inventory, setInventory] = useState<string | null>(null);
@@ -53,6 +55,7 @@ export const HostOnboardingForm: React.FC<HostOnboardingFormProps> = ({ onSubmit
   const canSubmit =
     firstName.trim().length > 1 &&
     lastName.trim().length > 1 &&
+    district.trim().length > 1 &&
     city.trim().length > 1 &&
     selectedTypes.length > 0 &&
     inventory !== null &&
@@ -71,6 +74,7 @@ export const HostOnboardingForm: React.FC<HostOnboardingFormProps> = ({ onSubmit
       lastName,
       phoneCountry,
       phoneNumber,
+      district,
       city,
       selectedTypes,
       inventory: inventory!,
@@ -109,6 +113,18 @@ export const HostOnboardingForm: React.FC<HostOnboardingFormProps> = ({ onSubmit
                 editable={!isSubmitting}
               />
             </View>
+          </View>
+
+          <View style={styles.inputContainer}>
+            <Text style={styles.label}>Quartier</Text>
+            <TextInput
+              style={styles.input}
+              value={district}
+              onChangeText={setDistrict}
+              placeholder="Dans quel quartier opérez-vous ?"
+              placeholderTextColor="#9CA3AF"
+              editable={!isSubmitting}
+            />
           </View>
 
           <View style={styles.inputContainer}>

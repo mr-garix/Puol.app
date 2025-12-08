@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  BackHandler,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -13,7 +14,9 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 
@@ -67,7 +70,9 @@ const PropertyChip: React.FC<PropertyChipProps> = ({ option, selected, onPress }
 };
 
 export default function BecomeLandlordScreen() {
+  const navigation = useNavigation();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -80,6 +85,7 @@ export default function BecomeLandlordScreen() {
   const [modalStep, setModalStep] = useState<'verify' | 'success' | null>(null);
   const [verificationCode, setVerificationCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const backNavigationInFlightRef = useRef(false);
 
   const canSubmit =
     firstName.trim().length > 1 &&
@@ -173,9 +179,48 @@ export default function BecomeLandlordScreen() {
     router.replace('/(tabs)/profile' as never);
   };
 
-  const handleBack = () => {
-    router.replace('/onboarding' as never);
-  };
+  const handleBack = useCallback(() => {
+    if (backNavigationInFlightRef.current) {
+      return;
+    }
+
+    backNavigationInFlightRef.current = true;
+
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+    } else {
+      router.replace('/onboarding' as never);
+    }
+  }, [navigation, router]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const onHardwareBack = () => {
+        handleBack();
+        return true;
+      };
+
+      const hardwareSubscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+      const removeBeforeRemove = navigation.addListener('beforeRemove', (event: any) => {
+        if (event.data.action.type !== 'POP') {
+          return;
+        }
+
+        if (navigation.canGoBack?.()) {
+          return;
+        }
+
+        event.preventDefault();
+        handleBack();
+      });
+
+      return () => {
+        hardwareSubscription.remove();
+        removeBeforeRemove();
+        backNavigationInFlightRef.current = false;
+      };
+    }, [handleBack, navigation]),
+  );
 
   const renderInventoryOption = useCallback(
     (label: string) => {
@@ -203,14 +248,19 @@ export default function BecomeLandlordScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          stickyHeaderIndices={[0]}
         >
-          <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}> 
-            <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
-              <Text style={styles.backIcon}>←</Text>
-            </TouchableOpacity>
-          </Animated.View>
+          <View style={[styles.stickyHeaderContainer, { paddingTop: insets.top + 8 }]}>
+            <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}> 
+              <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
+                <Text style={styles.backIcon}>←</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </View>
 
-          <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}> 
+          <Animated.View
+            style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}
+          >
             <Text style={styles.kicker}>Trouver un locataire n'a jamais été aussi facile</Text>
           </Animated.View>
 
@@ -398,9 +448,14 @@ const styles = StyleSheet.create({
     paddingBottom: 48,
     paddingHorizontal: 20,
   },
+  stickyHeaderContainer: {
+    backgroundColor: '#FFFFFF',
+    paddingTop: 16,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
   backButtonContainer: {
     alignSelf: 'flex-start',
-    marginBottom: 12,
   },
   backButton: {
     width: 44,

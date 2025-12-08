@@ -1,12 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  Animated,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, Image, TouchableOpacity, StyleSheet, Animated } from 'react-native';
+import { useRouter } from 'expo-router';
+
 import { Comment } from './types';
 
 interface CommentItemProps {
@@ -18,6 +13,7 @@ interface CommentItemProps {
   currentUserId?: string;
   variant?: 'default' | 'preview';
   isHighlighted?: boolean;
+  onAuthorPress?: (profileId: string) => void;
 }
 
 export const CommentItem: React.FC<CommentItemProps> = ({
@@ -29,7 +25,9 @@ export const CommentItem: React.FC<CommentItemProps> = ({
   currentUserId,
   variant = 'default',
   isHighlighted = false,
+  onAuthorPress,
 }) => {
+  const router = useRouter();
   const [likeAnimation] = useState(new Animated.Value(1));
   const [highlightAnimation] = useState(() => new Animated.Value(0));
   const isOwnComment = currentUserId === comment.userId;
@@ -49,6 +47,17 @@ export const CommentItem: React.FC<CommentItemProps> = ({
       uri: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format',
     };
   }, [comment.userAvatar]);
+
+  const handleAuthorPress = useCallback(() => {
+    if (!comment.userId) {
+      return;
+    }
+    if (onAuthorPress) {
+      onAuthorPress(comment.userId);
+      return;
+    }
+    router.push({ pathname: '/profile/[profileId]', params: { profileId: comment.userId } } as never);
+  }, [comment.userId, onAuthorPress, router]);
 
   const handleLike = () => {
     Animated.sequence([
@@ -91,18 +100,26 @@ export const CommentItem: React.FC<CommentItemProps> = ({
     }),
   };
 
-  const getTimeAgo = (date: Date) => {
-    const now = new Date();
-    const diffInMs = now.getTime() - date.getTime();
-    const diffInMinutes = Math.floor(diffInMs / 60000);
-    const diffInHours = Math.floor(diffInMinutes / 60);
-    const diffInDays = Math.floor(diffInHours / 24);
+  const formatRelativeTime = (date: Date) => {
+    const diffMs = Date.now() - new Date(date).getTime();
+    const seconds = Math.floor(diffMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
 
-    if (diffInMinutes < 1) return "À l'instant";
-    if (diffInMinutes < 60) return `${diffInMinutes}min`;
-    if (diffInHours < 24) return `${diffInHours}h`;
-    if (diffInDays < 7) return `${diffInDays}j`;
-    return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    if (seconds < 60) {
+      return 'À l’instant';
+    }
+    if (minutes < 60) {
+      return `Il y a ${minutes} min`;
+    }
+    if (hours < 24) {
+      return `Il y a ${hours} h`;
+    }
+    if (days < 7) {
+      return `Il y a ${days} j`;
+    }
+    return new Date(date).toLocaleDateString('fr-FR');
   };
 
   return (
@@ -115,10 +132,17 @@ export const CommentItem: React.FC<CommentItemProps> = ({
         highlightStyles,
       ]}
     >
-      <Image
-        source={avatarSource}
-        style={[styles.avatar, (isPreview || isReply) && styles.replyAvatar]}
-      />
+      <TouchableOpacity
+        onPress={handleAuthorPress}
+        activeOpacity={0.75}
+        disabled={!comment.userId}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <Image
+          source={avatarSource}
+          style={[styles.avatar, (isPreview || isReply) && styles.replyAvatar]}
+        />
+      </TouchableOpacity>
 
       <View
         style={[
@@ -126,40 +150,41 @@ export const CommentItem: React.FC<CommentItemProps> = ({
           (isPreview || isReply) && styles.replyContentContainer,
         ]}
       >
-        <View style={styles.headerRow}>
-          <View style={styles.userInfo}>
-            <View style={styles.userMetaRow}>
-              <Text
-                style={[styles.userName, (isPreview || isReply) && styles.replyUserName]}
-              >
-                {comment.userName}
-              </Text>
-              {comment.userIsVerified && (
-                <Image
-                  source={require('@/assets/icons/feed-icon-verified.png')}
-                  style={[styles.verifiedIcon, (isPreview || isReply) && styles.replyVerifiedIcon]}
-                  resizeMode="contain"
-                />
-              )}
-              {!!displayRoleLabel && (
-                <Text style={[styles.rolePill, (isPreview || isReply) && styles.replyRolePill]}>{displayRoleLabel}</Text>
-              )}
-            </View>
-            <Text
-              style={[styles.timestamp, (isPreview || isReply) && styles.replyTimestamp]}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <TouchableOpacity
+              onPress={handleAuthorPress}
+              activeOpacity={0.75}
+              disabled={!comment.userId}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
-              {getTimeAgo(comment.timestamp)}
-            </Text>
+              <Text style={styles.authorName}>{comment.userName}</Text>
+            </TouchableOpacity>
+            {comment.userIsVerified && (
+              <Image
+                source={require('@/assets/icons/feed-icon-verified.png')}
+                style={[styles.verifiedIcon, (isPreview || isReply) && styles.replyVerifiedIcon]}
+                resizeMode="contain"
+              />
+            )}
+            {!!displayRoleLabel && (
+              <Text style={[styles.rolePill, (isPreview || isReply) && styles.replyRolePill]}>{displayRoleLabel}</Text>
+            )}
           </View>
 
-          {isOwnComment && onDelete && !isPreview && (
-            <TouchableOpacity
-              onPress={() => onDelete(comment.id)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Text style={styles.deleteButton}>×</Text>
-            </TouchableOpacity>
-          )}
+          <View style={styles.headerRight}>
+            <Text style={[styles.timestamp, (isPreview || isReply) && styles.replyTimestamp]}>
+              {formatRelativeTime(comment.timestamp)}
+            </Text>
+            {isOwnComment && onDelete && !isPreview && (
+              <TouchableOpacity
+                onPress={() => onDelete(comment.id)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Text style={styles.deleteButton}>×</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         <Text
@@ -171,7 +196,9 @@ export const CommentItem: React.FC<CommentItemProps> = ({
           numberOfLines={isPreview ? 2 : undefined}
         >
           {comment.replyingToName ? (
-            <Text style={styles.replyingMention}>@{comment.replyingToName} </Text>
+            <Text style={styles.replyingMention}>
+              @{comment.replyingToName}{' '}
+            </Text>
           ) : null}
           {comment.text}
         </Text>
@@ -221,6 +248,28 @@ export const CommentItem: React.FC<CommentItemProps> = ({
 };
 
 const styles = StyleSheet.create({
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    columnGap: 6,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    columnGap: 8,
+  },
+  authorName: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
   container: {
     flexDirection: 'row',
     paddingVertical: 10,

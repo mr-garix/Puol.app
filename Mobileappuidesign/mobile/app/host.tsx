@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
+  BackHandler,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -11,27 +13,36 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useNavigation, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 
-import {
-  HostOnboardingForm,
-  HostVerificationModal,
-  HostSuccessScreen,
-  type HostOnboardingData,
-} from '@/src/features/auth/components';
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+
+import { HostVerificationModal, HostSuccessScreen } from '@/src/features/auth/components';
 import {
   DEFAULT_PHONE_COUNTRY,
   PHONE_COUNTRY_OPTIONS,
   PhoneCountryOption,
   formatE164PhoneNumber,
+  parseE164PhoneNumber,
   sanitizeNationalNumber,
 } from '@/src/features/auth/phoneCountries';
 import { supabase } from '@/src/supabaseClient';
 import { useAuth } from '@/src/contexts/AuthContext';
+import type { SupabaseProfile } from '@/src/features/auth/hooks/AuthContext';
+import {
+  startPhoneSignIn,
+  confirmOtpCode,
+  createSupabaseProfile,
+  findSupabaseProfileByPhone,
+  resetPhoneConfirmation,
+} from '@/src/features/auth/phoneAuthService';
+import { firebaseConfig } from '@/src/firebaseClient';
 
 const PUOL_GREEN = '#2ECC71';
 const PUOL_GREEN_LIGHT = 'rgba(46, 204, 113, 0.12)';
@@ -51,6 +62,15 @@ type FurnitureChipProps = {
   option: FurnitureOption;
   selected: boolean;
   onPress: () => void;
+};
+
+const WHATSAPP_SUPPORT_PHONE = '237699791732';
+const WHATSAPP_SUPPORT_LINK = 'https://wa.me/237699791732';
+const RESEND_COOLDOWN_SECONDS = 90;
+
+type BlockInfo = {
+  message: string;
+  action?: 'profile' | 'home';
 };
 
 const FurnitureChip: React.FC<FurnitureChipProps> = ({ option, selected, onPress }) => {
@@ -76,27 +96,64 @@ type ModalStep = 'verify' | 'success' | null;
 
 export default function BecomeHostScreen() {
   const router = useRouter();
-  const { supabaseProfile: user } = useAuth();
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+  const { supabaseProfile: user, refreshProfile } = useAuth();
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [phoneCountry, setPhoneCountry] = useState<PhoneCountryOption>(DEFAULT_PHONE_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [isCountryPickerOpen, setIsCountryPickerOpen] = useState(false);
+  const [district, setDistrict] = useState('');
   const [city, setCity] = useState('');
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [inventory, setInventory] = useState<string | null>(null);
   const [modalStep, setModalStep] = useState<ModalStep>(null);
-  const [verificationCode, setVerificationCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
+  const [isResendingCode, setIsResendingCode] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recaptchaRef = useRef<FirebaseRecaptchaVerifierModal | null>(null);
+  const [blockInfo, setBlockInfo] = useState<BlockInfo | null>(null);
+  const pendingPhoneRef = useRef<string | null>(null);
+  const pendingProfileRef = useRef<SupabaseProfile | null>(null);
+  const hasRedirectedRef = useRef(false);
+  const backNavigationInFlightRef = useRef(false);
 
   const canSubmit =
     firstName.trim().length > 1 &&
     lastName.trim().length > 1 &&
-    city.trim().length > 2 &&
+    district.trim().length > 1 &&
+    city.trim().length > 1 &&
     selectedTypes.length > 0 &&
     !!inventory &&
-    phoneNumber.trim().length === phoneCountry.minLength;
+    phoneNumber.trim().length === phoneCountry.minLength &&
+    !isSendingCode &&
+    !blockInfo;
+
+  useEffect(() => {
+    if (resendCooldown <= 0 && resendIntervalRef.current) {
+      clearInterval(resendIntervalRef.current);
+      resendIntervalRef.current = null;
+      return;
+    }
+
+    if (resendCooldown > 0 && !resendIntervalRef.current) {
+      resendIntervalRef.current = setInterval(() => {
+        setResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+
+    return () => {
+      if (resendIntervalRef.current && resendCooldown <= 0) {
+        clearInterval(resendIntervalRef.current);
+        resendIntervalRef.current = null;
+      }
+    };
+  }, [resendCooldown]);
 
   // Animations
   const headerOpacity = useRef(new Animated.Value(0)).current;
@@ -144,254 +201,632 @@ export default function BecomeHostScreen() {
     ]).start();
   }, [backOpacity, backTranslateY, bodyOpacity, bodyTranslateY, ctaOpacity, ctaTranslateY, formOpacity, formTranslateY, headerOpacity, headerTranslateY, illustrationOpacity, illustrationScale]);
 
+  useEffect(() => {
+    return () => {
+      if (resendIntervalRef.current) {
+        clearInterval(resendIntervalRef.current);
+        resendIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  const prefillDoneRef = useRef(false);
+  const [verificationPhone, setVerificationPhone] = useState<string | null>(null);
+
   const toggleType = useCallback((label: string) => {
     setSelectedTypes((prev) => (prev.includes(label) ? prev.filter((item) => item !== label) : [...prev, label]));
   }, []);
 
-  const handleSubmit = async () => {
-    if (!canSubmit) return;
-    
+  const evaluateBlockInfo = useCallback(
+    (profile: SupabaseProfile | null, { treatAsCurrentUser = false }: { treatAsCurrentUser?: boolean } = {}): BlockInfo | null => {
+      if (!profile) {
+        return null;
+      }
+
+      const hostStatus = profile.host_status ?? 'none';
+      const role = profile.role ?? 'user';
+
+      if (hostStatus === 'approved' || role === 'host') {
+        return {
+          message: "Tu es déjà hôte sur PUOL. Accède à ton profil pour continuer.",
+          action: 'profile',
+        };
+      }
+
+      if (hostStatus === 'pending') {
+        if (treatAsCurrentUser) {
+          return null;
+        }
+
+        return {
+          message: 'Ta demande pour devenir hôte est déjà en cours. Tu recevras une notification dès validation.',
+          action: 'profile',
+        };
+      }
+
+      if (!treatAsCurrentUser) {
+        if (hostStatus === 'rejected') {
+          return {
+            message:
+              'Ce numéro est lié à un compte existant. Connecte-toi pour renvoyer une nouvelle demande avec les bonnes informations.',
+            action: 'profile',
+          };
+        }
+
+        return {
+          message: 'Ce numéro est déjà associé à un compte PUOL. Connecte-toi pour accéder à l’application.',
+          action: 'profile',
+        };
+      }
+
+      return null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const info = evaluateBlockInfo(user, { treatAsCurrentUser: true });
+    setBlockInfo(info);
+
+    if (info) {
+      return;
+    }
+
+    if (!prefillDoneRef.current) {
+      if (user.first_name) {
+        setFirstName((prev) => prev || user.first_name || '');
+      }
+      if (user.last_name) {
+        setLastName((prev) => prev || user.last_name || '');
+      }
+      if (user.city) {
+        setCity((prev) => prev || user.city || '');
+      }
+      if (user.phone) {
+        const { country, nationalNumber } = parseE164PhoneNumber(user.phone);
+        setPhoneCountry(country);
+        if (!phoneNumber) {
+          setPhoneNumber(nationalNumber);
+        }
+      }
+      prefillDoneRef.current = true;
+    }
+  }, [evaluateBlockInfo, phoneNumber, user]);
+
+  useEffect(() => {
+    if (!user || hasRedirectedRef.current || modalStep === 'success') {
+      return;
+    }
+
+    const currentStatus = user.host_status ?? 'none';
+    if (currentStatus === 'pending' || currentStatus === 'approved' || user.role === 'host') {
+      hasRedirectedRef.current = true;
+      router.replace('/(tabs)/profile' as never);
+    }
+  }, [modalStep, router, user]);
+
+  const startResendCountdown = useCallback(() => {
+    setResendCooldown(RESEND_COOLDOWN_SECONDS);
+  }, []);
+
+  const clearVerificationState = useCallback(() => {
+    if (resendIntervalRef.current) {
+      clearInterval(resendIntervalRef.current);
+      resendIntervalRef.current = null;
+    }
+    resetPhoneConfirmation();
+    pendingPhoneRef.current = null;
+    pendingProfileRef.current = null;
+    setVerificationPhone(null);
+    setResendCooldown(0);
+    setIsResendingCode(false);
+  }, []);
+
+  const handleSubmit = useCallback(async () => {
+    if (!canSubmit) {
+      return;
+    }
+
     const e164Phone = formatE164PhoneNumber(phoneNumber, phoneCountry);
-    const onboardingData: HostOnboardingData = {
-      firstName,
-      lastName,
-      phoneCountry,
-      phoneNumber: e164Phone,
-      city,
-      selectedTypes,
-      inventory,
-    };
+    if (!e164Phone) {
+      setVerificationError('Numéro de téléphone invalide.');
+      return;
+    }
+
+    setIsSendingCode(true);
+    setVerificationError(null);
 
     try {
-      console.log('[BecomeHost] Envoi du code SMS vers', e164Phone);
-      // TODO: intégrer ton service d'envoi SMS ici
+      const profileByPhone = await findSupabaseProfileByPhone(e164Phone);
+      const isCurrentUser = Boolean(user && profileByPhone && profileByPhone.id === user.id);
+      const blockingInfo = evaluateBlockInfo(profileByPhone, { treatAsCurrentUser: isCurrentUser });
+
+      if (blockingInfo) {
+        setBlockInfo(blockingInfo);
+        setIsSendingCode(false);
+        return;
+      }
+
+      await startPhoneSignIn(e164Phone, recaptchaRef.current || undefined);
+
+      pendingPhoneRef.current = e164Phone;
+      pendingProfileRef.current = profileByPhone ?? user ?? null;
+      setVerificationPhone(e164Phone);
+      startResendCountdown();
       setModalStep('verify');
     } catch (error) {
-      console.error('[BecomeHost] Erreur lors de la soumission', error);
+      console.error('[BecomeHost] OTP send error', error);
+      setVerificationError("Impossible d'envoyer le code. Vérifie ton numéro et réessaie.");
+    } finally {
+      setIsSendingCode(false);
     }
-  };
+  }, [canSubmit, evaluateBlockInfo, phoneCountry, phoneNumber, startResendCountdown, user]);
 
-  const handleVerify = async (code: string) => {
-    setIsSubmitting(true);
-    try {
-      console.log('[BecomeHost] Vérification du code', code);
-      // TODO: intégrer ton service de vérification SMS ici
+  const ensureHostApplication = useCallback(async (profileId: string) => {
+    const { data: existingApplication, error: fetchError } = await supabase
+      .from('host_applications')
+      .select('id, status, reviewed_at')
+      .eq('profile_id', profileId)
+      .maybeSingle();
 
-      // Enregistrer les données dans Supabase
-      if (user) {
-        const { error } = await supabase
-          .from('profiles')
-          .update({
-            first_name: firstName,
-            last_name: lastName,
-            phone: formatE164PhoneNumber(phoneNumber, phoneCountry),
-            city: city,
-            role: 'host',
-            host_status: 'pending',
-            business_name: `${firstName} ${lastName}`,
-            furnished_types: selectedTypes,
-            inventory: inventory,
-            inventory_count: inventory === '1' ? 1 : inventory === '2 à 5' ? 3 : 6,
-            stats: { views: 0, likes: 0, comments: 0 },
-          })
-          .eq('id', user.id);
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      throw fetchError;
+    }
 
-        if (error) {
-          console.error('[BecomeHost] Erreur Supabase', error);
-          throw error;
+    if (existingApplication) {
+      const needsUpdate =
+        existingApplication.status !== 'pending' || existingApplication.reviewed_at !== null;
+
+      if (needsUpdate) {
+        const { error: updateError } = await supabase
+          .from('host_applications')
+          .update({ status: 'pending', reviewed_at: null })
+          .eq('id', existingApplication.id);
+
+        if (updateError) {
+          throw updateError;
         }
       }
 
-      setModalStep('success');
-    } catch (error) {
-      console.error('[BecomeHost] Erreur lors de la vérification', error);
-    } finally {
-      setIsSubmitting(false);
+      return;
     }
-  };
 
-  const handleCloseModal = () => {
-    setModalStep(null);
-    setVerificationCode('');
-  };
+    const { error: insertError } = await supabase
+      .from('host_applications')
+      .insert({ profile_id: profileId, status: 'pending', reviewed_at: null });
 
-  const handleCloseSuccess = () => {
-    handleCloseModal();
-    router.back();
-  };
+    if (insertError) {
+      throw insertError;
+    }
+  }, []);
 
-  const handleBack = () => {
-    router.replace('/onboarding' as never);
-  };
+  const handleVerify = useCallback(
+    async (code: string) => {
+      if (!code) {
+        return;
+      }
 
-  const renderInventoryOption = useCallback(
-    (label: string) => {
-      const selected = inventory === label;
-      return (
-        <TouchableOpacity
-          key={label}
-          style={[styles.inventoryOption, selected && styles.inventoryOptionSelected]}
-          onPress={() => setInventory(label)}
-          activeOpacity={0.85}
-        >
-          <Text style={[styles.inventoryLabel, selected && styles.inventoryLabelSelected]}>{label}</Text>
-        </TouchableOpacity>
-      );
+      setIsSubmitting(true);
+      setVerificationError(null);
+
+      try {
+        const { user: firebaseUser, phoneNumber: confirmedPhone } = await confirmOtpCode(code);
+        const normalizedPhone = confirmedPhone ?? pendingPhoneRef.current;
+
+        if (!normalizedPhone) {
+          throw new Error('missing_phone');
+        }
+
+        let targetProfile = pendingProfileRef.current || user || null;
+
+        if (!targetProfile) {
+          targetProfile = await findSupabaseProfileByPhone(normalizedPhone);
+        }
+
+        let profileId: string;
+
+        if (targetProfile) {
+          profileId = targetProfile.id;
+        } else {
+          const created = await createSupabaseProfile({
+            user: firebaseUser,
+            phone: normalizedPhone,
+            firstName,
+            lastName,
+          });
+          profileId = created.id;
+          pendingProfileRef.current = created;
+        }
+
+        await ensureHostApplication(profileId);
+
+        const updates = {
+          first_name: firstName.trim() || null,
+          last_name: lastName.trim() || null,
+          city: city.trim() || null,
+          phone: normalizedPhone,
+          role: 'host',
+          host_status: 'pending',
+          supply_role: 'host',
+          updated_at: new Date().toISOString(),
+        };
+
+        const { error: profileError } = await supabase.from('profiles').update(updates).eq('id', profileId);
+        if (profileError) {
+          throw profileError;
+        }
+
+        await refreshProfile().catch((err) => console.warn('[BecomeHost] refreshProfile warning', err));
+
+        const messageLines = [
+          'Nouvelle demande hôte PUOL',
+          '',
+          `Nom: ${firstName.trim()} ${lastName.trim()}`.trim(),
+          `Téléphone: ${normalizedPhone}`,
+          `Quartier: ${district.trim() || 'Non précisé'}`,
+          `Ville: ${city.trim() || 'Non précisée'}`,
+          `Types de biens: ${selectedTypes.length ? selectedTypes.join(', ') : 'Non précisés'}`,
+          `Nombre de biens: ${inventory ?? 'Non précisé'}`,
+        ];
+
+        const encodedMessage = encodeURIComponent(messageLines.join('\n'));
+        const whatsappDeepLink = `whatsapp://send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
+        const whatsappApiLink = `https://api.whatsapp.com/send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
+
+        Linking.openURL(whatsappDeepLink)
+          .catch((deepLinkError) => {
+            console.warn('[BecomeHost] WhatsApp deep link error', deepLinkError);
+            return Linking.openURL(whatsappApiLink);
+          })
+          .catch((apiLinkError) => {
+            console.warn('[BecomeHost] WhatsApp API link error', apiLinkError);
+            return Linking.openURL(WHATSAPP_SUPPORT_LINK);
+          })
+          .catch((err) => console.error('[BecomeHost] WhatsApp open error', err));
+
+        setBlockInfo(null);
+        setModalStep('success');
+        clearVerificationState();
+      } catch (error) {
+        console.error('[BecomeHost] OTP verification error', error);
+        const errorCode = (error as { code?: string })?.code;
+        const fallbackMessage =
+          "Une erreur est survenue pendant la vérification. Réessaie ou contacte le support.";
+        const otpMessage = 'Code invalide ou expiré. Réessaie.';
+
+        if (typeof errorCode === 'string' && errorCode.startsWith('auth/')) {
+          setVerificationError(otpMessage);
+        } else {
+          setVerificationError(fallbackMessage);
+        }
+      } finally {
+        setIsSubmitting(false);
+      }
     },
-    [inventory],
+    [
+      city,
+      clearVerificationState,
+      district,
+      ensureHostApplication,
+      firstName,
+      inventory,
+      lastName,
+      refreshProfile,
+      selectedTypes,
+      user,
+    ],
+  );
+
+  const handleResendCode = useCallback(async () => {
+    if (!verificationPhone) {
+      return;
+    }
+
+    setIsResendingCode(true);
+    setVerificationError(null);
+
+    try {
+      await startPhoneSignIn(verificationPhone, recaptchaRef.current || undefined);
+      startResendCountdown();
+    } catch (error) {
+      console.error('[BecomeHost] OTP resend error', error);
+      setVerificationError('Impossible de renvoyer le code pour le moment. Réessaie plus tard.');
+    } finally {
+      setIsResendingCode(false);
+    }
+  }, [startResendCountdown, verificationPhone]);
+
+  const handleCloseModal = useCallback(() => {
+    setModalStep(null);
+    setVerificationError(null);
+    clearVerificationState();
+  }, [clearVerificationState]);
+
+  const handleCloseSuccess = useCallback(() => {
+    clearVerificationState();
+    setModalStep(null);
+    router.replace('/(tabs)/profile' as never);
+  }, [clearVerificationState, router]);
+
+  const handleBack = useCallback(() => {
+    if (backNavigationInFlightRef.current) {
+      return;
+    }
+
+    backNavigationInFlightRef.current = true;
+
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+    } else {
+      router.replace('/onboarding' as never);
+    }
+  }, [navigation, router]);
+
+  const handleBlockAction = useCallback(() => {
+    if (!blockInfo?.action) {
+      return;
+    }
+
+    if (blockInfo.action === 'profile') {
+      router.replace('/(tabs)/profile' as never);
+    } else if (blockInfo.action === 'home') {
+      router.replace('/' as never);
+    }
+  }, [blockInfo, router]);
+
+  const renderForm = () => (
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      stickyHeaderIndices={[0]}
+    >
+      <View style={[styles.stickyHeaderContainer, { paddingTop: insets.top + 8 }]}>
+        <Animated.View
+          style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}
+        >
+          <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
+            <Text style={styles.backIcon}>←</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </View>
+
+      <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}
+      >
+        <Text style={styles.kicker}>Louer son meublé n'a jamais été aussi facile</Text>
+      </Animated.View>
+
+      <Animated.Image
+        source={require('../assets/icons/splash3.png')}
+        style={[styles.hero, { opacity: illustrationOpacity, transform: [{ scale: illustrationScale }] }]}
+        resizeMode="contain"
+      />
+
+      <Animated.View
+        style={[styles.bodyTextContainer, { opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }]}
+      >
+        <Text style={styles.title}>Deviens hôte sur PUOL</Text>
+        <Text style={styles.subtitle}>Dis-nous un peu plus pour t'aider à louer tes biens meublés.</Text>
+      </Animated.View>
+
+      <Animated.View style={[styles.formCard, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}
+      >
+        <View style={styles.nameRow}>
+          <View style={styles.nameField}>
+            <Text style={styles.fieldLabel}>Prénom</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ex: Alex"
+              placeholderTextColor="#9CA3AF"
+              value={firstName}
+              onChangeText={setFirstName}
+              returnKeyType="next"
+            />
+          </View>
+          <View style={styles.nameField}>
+            <Text style={styles.fieldLabel}>Nom</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ex: Emmanuel"
+              placeholderTextColor="#9CA3AF"
+              value={lastName}
+              onChangeText={setLastName}
+              returnKeyType="next"
+            />
+          </View>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
+          <View style={styles.phoneField}>
+            <TouchableOpacity
+              style={styles.countrySelector}
+              activeOpacity={0.8}
+              onPress={() => setIsCountryPickerOpen((prev) => !prev)}
+            >
+              <Text style={styles.flag}>{phoneCountry.flag}</Text>
+              <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
+            </TouchableOpacity>
+            <TextInput
+              style={styles.phoneInput}
+              placeholder={phoneCountry.inputPlaceholder}
+              placeholderTextColor="#9CA3AF"
+              keyboardType="phone-pad"
+              value={phoneNumber}
+              onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
+            />
+          </View>
+        </View>
+        {isCountryPickerOpen && (
+          <View style={styles.countryList}>
+            {PHONE_COUNTRY_OPTIONS.map((country) => (
+              <TouchableOpacity
+                key={country.code}
+                style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
+                activeOpacity={0.85}
+                onPress={() => {
+                  setPhoneCountry(country);
+                  setPhoneNumber('');
+                  setIsCountryPickerOpen(false);
+                }}
+              >
+                <Text style={styles.flag}>{country.flag}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.countryName}>{country.name}</Text>
+                  <Text style={styles.countryDial}>{country.dialCode}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Quartier</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Ex: Bonapriso"
+            placeholderTextColor="#9CA3AF"
+            value={district}
+            onChangeText={setDistrict}
+          />
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Ville</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Ex: Douala"
+            placeholderTextColor="#9CA3AF"
+            value={city}
+            onChangeText={setCity}
+          />
+        </View>
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Quel type de biens meublés proposes-tu ?</Text>
+        </View>
+        <View style={styles.chipsContainer}>
+          {furnitureOptions.map((option) => (
+            <FurnitureChip
+              key={option.label}
+              option={option}
+              selected={selectedTypes.includes(option.label)}
+              onPress={() => toggleType(option.label)}
+            />
+          ))}
+        </View>
+
+        <View style={[styles.sectionHeader, { marginTop: 20 }]}>
+          <Text style={styles.sectionTitle}>Nombre de biens</Text>
+        </View>
+        <View style={styles.inventoryRow}>
+          {inventoryOptions.map((label) => {
+            const selected = inventory === label;
+            return (
+              <TouchableOpacity
+                key={label}
+                style={[styles.inventoryOption, selected && styles.inventoryOptionSelected]}
+                onPress={() => setInventory(label)}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.inventoryLabel, selected && styles.inventoryLabelSelected]}>{label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </Animated.View>
+
+      <Animated.View
+        style={[styles.ctaContainer, { opacity: ctaOpacity, transform: [{ translateY: ctaTranslateY }] }]}
+      >
+        <TouchableOpacity
+          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+          onPress={handleSubmit}
+          disabled={!canSubmit}
+          activeOpacity={0.9}
+        >
+          <Text style={[styles.submitLabel, !canSubmit && styles.submitLabelDisabled]}>Envoyer</Text>
+        </TouchableOpacity>
+      </Animated.View>
+
+      {verificationError ? <Text style={styles.errorBanner}>{verificationError}</Text> : null}
+    </ScrollView>
+  );
+
+  const shouldShowBlockScreen = Boolean(blockInfo && modalStep === null && !user);
+
+  useFocusEffect(
+    useCallback(() => {
+      const onHardwareBack = () => {
+        handleBack();
+        return true;
+      };
+
+      const hardwareSubscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+      const removeBeforeRemove = navigation.addListener('beforeRemove', (event) => {
+        if (event.data.action.type !== 'POP') {
+          return;
+        }
+
+        if (navigation.canGoBack?.()) {
+          return;
+        }
+
+        event.preventDefault();
+        handleBack();
+      });
+
+      return () => {
+        hardwareSubscription.remove();
+        removeBeforeRemove();
+        backNavigationInFlightRef.current = false;
+      };
+    }, [handleBack, navigation]),
   );
 
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
       <RNStatusBar barStyle="dark-content" />
+      <FirebaseRecaptchaVerifierModal ref={recaptchaRef} firebaseConfig={firebaseConfig} />
+
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}> 
-            <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
-              <Text style={styles.backIcon}>←</Text>
-            </TouchableOpacity>
-          </Animated.View>
-
-          <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}> 
-            <Text style={styles.kicker}>Louer n'a jamais été aussi simple</Text>
-          </Animated.View>
-
-          <Animated.Image
-            source={require('../assets/icons/splash3.png')}
-            style={[styles.hero, { opacity: illustrationOpacity, transform: [{ scale: illustrationScale }] }]}
-            resizeMode="contain"
-          />
-
-          <Animated.View style={[styles.bodyTextContainer, { opacity: bodyOpacity, transform: [{ translateY: bodyTranslateY }] }]}> 
-            <Text style={styles.title}>Deviens hôte sur PUOL</Text>
-            <Text style={styles.subtitle}>Dis-nous un peu plus pour t'aider à louer tes biens meublés.</Text>
-          </Animated.View>
-
-          <Animated.View style={[styles.formCard, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}> 
-            <View style={styles.nameRow}>
-              <View style={styles.nameField}>
-                <Text style={styles.fieldLabel}>Prénom</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ex: Alex"
-                  placeholderTextColor="#9CA3AF"
-                  value={firstName}
-                  onChangeText={setFirstName}
-                  returnKeyType="next"
-                />
-              </View>
-              <View style={styles.nameField}>
-                <Text style={styles.fieldLabel}>Nom</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ex: Emmanuel"
-                  placeholderTextColor="#9CA3AF"
-                  value={lastName}
-                  onChangeText={setLastName}
-                  returnKeyType="next"
-                />
-              </View>
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
-              <View style={styles.phoneField}>
-                <TouchableOpacity
-                  style={styles.countrySelector}
-                  activeOpacity={0.8}
-                  onPress={() => setIsCountryPickerOpen((prev) => !prev)}
-                >
-                  <Text style={styles.flag}>{phoneCountry.flag}</Text>
-                  <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
-                </TouchableOpacity>
-                <TextInput
-                  style={styles.phoneInput}
-                  placeholder={phoneCountry.inputPlaceholder}
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="phone-pad"
-                  value={phoneNumber}
-                  onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
-                />
-              </View>
-            </View>
-            {isCountryPickerOpen && (
-              <View style={styles.countryList}>
-                {PHONE_COUNTRY_OPTIONS.map((country) => (
-                  <TouchableOpacity
-                    key={country.code}
-                    style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
-                    activeOpacity={0.85}
-                    onPress={() => {
-                      setPhoneCountry(country);
-                      setPhoneNumber('');
-                      setIsCountryPickerOpen(false);
-                    }}
-                  >
-                    <Text style={styles.flag}>{country.flag}</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.countryName}>{country.name}</Text>
-                      <Text style={styles.countryDial}>{country.dialCode}</Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Ville</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Ex: Douala"
-                placeholderTextColor="#9CA3AF"
-                value={city}
-                onChangeText={setCity}
-              />
-            </View>
-
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Quel type de biens meublés proposes-tu ?</Text>
-            </View>
-            <View style={styles.chipsContainer}>
-              {furnitureOptions.map((option) => (
-                <FurnitureChip
-                  key={option.label}
-                  option={option}
-                  selected={selectedTypes.includes(option.label)}
-                  onPress={() => toggleType(option.label)}
-                />
-              ))}
-            </View>
-
-            <View style={[styles.sectionHeader, { marginTop: 20 }]}> 
-              <Text style={styles.sectionTitle}>Nombre de biens</Text>
-            </View>
-            <View style={styles.inventoryRow}>{inventoryOptions.map(renderInventoryOption)}</View>
-          </Animated.View>
-
-          <Animated.View style={[styles.ctaContainer, { opacity: ctaOpacity, transform: [{ translateY: ctaTranslateY }] }]}> 
-            <TouchableOpacity
-              style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-              onPress={handleSubmit}
-              disabled={!canSubmit}
-              activeOpacity={0.9}
-            >
-              <Text style={[styles.submitLabel, !canSubmit && styles.submitLabelDisabled]}>Envoyer</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        </ScrollView>
+        {shouldShowBlockScreen && blockInfo ? (
+          <View style={styles.blockContainer}>
+            <Text style={styles.blockTitle}>Accès à ton tableau de bord</Text>
+            <Text style={styles.blockMessage}>{blockInfo.message}</Text>
+            {blockInfo.action ? (
+              <TouchableOpacity style={styles.blockButton} onPress={handleBlockAction} activeOpacity={0.85}>
+                <Text style={styles.blockButtonText}>Ouvrir mon tableau de bord</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : (
+          renderForm()
+        )}
       </KeyboardAvoidingView>
+
+      {isSendingCode ? (
+        <View style={styles.loadingOverlay} pointerEvents="auto">
+          <ActivityIndicator size="large" color={PUOL_GREEN} />
+          <Text style={styles.loadingText}>Envoi du code de vérification…</Text>
+        </View>
+      ) : null}
 
       <HostVerificationModal
         isVisible={modalStep === 'verify'}
         onClose={handleCloseModal}
         onVerify={handleVerify}
         isVerifying={isSubmitting}
-        phoneNumber={formatE164PhoneNumber(phoneNumber, phoneCountry)}
+        phoneNumber={verificationPhone ?? formatE164PhoneNumber(phoneNumber, phoneCountry)}
+        errorMessage={verificationError}
+        onResend={handleResendCode}
+        isResending={isResendingCode}
+        resendCooldown={resendCooldown}
       />
 
       <Modal visible={modalStep === 'success'} animationType="slide">
@@ -406,11 +841,58 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: '#0F172A',
+  },
   scrollContent: {
     flexGrow: 1,
     paddingTop: 70,
     paddingBottom: 48,
     paddingHorizontal: 20,
+  },
+  blockContainer: {
+    flex: 1,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  blockTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  blockMessage: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    color: '#475467',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  blockButton: {
+    backgroundColor: PUOL_GREEN,
+    borderRadius: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+  },
+  blockButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   backButtonContainer: {
     alignSelf: 'flex-start',
@@ -428,6 +910,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 4,
     elevation: 2,
+  },
+  stickyHeaderContainer: {
+    backgroundColor: '#FFFFFF',
+    paddingTop: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 8,
   },
   backIcon: {
     fontSize: 20,
@@ -642,6 +1130,18 @@ const styles = StyleSheet.create({
   },
   ctaContainer: {
     marginTop: 24,
+  },
+  errorBanner: {
+    marginTop: 16,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#B91C1C',
   },
   submitButton: {
     backgroundColor: PUOL_GREEN,

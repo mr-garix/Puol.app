@@ -132,6 +132,8 @@ const mapHostProfileSummary = (profile: ProfileRow | null): HostProfileSummary |
     is_certified: profile.is_certified,
     username: profile.username,
     phone: profile.phone,
+    enterprise_name: profile.enterprise_name,
+    enterprise_logo_url: profile.enterprise_logo_url,
   } satisfies HostProfileSummary;
 };
 
@@ -150,7 +152,7 @@ const fetchFullListing = async (listingId: string): Promise<FullListing> => {
   const hostProfilePromise = listingRow.host_id
     ? supabase
         .from('profiles')
-        .select('id, first_name, last_name, avatar_url, is_certified, username, phone')
+        .select('id, first_name, last_name, avatar_url, is_certified, username, phone, enterprise_name, enterprise_logo_url')
         .eq('id', listingRow.host_id)
         .maybeSingle<ProfileRow>()
     : Promise.resolve({ data: null, error: null });

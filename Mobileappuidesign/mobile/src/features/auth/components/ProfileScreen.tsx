@@ -54,9 +54,14 @@ export interface ProfileScreenProps {
   onProfileImagePress?: () => void;
   onCommentsPress?: () => void;
   onLikesPress?: () => void;
+  onFollowersPress?: () => void;
+  onFollowingPress?: () => void;
   hostDashboardStatus?: 'approved' | 'pending' | 'rejected';
   hostStatusMessage?: string;
   onHostDashboardPress?: () => void;
+  landlordDashboardStatus?: 'approved' | 'pending' | 'rejected';
+  landlordStatusMessage?: string;
+  onLandlordDashboardPress?: () => void;
   showListingsMenu?: boolean;
 }
 
@@ -78,9 +83,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onProfileImagePress,
   onCommentsPress,
   onLikesPress,
+  onFollowersPress,
+  onFollowingPress,
   hostDashboardStatus,
   hostStatusMessage,
   onHostDashboardPress,
+  landlordDashboardStatus,
+  landlordStatusMessage,
+  onLandlordDashboardPress,
   showListingsMenu = true,
   reservationsLoading = false,
   reservationsError = null,
@@ -122,7 +132,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     userData.username || `@${baseFirstName.toLowerCase()}${baseLastName.toLowerCase()}`.replace(/\s+/g, '');
 
   const showHostDashboard = hostDashboardStatus === 'approved';
-  const showHostApplicationInfo = !showHostDashboard && Boolean(hostStatusMessage);
+  const isHostDashboardPending = hostDashboardStatus === 'pending';
+  const shouldShowHostDashboardCard = showHostDashboard || isHostDashboardPending;
+  const showHostApplicationInfo = Boolean(hostStatusMessage);
+  const showLandlordDashboard = landlordDashboardStatus === 'approved';
+  const isLandlordDashboardPending = landlordDashboardStatus === 'pending';
+  const shouldShowLandlordDashboardCard = showLandlordDashboard || isLandlordDashboardPending;
+  const showLandlordApplicationInfo = Boolean(landlordStatusMessage);
+  const canOpenLandlordDashboard = showLandlordDashboard && typeof onLandlordDashboardPress === 'function';
+  const landlordDashboardHint = isLandlordDashboardPending
+    ? 'Disponible après validation de ton compte bailleur.'
+    : !canOpenLandlordDashboard && shouldShowLandlordDashboardCard
+      ? 'Le tableau de bord bailleur sera bientôt disponible.'
+      : null;
   const topFoldHeight = isAndroid ? 0 : 360;
   const headerPaddingTop = isAndroid ? Math.max(insets.top, 16) : Math.max(insets.top, 0) + 4;
 
@@ -231,14 +253,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Text style={styles.statValue}>{stats.listings}</Text>
                 <Text style={[styles.statLabel, styles.statLabelCentered]}>{publicationLabel}</Text>
               </View>
-              <View style={styles.statItem}>
+              <TouchableOpacity
+                style={styles.statItem}
+                onPress={onFollowersPress}
+                activeOpacity={onFollowersPress ? 0.75 : 1}
+                disabled={!onFollowersPress}
+              >
                 <Text style={styles.statValue}>{stats.followers}</Text>
                 <Text style={[styles.statLabel, styles.statLabelCentered]}>followers</Text>
-              </View>
-              <View style={styles.statItem}>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.statItem}
+                onPress={onFollowingPress}
+                activeOpacity={onFollowingPress ? 0.75 : 1}
+                disabled={!onFollowingPress}
+              >
                 <Text style={styles.statValue}>{stats.following}</Text>
                 <Text style={[styles.statLabel, styles.statLabelCentered]}>suivi(e)s</Text>
-              </View>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -252,39 +284,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <TouchableOpacity style={styles.messagesButton} onPress={onNavigateToMessages} activeOpacity={0.8}>
             <Feather name="message-circle" size={16} color="#374151" />
             <Text style={styles.messagesButtonText}>Messages</Text>
-            {unreadMessagesCount > 0 && (
+            {unreadMessagesCount > 0 ? (
               <View style={styles.notificationBadge}>
                 <Text style={styles.notificationText}>{unreadMessagesCount}</Text>
               </View>
-            )}
+            ) : null}
           </TouchableOpacity>
         </View>
 
-        {showHostDashboard && (
-          <View style={styles.hostDashboardCard}>
-            <View style={styles.hostDashboardHeader}>
-              <View style={styles.hostDashboardTitlePill}>
-                <Feather name="grid" size={16} color="#059669" />
-                <Text style={styles.hostDashboardTitle}>Tableau de bord</Text>
-              </View>
-              <View style={[styles.hostStatusPill, styles.hostStatusApproved]}>
-                <Feather name="check-circle" size={14} color="#15803D" />
-                <Text style={[styles.hostStatusText, styles.hostStatusTextVerified]}>Hôte vérifié</Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.hostDashboardButton}
-              activeOpacity={0.85}
-              onPress={onHostDashboardPress}
-            >
-              <Feather name="grid" size={18} color="#FFFFFF" />
-              <Text style={styles.hostDashboardButtonText}>Accéder à mon tableau de bord</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {showHostApplicationInfo && hostStatusMessage && (
+        {showHostApplicationInfo && hostStatusMessage ? (
           <View
             style={[
               styles.hostStatusInfoCard,
@@ -300,7 +308,118 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             />
             <Text style={styles.hostStatusInfoText}>{hostStatusMessage}</Text>
           </View>
-        )}
+        ) : null}
+
+        {shouldShowHostDashboardCard ? (
+          <View style={[styles.hostDashboardCard, isHostDashboardPending && styles.hostDashboardCardPending]}>
+            <View style={styles.hostDashboardHeader}>
+              <View style={styles.hostDashboardTitlePill}>
+                <Feather name="grid" size={16} color={isHostDashboardPending ? '#0F172A' : '#059669'} />
+                <Text style={styles.hostDashboardTitle}>Tableau de bord</Text>
+              </View>
+              <View
+                style={[
+                  styles.hostStatusPill,
+                  showHostDashboard ? styles.hostStatusApproved : styles.hostStatusPending,
+                ]}
+              >
+                <Feather
+                  name={showHostDashboard ? 'check-circle' : 'clock'}
+                  size={14}
+                  color={showHostDashboard ? '#15803D' : '#92400E'}
+                />
+                <Text
+                  style={[
+                    styles.hostStatusText,
+                    showHostDashboard ? styles.hostStatusTextVerified : styles.hostStatusTextPending,
+                  ]}
+                >
+                  {showHostDashboard ? 'Hôte vérifié' : 'En vérification'}
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.hostDashboardButton,
+                isHostDashboardPending && styles.hostDashboardButtonDisabled,
+              ]}
+              activeOpacity={showHostDashboard ? 0.85 : 1}
+              onPress={showHostDashboard ? onHostDashboardPress : undefined}
+              disabled={isHostDashboardPending}
+            >
+              <Feather name="grid" size={18} color="#FFFFFF" opacity={isHostDashboardPending ? 0.65 : 1} />
+              <Text style={styles.hostDashboardButtonText}>Accéder à mon tableau de bord</Text>
+            </TouchableOpacity>
+
+            {isHostDashboardPending ? (
+              <Text style={styles.hostDashboardHint}>Disponible après validation de ton compte hôte.</Text>
+            ) : null}
+          </View>
+        ) : null}
+
+        {showLandlordApplicationInfo && landlordStatusMessage ? (
+          <View
+            style={[
+              styles.landlordStatusInfoCard,
+              landlordDashboardStatus === 'rejected'
+                ? styles.landlordStatusInfoCardRejected
+                : styles.landlordStatusInfoCardPending,
+            ]}
+          >
+            <Feather
+              name={landlordDashboardStatus === 'rejected' ? 'slash' : 'clock'}
+              size={18}
+              color={landlordDashboardStatus === 'rejected' ? '#7F1D1D' : '#92400E'}
+            />
+            <Text style={styles.landlordStatusInfoText}>{landlordStatusMessage}</Text>
+          </View>
+        ) : null}
+
+        {shouldShowLandlordDashboardCard ? (
+          <View
+            style={[styles.landlordDashboardCard, isLandlordDashboardPending && styles.landlordDashboardCardPending]}
+          >
+            <View style={styles.landlordDashboardHeader}>
+              <View style={styles.landlordDashboardTitlePill}>
+                <Feather name="briefcase" size={16} color={isLandlordDashboardPending ? '#0F172A' : '#059669'} />
+                <Text style={styles.landlordDashboardTitle}>Tableau de bord</Text>
+              </View>
+              <View
+                style={[
+                  styles.landlordStatusPill,
+                  showLandlordDashboard ? styles.landlordStatusApproved : styles.landlordStatusPending,
+                ]}
+              >
+                <Feather
+                  name={showLandlordDashboard ? 'check-circle' : 'clock'}
+                  size={14}
+                  color={showLandlordDashboard ? '#15803D' : '#92400E'}
+                />
+                <Text
+                  style={[
+                    styles.landlordStatusText,
+                    showLandlordDashboard ? styles.landlordStatusTextVerified : styles.landlordStatusTextPending,
+                  ]}
+                >
+                  {showLandlordDashboard ? 'Bailleur vérifié' : 'En vérification'}
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.landlordDashboardButton, !canOpenLandlordDashboard && styles.landlordDashboardButtonDisabled]}
+              activeOpacity={canOpenLandlordDashboard ? 0.85 : 1}
+              onPress={canOpenLandlordDashboard ? onLandlordDashboardPress : undefined}
+              disabled={!canOpenLandlordDashboard}
+            >
+              <Feather name="briefcase" size={18} color="#FFFFFF" opacity={!canOpenLandlordDashboard ? 0.65 : 1} />
+              <Text style={styles.landlordDashboardButtonText}>Accéder à mon tableau de bord bailleur</Text>
+            </TouchableOpacity>
+
+            {landlordDashboardHint ? <Text style={styles.landlordDashboardHint}>{landlordDashboardHint}</Text> : null}
+          </View>
+        ) : null}
 
         <View style={styles.statsCards}>
           <View style={styles.statCard}>
@@ -607,7 +726,7 @@ const styles = StyleSheet.create({
   companyNameText: {
     fontFamily: 'Manrope',
     fontSize: 13,
-    color: '#374151',
+    color: '#334155',
   },
   statsRow: {
     flexDirection: 'row',
@@ -620,9 +739,7 @@ const styles = StyleSheet.create({
   },
   statItem: {
     flex: 1,
-    flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 4,
   },
   statValue: {
@@ -722,6 +839,10 @@ const styles = StyleSheet.create({
     borderColor: '#E5E7EB',
     gap: 14,
   },
+  hostDashboardCardPending: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5F5',
+  },
   hostDashboardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -755,6 +876,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(46, 204, 113, 0.12)',
     borderColor: '#34D399',
   },
+  hostStatusPending: {
+    backgroundColor: 'rgba(252, 211, 77, 0.18)',
+    borderColor: '#FBBF24',
+  },
   hostStatusText: {
     fontFamily: 'Manrope',
     fontSize: 12,
@@ -762,6 +887,9 @@ const styles = StyleSheet.create({
   },
   hostStatusTextVerified: {
     color: '#15803D',
+  },
+  hostStatusTextPending: {
+    color: '#92400E',
   },
   hostDashboardUnavailable: {
     flexDirection: 'row',
@@ -788,7 +916,8 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   hostDashboardButtonDisabled: {
-    opacity: 0.55,
+    backgroundColor: '#94A3B8',
+    opacity: 0.6,
   },
   hostDashboardButtonText: {
     color: '#FFFFFF',
@@ -823,6 +952,32 @@ const styles = StyleSheet.create({
     borderColor: '#FCA5A5',
   },
   hostStatusInfoText: {
+    flex: 1,
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#111827',
+    lineHeight: 18,
+  },
+  landlordStatusInfoCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  landlordStatusInfoCardPending: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#FCD34D',
+  },
+  landlordStatusInfoCardRejected: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#FCA5A5',
+  },
+  landlordStatusInfoText: {
     flex: 1,
     fontFamily: 'Manrope',
     fontSize: 13,
@@ -887,6 +1042,94 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#111827',
+  },
+  landlordDashboardCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 16,
+    padding: 18,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 14,
+  },
+  landlordDashboardCardPending: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5F5',
+  },
+  landlordDashboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  landlordDashboardTitlePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(46, 204, 113, 0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  landlordDashboardTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  landlordStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  landlordStatusApproved: {
+    backgroundColor: 'rgba(46, 204, 113, 0.12)',
+    borderColor: '#34D399',
+  },
+  landlordStatusPending: {
+    backgroundColor: 'rgba(252, 211, 77, 0.18)',
+    borderColor: '#FBBF24',
+  },
+  landlordStatusText: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  landlordStatusTextVerified: {
+    color: '#15803D',
+  },
+  landlordStatusTextPending: {
+    color: '#92400E',
+  },
+  landlordDashboardButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#2ECC71',
+    borderRadius: 32,
+    paddingVertical: 14,
+  },
+  landlordDashboardButtonDisabled: {
+    backgroundColor: '#94A3B8',
+    opacity: 0.6,
+  },
+  landlordDashboardButtonText: {
+    color: '#FFFFFF',
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  landlordDashboardHint: {
+    marginTop: 8,
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: '#6B7280',
+    textAlign: 'center',
   },
   menuList: {
     backgroundColor: '#FFFFFF',
@@ -1010,5 +1253,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-
-export default ProfileScreen;

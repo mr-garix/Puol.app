@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Image } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Image, InteractionManager } from 'react-native';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ProfileScreen } from '@/src/features/auth/components/ProfileScreen';
 import { AuthModal } from '@/src/features/auth/components/AuthModal';
@@ -11,6 +12,15 @@ import { useAuth, type AuthUser } from '@/src/contexts/AuthContext';
 import { useProfile } from '@/src/contexts/ProfileContext';
 import { getUserCommentConversations } from '@/src/features/comments/services';
 import { useUserReviews } from '@/src/features/reviews/hooks/useUserReviews';
+import { useFollowStats } from '@/src/features/follows/hooks/useFollowState';
+import { FollowListModal } from '@/src/features/follows/components/FollowListModal';
+import {
+  getFollowersList,
+  getFollowingList,
+  followProfile,
+  unfollowProfile,
+  type ProfileFollowListItem,
+} from '@/src/features/follows/services';
 import { supabase } from '@/src/supabaseClient';
 
 const buildFallbackAvatar = (firstName: string, lastName: string) => {
@@ -23,12 +33,25 @@ export default function ProfileTabScreen() {
   const { reservations, isLoading: reservationsLoading, error: reservationsError, refreshReservations } = useReservations();
   const { isLoggedIn, logout, supabaseProfile, isLoading } = useAuth();
   const { profile, isProfileLoading } = useProfile();
+  const currentProfileId = profile?.id ?? supabaseProfile?.id ?? null;
+  const {
+    followersCount: dynamicFollowersCount,
+    followingCount: dynamicFollowingCount,
+    refresh: refreshFollowStats,
+    isFetching: isFollowStatsFetching,
+  } = useFollowStats(currentProfileId, { enabled: Boolean(currentProfileId) });
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showLoginScreen, setShowLoginScreen] = useState(false);
   const [showSignUpScreen, setShowSignUpScreen] = useState(false);
   const reservationsCount = reservations.length;
   const [commentsCount, setCommentsCount] = useState(0);
   const [isAvatarVisible, setIsAvatarVisible] = useState(false);
+  const [followModalType, setFollowModalType] = useState<'followers' | 'following' | null>(null);
+  const [followList, setFollowList] = useState<ProfileFollowListItem[]>([]);
+  const [isFollowListLoading, setIsFollowListLoading] = useState(false);
+  const [friendIds, setFriendIds] = useState<Set<string>>(new Set());
+  const [followActionLoadingId, setFollowActionLoadingId] = useState<string | null>(null);
+  const [unfollowActionLoadingId, setUnfollowActionLoadingId] = useState<string | null>(null);
   const { totalCount: userReviewsCount } = useUserReviews(supabaseProfile?.id ?? null);
 
   useEffect(() => {
@@ -91,7 +114,7 @@ export default function ProfileTabScreen() {
   const hostStatusMessage = useMemo(() => {
     switch (hostDashboardStatus) {
       case 'pending':
-        return 'Votre demande pour devenir hôte est en cours de vérification.';
+        return "Ta demande pour devenir hôte est en cours de vérification. Profite pour explorer l’application pendant que l’équipe finalise la validation.";
       case 'rejected':
         return 'Votre demande pour devenir hôte a été refusée.';
       default:
@@ -99,17 +122,93 @@ export default function ProfileTabScreen() {
     }
   }, [hostDashboardStatus]);
 
+  const landlordDashboardStatus = useMemo(() => {
+    if (!profile) {
+      return undefined;
+    }
+
+    if (profile.role === 'landlord' && profile.landlordStatus === 'approved') {
+      return 'approved' as const;
+    }
+
+    if (profile.landlordStatus === 'pending') {
+      return 'pending' as const;
+    }
+
+    if (profile.landlordStatus === 'rejected') {
+      return 'rejected' as const;
+    }
+
+    return undefined;
+  }, [profile]);
+
+  const landlordStatusMessage = useMemo(() => {
+    switch (landlordDashboardStatus) {
+      case 'pending':
+        return "Ta demande bailleur est en cours de vérification. L'équipe te recontacte très vite pour finaliser.";
+      case 'rejected':
+        return 'Votre demande pour devenir bailleur a été refusée.';
+      default:
+        return undefined;
+    }
+  }, [landlordDashboardStatus]);
+
   const mergedStats = useMemo(() => {
     const stats = profile?.stats;
+    const baseFollowers = stats?.followers ?? 0;
+    const baseFollowing = stats?.following ?? 0;
+
     return {
       listings: stats?.listings ?? 0,
-      followers: stats?.followers ?? 0,
-      following: stats?.following ?? 0,
+      followers: dynamicFollowersCount ?? baseFollowers,
+      following: dynamicFollowingCount ?? baseFollowing,
       views: stats?.views ?? 0,
       likes: stats?.likes ?? 0,
       comments: commentsCount,
     };
-  }, [commentsCount, profile?.stats]);
+  }, [commentsCount, dynamicFollowersCount, dynamicFollowingCount, profile?.stats]);
+
+  const friendStorageKey = useMemo(
+    () => (currentProfileId ? `puol:friends:${currentProfileId}` : null),
+    [currentProfileId],
+  );
+
+  const loadFriendIdsSnapshot = useCallback(async () => {
+    if (!friendStorageKey) {
+      setFriendIds(new Set());
+      return;
+    }
+    try {
+      const raw = await AsyncStorage.getItem(friendStorageKey);
+      if (!raw) {
+        setFriendIds(new Set());
+        return;
+      }
+      const parsed = JSON.parse(raw) as string[];
+      setFriendIds(new Set(parsed));
+    } catch (error) {
+      console.warn('[ProfileTab] Unable to load friend IDs', error);
+      setFriendIds(new Set());
+    }
+  }, [friendStorageKey]);
+
+  const persistFriendIds = useCallback(
+    async (ids: Set<string>) => {
+      if (!friendStorageKey) {
+        return;
+      }
+      try {
+        await AsyncStorage.setItem(friendStorageKey, JSON.stringify(Array.from(ids)));
+      } catch (error) {
+        console.warn('[ProfileTab] Unable to persist friend IDs', error);
+      }
+    },
+    [friendStorageKey],
+  );
+
+  useEffect(() => {
+    void loadFriendIdsSnapshot();
+  }, [loadFriendIdsSnapshot]);
 
   const loadCommentsCount = useCallback(async () => {
     if (!supabaseProfile?.id) {
@@ -147,6 +246,162 @@ export default function ProfileTabScreen() {
       void supabase.removeChannel(channel);
     };
   }, [loadCommentsCount, supabaseProfile?.id]);
+
+  const recomputeFriendships = useCallback(
+    async ({
+      followersSnapshot,
+      followingSnapshot,
+    }: {
+      followersSnapshot?: ProfileFollowListItem[];
+      followingSnapshot?: ProfileFollowListItem[];
+    } = {}) => {
+      if (!currentProfileId) {
+        setFriendIds(new Set());
+        return;
+      }
+
+      try {
+        const followersList = followersSnapshot ?? (await getFollowersList(currentProfileId));
+        const followingList = followingSnapshot ?? (await getFollowingList(currentProfileId));
+
+        const followerIdSet = new Set(followersList.map((item) => item.id));
+        const mutualIds = followingList.filter((item) => followerIdSet.has(item.id)).map((item) => item.id);
+        const next = new Set(mutualIds);
+        setFriendIds(next);
+        await persistFriendIds(next);
+      } catch (error) {
+        console.error('[ProfileTab] Unable to recompute friendships', error);
+      }
+    },
+    [currentProfileId, persistFriendIds],
+  );
+
+  const loadFollowList = useCallback(
+    async (type: 'followers' | 'following') => {
+      if (!currentProfileId) {
+        setFollowList([]);
+        return;
+      }
+      setIsFollowListLoading(true);
+      try {
+        const data =
+          type === 'followers' ? await getFollowersList(currentProfileId) : await getFollowingList(currentProfileId);
+        setFollowList(data);
+        await recomputeFriendships({
+          followersSnapshot: type === 'followers' ? data : undefined,
+          followingSnapshot: type === 'following' ? data : undefined,
+        });
+      } catch (error) {
+        console.error('[ProfileTab] Unable to load follow list', error);
+        setFollowList([]);
+      } finally {
+        setIsFollowListLoading(false);
+      }
+    },
+    [currentProfileId, recomputeFriendships],
+  );
+
+  const handleOpenFollowModal = useCallback(
+    (type: 'followers' | 'following') => {
+      if (!currentProfileId) {
+        return;
+      }
+      setFollowModalType(type);
+      void loadFollowList(type);
+    },
+    [currentProfileId, loadFollowList],
+  );
+
+  const handleCloseFollowModal = useCallback(() => {
+    setFollowModalType(null);
+    setFollowList([]);
+  }, []);
+
+  const handleFollowListProfilePress = useCallback(
+    (targetProfileId: string) => {
+      if (!targetProfileId) {
+        return;
+      }
+      const normalizedId = String(targetProfileId);
+      handleCloseFollowModal();
+      InteractionManager.runAfterInteractions(() => {
+        router.push({ pathname: '/profile/[profileId]', params: { profileId: normalizedId } } as never);
+      });
+    },
+    [handleCloseFollowModal, router],
+  );
+
+  const handleFollowBack = useCallback(
+    async (targetProfileId: string) => {
+      if (!supabaseProfile?.id || followActionLoadingId === targetProfileId) {
+        return;
+      }
+      setFollowActionLoadingId(targetProfileId);
+      try {
+        await followProfile(supabaseProfile.id, targetProfileId);
+        setFriendIds((prev) => {
+          const next = new Set(prev);
+          next.add(targetProfileId);
+          void persistFriendIds(next);
+          return next;
+        });
+        await refreshFollowStats();
+        await recomputeFriendships();
+        if (followModalType) {
+          await loadFollowList(followModalType);
+        }
+      } catch (error) {
+        console.error('[ProfileTab] follow back error', error);
+      } finally {
+        setFollowActionLoadingId((current) => (current === targetProfileId ? null : current));
+      }
+    },
+    [
+      followActionLoadingId,
+      followModalType,
+      loadFollowList,
+      persistFriendIds,
+      recomputeFriendships,
+      refreshFollowStats,
+      supabaseProfile?.id,
+    ],
+  );
+
+  const handleUnfollow = useCallback(
+    async (targetProfileId: string) => {
+      if (!supabaseProfile?.id || unfollowActionLoadingId === targetProfileId) {
+        return;
+      }
+      setUnfollowActionLoadingId(targetProfileId);
+      try {
+        await unfollowProfile(supabaseProfile.id, targetProfileId);
+        setFriendIds((prev) => {
+          const next = new Set(prev);
+          next.delete(targetProfileId);
+          void persistFriendIds(next);
+          return next;
+        });
+        await refreshFollowStats();
+        await recomputeFriendships();
+        if (followModalType) {
+          await loadFollowList(followModalType);
+        }
+      } catch (error) {
+        console.error('[ProfileTab] unfollow error', error);
+      } finally {
+        setUnfollowActionLoadingId((current) => (current === targetProfileId ? null : current));
+      }
+    },
+    [
+      followModalType,
+      loadFollowList,
+      persistFriendIds,
+      recomputeFriendships,
+      refreshFollowStats,
+      supabaseProfile?.id,
+      unfollowActionLoadingId,
+    ],
+  );
 
   if (!isLoggedIn) {
     return (
@@ -253,9 +508,14 @@ export default function ProfileTabScreen() {
         onProfileImagePress={() => setIsAvatarVisible(true)}
         onCommentsPress={() => router.push('/comments' as never)}
         onLikesPress={() => router.push('/likes' as never)}
+        onFollowersPress={() => handleOpenFollowModal('followers')}
+        onFollowingPress={() => handleOpenFollowModal('following')}
         hostDashboardStatus={hostDashboardStatus}
         hostStatusMessage={hostStatusMessage}
         onHostDashboardPress={() => router.push('/host-dashboard' as never)}
+        landlordDashboardStatus={landlordDashboardStatus}
+        landlordStatusMessage={landlordStatusMessage}
+        onLandlordDashboardPress={() => router.push('/landlord-dashboard' as never)}
         showListingsMenu={profile.role === 'user'}
       />
 
@@ -278,6 +538,24 @@ export default function ProfileTabScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {followModalType && (
+        <FollowListModal
+          visible={followModalType !== null}
+          type={followModalType}
+          items={followList}
+          loading={isFollowListLoading}
+          onClose={handleCloseFollowModal}
+          onRefresh={() => followModalType && loadFollowList(followModalType)}
+          friendIds={friendIds}
+          onFollowBack={handleFollowBack}
+          onUnfollow={handleUnfollow}
+          followActionLoadingId={followActionLoadingId}
+          unfollowActionLoadingId={unfollowActionLoadingId}
+          viewerId={currentProfileId}
+          onProfilePress={handleFollowListProfilePress}
+        />
+      )}
     </>
   );
 }

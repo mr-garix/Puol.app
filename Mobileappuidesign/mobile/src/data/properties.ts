@@ -29,6 +29,8 @@ export interface PropertyData {
     reviewsCount: number;
     username?: string | null;
     phone?: string | null;
+    enterpriseName?: string | null;
+    enterpriseLogoUrl?: string | null;
   };
   bedrooms?: number;
   bathrooms?: number;

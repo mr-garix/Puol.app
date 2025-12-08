@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  BackHandler,
   Dimensions,
   Image,
   ScrollView,
@@ -11,7 +12,9 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 
@@ -28,7 +31,10 @@ type PropertyOption = {
 
 export default function SearchPropertyScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const backNavigationInFlightRef = useRef(false);
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerTranslateY = useRef(new Animated.Value(-20)).current;
@@ -67,9 +73,19 @@ export default function SearchPropertyScreen() {
     router.replace('/(tabs)' as never);
   };
 
-  const handleBack = () => {
-    router.replace('/onboarding' as never);
-  };
+  const handleBack = useCallback(() => {
+    if (backNavigationInFlightRef.current) {
+      return;
+    }
+
+    backNavigationInFlightRef.current = true;
+
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+    } else {
+      router.replace('/onboarding' as never);
+    }
+  }, [navigation, router]);
 
   useEffect(() => {
     Animated.parallel([
@@ -103,11 +119,59 @@ export default function SearchPropertyScreen() {
     ]).start();
   }, [backOpacity, backTranslateY, ctaOpacity, ctaTranslateY, headerOpacity, headerTranslateY, illustrationOpacity, illustrationScale, introOpacity, introTranslateY, questionOpacity, questionTranslateY]);
 
+  useFocusEffect(
+    useCallback(() => {
+      const handleBackAction = () => {
+        handleBack();
+        return true;
+      };
+
+      const hardwareSub = BackHandler.addEventListener('hardwareBackPress', handleBackAction);
+      const removeBeforeRemove = navigation.addListener('beforeRemove', (event) => {
+        if (event.data.action.type !== 'POP') {
+          return;
+        }
+
+        if (navigation.canGoBack?.()) {
+          return;
+        }
+
+        event.preventDefault();
+        handleBack();
+      });
+
+      return () => {
+        hardwareSub.remove();
+        removeBeforeRemove();
+        backNavigationInFlightRef.current = false;
+      };
+    }, [handleBack, navigation]),
+  );
+
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
       <RNStatusBar barStyle="dark-content" />
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        stickyHeaderIndices={[0]}
+      >
+        <Animated.View
+          style={[
+            styles.stickyHeaderContainer,
+            {
+              paddingTop: insets.top + 12,
+              opacity: backOpacity,
+              transform: [{ translateY: backTranslateY }],
+            },
+          ]}
+        >
+          <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
+            <Text style={styles.backButtonIcon}>←</Text>
+          </TouchableOpacity>
+        </Animated.View>
+
         <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerTranslateY }] }]}>
           <Text style={styles.logo}>PUOL</Text>
           <Text style={styles.sublogo}>Platform for Urban Online Living</Text>
@@ -177,11 +241,6 @@ export default function SearchPropertyScreen() {
         </View>
       </ScrollView>
 
-      <Animated.View style={[styles.backButtonContainer, { opacity: backOpacity, transform: [{ translateY: backTranslateY }] }]}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.8}>
-          <Text style={styles.backButtonIcon}>←</Text>
-        </TouchableOpacity>
-      </Animated.View>
     </View>
   );
 }
@@ -244,8 +303,14 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingTop: 70,
+    paddingTop: 0,
     paddingBottom: 32,
+  },
+  stickyHeaderContainer: {
+    backgroundColor: '#FFFFFF',
+    paddingTop: 60,
+    paddingHorizontal: 24,
+    paddingBottom: 12,
   },
   header: {
     paddingTop: 24,
@@ -397,11 +462,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#FFFFFF',
     fontWeight: '700',
-  },
-  backButtonContainer: {
-    position: 'absolute',
-    top: 80,
-    left: 24,
   },
   backButton: {
     width: 40,

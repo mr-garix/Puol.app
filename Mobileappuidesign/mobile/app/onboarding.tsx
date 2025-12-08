@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
+  BackHandler,
   Dimensions,
   Image,
   ScrollView,
@@ -11,7 +12,8 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { STORAGE_KEYS } from '@/src/constants/storageKeys';
@@ -29,6 +31,7 @@ type Option = {
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
 
   const welcomeOpacity = useRef(new Animated.Value(0)).current;
   const welcomeTranslateY = useRef(new Animated.Value(-10)).current;
@@ -37,6 +40,7 @@ export default function OnboardingScreen() {
   const titleOpacity = useRef(new Animated.Value(0)).current;
   const titleTranslateY = useRef(new Animated.Value(20)).current;
   const footerOpacity = useRef(new Animated.Value(0)).current;
+  const backNavigationInFlightRef = useRef(false);
 
   useEffect(() => {
     Animated.parallel([
@@ -90,6 +94,32 @@ export default function OnboardingScreen() {
     }).start();
   }, [footerOpacity, illustrationOpacity, illustrationTranslateY, titleOpacity, titleTranslateY, welcomeOpacity, welcomeTranslateY]);
 
+  useFocusEffect(
+    useCallback(() => {
+      const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+        router.replace('/' as never);
+        return true;
+      });
+      const removeBeforeRemove = navigation.addListener('beforeRemove', (event) => {
+        if (event.data.action.type !== 'POP') {
+          return;
+        }
+
+        event.preventDefault();
+        if (!backNavigationInFlightRef.current) {
+          backNavigationInFlightRef.current = true;
+          router.replace('/' as never);
+        }
+      });
+
+      return () => {
+        backSub.remove();
+        removeBeforeRemove();
+        backNavigationInFlightRef.current = false;
+      };
+    }, [navigation, router]),
+  );
+
   const handleSelect = useCallback(
     async (role: 'renter' | 'host' | 'landlord') => {
       await AsyncStorage.multiSet([
@@ -98,21 +128,21 @@ export default function OnboardingScreen() {
       ]);
 
       if (role === 'renter') {
-        router.replace('/search' as never);
+        router.push('/search' as never);
         return;
       }
 
       if (role === 'host') {
         await AsyncStorage.multiSet([[STORAGE_KEYS.HOST_APPLICATION_COMPLETED, 'false']]);
         await AsyncStorage.removeItem(STORAGE_KEYS.HOST_PROFILE);
-        router.replace('/host' as never);
+        router.push('/host' as never);
         return;
       }
 
       if (role === 'landlord') {
         await AsyncStorage.multiSet([[STORAGE_KEYS.LANDLORD_APPLICATION_COMPLETED, 'false']]);
         await AsyncStorage.removeItem(STORAGE_KEYS.LANDLORD_PROFILE);
-        router.replace('/landlord' as never);
+        router.push('/landlord' as never);
         return;
       }
 

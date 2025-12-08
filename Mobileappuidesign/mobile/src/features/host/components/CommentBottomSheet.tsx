@@ -9,7 +9,9 @@ import {
   Animated,
   PanResponder,
   Dimensions,
+  InteractionManager,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { CommentItem } from './CommentItem';
 import { CommentInput } from './CommentInput';
 import { CommentWithAuthor } from '../../comments/types';
@@ -41,6 +43,7 @@ interface CommentBottomSheetProps {
   listingHostId?: string | null;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   highlightReplyId?: string | null;
+  onAuthorPress?: (profileId: string) => void;
 }
 
 export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
@@ -67,7 +70,9 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
   listingHostId,
   onDeleteComment,
   highlightReplyId,
+  onAuthorPress,
 }) => {
+  const router = useRouter();
   const [replyingTo, setReplyingTo] = useState<{
     id: string;
     userName: string;
@@ -208,7 +213,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
     }
   }, [visible, opacity, pan]);
 
-  const closeSheet = () => {
+  const closeSheet = (afterClose?: () => void) => {
     Animated.parallel([
       Animated.timing(pan, {
         toValue: BOTTOM_SHEET_MAX_HEIGHT,
@@ -224,6 +229,9 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
       onClose();
       setReplyingTo(null);
       setExpandedReplies(new Set());
+      if (afterClose) {
+        InteractionManager.runAfterInteractions(afterClose);
+      }
     });
   };
 
@@ -287,6 +295,24 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
     }
   };
 
+  const handleAuthorPressFromComment = (profileId: string) => {
+    console.log('[CommentBottomSheet] onAuthorPress received', {
+      profileId,
+      hasProfileId: Boolean(profileId),
+    });
+    if (!profileId) {
+      return;
+    }
+    const normalizedProfileId = String(profileId);
+    closeSheet(() => {
+      if (onAuthorPress) {
+        onAuthorPress(normalizedProfileId);
+      } else {
+        router.push({ pathname: '/profile/[profileId]', params: { profileId: normalizedProfileId } } as never);
+      }
+    });
+  };
+
   const renderCommentItem = (
     item: CommentWithAuthor,
     isReply = false,
@@ -320,12 +346,25 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
 
     const isHighlighted = highlightedReplyId === item.id;
 
+    const normalizedAuthorId = (() => {
+      const raw = item.author?.id ?? item.profileId ?? item.listingHostId ?? '';
+      if (!raw) {
+        console.log('[CommentBottomSheet] Missing author id for comment', {
+          commentId: item.id,
+          author: item.author,
+          profileId: item.profileId,
+          listingHostId: item.listingHostId,
+        });
+      }
+      return raw ? String(raw) : '';
+    })();
+
     return (
       <View key={item.id} style={[isReply && styles.replyItem]}>
         <CommentItem
           comment={{
             id: item.id,
-            userId: item.author.id,
+            userId: normalizedAuthorId,
             userName: authorName,
             userAvatar: item.author.avatarUrl || item.author.enterpriseLogoUrl || undefined,
             userIsVerified: Boolean(item.author.isVerified),
@@ -342,6 +381,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
           currentUserId={currentUserId}
           isReply={isReply}
           isHighlighted={isHighlighted}
+          onAuthorPress={handleAuthorPressFromComment}
         />
 
         {!isReply && previewReply && (
@@ -356,7 +396,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
                 <CommentItem
                   comment={{
                     id: previewReply.id,
-                    userId: previewReply.author.id,
+                    userId: String(previewReply.author?.id ?? previewReply.profileId ?? previewReply.listingHostId ?? ''),
                     userName:
                       (previewReply.author.firstName && previewReply.author.lastName
                         ? `${previewReply.author.firstName} ${previewReply.author.lastName}`
@@ -378,6 +418,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
                   variant="preview"
                   isReply
                   isHighlighted={highlightedReplyId === previewReply.id}
+                  onAuthorPress={handleAuthorPressFromComment}
                 />
               );
             })()}
@@ -417,7 +458,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
       visible={visible}
       transparent
       animationType="none"
-      onRequestClose={closeSheet}
+      onRequestClose={() => closeSheet()}
     >
       <View style={styles.modalContainer}>
         <Animated.View
@@ -432,10 +473,10 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
           ]}
         >
           <TouchableOpacity
-            style={StyleSheet.absoluteFill}
-            onPress={closeSheet}
-            activeOpacity={1}
-          />
+              style={StyleSheet.absoluteFill}
+              onPress={() => closeSheet()}
+              activeOpacity={1}
+            />
         </Animated.View>
 
         <Animated.View
@@ -456,7 +497,7 @@ export const CommentBottomSheet: React.FC<CommentBottomSheetProps> = ({
                 {totalCommentsCount ?? comments.length} {(totalCommentsCount ?? comments.length) > 1 ? 'commentaires' : 'commentaire'}
               </Text>
               <TouchableOpacity
-                onPress={closeSheet}
+                onPress={() => closeSheet()}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={styles.closeButton}
               >

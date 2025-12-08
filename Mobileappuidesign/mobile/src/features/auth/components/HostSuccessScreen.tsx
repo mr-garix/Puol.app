@@ -1,7 +1,10 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
+
+import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 interface HostSuccessScreenProps {
   onClose: () => void;
@@ -10,9 +13,15 @@ interface HostSuccessScreenProps {
 export const HostSuccessScreen: React.FC<HostSuccessScreenProps> = ({ onClose }) => {
   const router = useRouter();
 
-  const handleGoToDashboard = () => {
-    router.push('/host-dashboard' as never);
-    onClose();
+  const handleGoToDashboard = async () => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.HOST_APPLICATION_COMPLETED, 'true');
+    } catch (error) {
+      console.warn('[HostSuccessScreen] Unable to persist host completion flag', error);
+    } finally {
+      router.replace('/(tabs)/profile' as never);
+      onClose();
+    }
   };
 
   return (
@@ -22,14 +31,11 @@ export const HostSuccessScreen: React.FC<HostSuccessScreenProps> = ({ onClose })
       </View>
       <Text style={styles.title}>Demande envoyée !</Text>
       <Text style={styles.subtitle}>
-        Votre demande pour devenir hôte PUOL a bien été envoyée. Nous allons examiner votre dossier et vous
-        recontacterons sous 24 à 48h.
+        Votre demande pour devenir hôte PUOL a bien été envoyée. Nous allons examiner votre dossier et nous vous
+        contacterons immédiatement sur WhatsApp.
       </Text>
       <TouchableOpacity style={styles.button} onPress={handleGoToDashboard}>
         <Text style={styles.buttonText}>Accéder à mon tableau de bord</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.secondaryButton} onPress={onClose}>
-        <Text style={styles.secondaryButtonText}>Plus tard</Text>
       </TouchableOpacity>
     </View>
   );
@@ -82,16 +88,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-  },
-  secondaryButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-  },
-  secondaryButtonText: {
-    fontFamily: 'Manrope',
-    fontSize: 16,
-    color: '#6B7280',
   },
 });

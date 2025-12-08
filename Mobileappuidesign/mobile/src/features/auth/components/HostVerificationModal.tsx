@@ -16,6 +16,11 @@ interface HostVerificationModalProps {
   onVerify: (code: string) => Promise<void>;
   isVerifying: boolean;
   phoneNumber: string;
+  errorMessage?: string | null;
+  codeLength?: number;
+  onResend?: () => void | Promise<void>;
+  isResending?: boolean;
+  resendCooldown?: number;
 }
 
 export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
@@ -24,13 +29,26 @@ export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
   onVerify,
   isVerifying,
   phoneNumber,
+  errorMessage,
+  codeLength = 6,
+  onResend,
+  isResending = false,
+  resendCooldown = 0,
 }) => {
   const [verificationCode, setVerificationCode] = useState('');
-  const canSubmit = verificationCode.trim().length >= 4;
+  const trimmedCode = verificationCode.trim();
+  const effectiveLength = Math.max(codeLength, 4);
+  const canSubmit = trimmedCode.length === effectiveLength;
+
+  React.useEffect(() => {
+    if (!isVisible) {
+      setVerificationCode('');
+    }
+  }, [isVisible]);
 
   const handleVerify = async () => {
     if (!canSubmit || isVerifying) return;
-    await onVerify(verificationCode.trim());
+    await onVerify(trimmedCode);
   };
 
   return (
@@ -45,7 +63,7 @@ export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
           </View>
 
           <Text style={styles.subtitle}>
-            Nous avons envoyé un code par SMS au{'\n'}
+            Nous avons envoyé un code sur WhatsApp au{'\n'}
             <Text style={styles.phone}>{phoneNumber}</Text>
           </Text>
 
@@ -54,14 +72,40 @@ export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
               style={styles.input}
               value={verificationCode}
               onChangeText={setVerificationCode}
-              placeholder="Entrez le code à 4 chiffres"
+              placeholder={`Entrez le code à ${effectiveLength} chiffres`}
               placeholderTextColor="#9CA3AF"
               keyboardType="number-pad"
-              maxLength={4}
+              maxLength={effectiveLength}
               editable={!isVerifying}
               autoFocus
             />
           </View>
+
+          {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+
+          {onResend ? (
+            <TouchableOpacity
+              style={[
+                styles.secondaryButton,
+                (isVerifying || isResending || resendCooldown > 0) && styles.secondaryButtonDisabled,
+              ]}
+              onPress={onResend}
+              disabled={isVerifying || isResending || resendCooldown > 0}
+            >
+              <Text
+                style={[
+                  styles.secondaryButtonText,
+                  (isVerifying || isResending || resendCooldown > 0) && styles.secondaryButtonTextDisabled,
+                ]}
+              >
+                {isResending
+                  ? 'Renvoi en cours…'
+                  : resendCooldown > 0
+                    ? `Renvoyer dans ${resendCooldown}s`
+                    : 'Renvoyer le code'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
 
           <TouchableOpacity
             style={[styles.verifyButton, canSubmit && !isVerifying && styles.verifyButtonEnabled]}
@@ -141,6 +185,13 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     color: '#0F172A',
   },
+  errorText: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#DC2626',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
   verifyButton: {
     backgroundColor: '#E5E7EB',
     borderRadius: 12,
@@ -159,6 +210,26 @@ const styles = StyleSheet.create({
   },
   verifyButtonTextEnabled: {
     color: '#FFFFFF',
+  },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.6,
+  },
+  secondaryButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  secondaryButtonTextDisabled: {
+    color: '#6B7280',
   },
   resendButton: {
     alignItems: 'center',

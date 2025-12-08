@@ -25,6 +25,8 @@ export type HostProfileSummary = {
   is_certified?: boolean | null;
   username?: string | null;
   phone?: string | null;
+  enterprise_name?: string | null;
+  enterprise_logo_url?: string | null;
 };
 
 export type ListingRoomsSummary = {

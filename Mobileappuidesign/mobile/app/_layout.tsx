@@ -97,6 +97,7 @@ export default function RootLayout() {
                     <Stack.Screen name="host-reviews" options={{ headerShown: false }} />
                     <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="profile/edit" options={{ headerShown: false }} />
+                    <Stack.Screen name="profile/[profileId]" options={{ headerShown: false }} />
                     <Stack.Screen name="property/[id]" options={{ headerShown: false }} />
                     <Stack.Screen name="property/[id]/reviews" options={{ headerShown: false }} />
                     <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />

@@ -3,8 +3,10 @@ import {
   Alert,
   Animated as RNAnimated,
   Dimensions,
+  Easing,
   FlatList,
   Image,
+  InteractionManager,
   Modal,
   PanResponder,
   Platform,
@@ -53,8 +55,11 @@ import { buildListingShareUrl } from '@/src/utils/helpers';
 import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, HostProfileSummary } from '@/src/types/listings';
 import { hasUserLikedListing, toggleListingLike } from '@/src/features/likes/services';
+import { useFollowState } from '@/src/features/follows/hooks/useFollowState';
 import { recordListingShare, resolveShareChannel } from '@/src/features/listings/services/shareService';
 import { useListingReviews } from '@/src/features/reviews/hooks/useListingReviews';
+import { firebaseAuth } from '@/src/firebaseClient';
+import { syncSupabaseSession } from '@/src/features/auth/supabaseSession';
 import { supabase } from '@/src/supabaseClient';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -265,6 +270,7 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
   const landlordAvatar = hostProfile?.avatar_url || FALLBACK_LANDLORD_AVATAR;
   const landlordUsername = hostProfile?.username ?? null;
   const landlordPhone = hostProfile?.phone ?? FALLBACK_PHONE;
+  const landlordId = hostProfile?.id ?? listing.host_id ?? undefined;
 
   const amenities = [...full.featureBadges];
   const roadProximityBadge = translateRoadProximity(full.features?.near_main_road);
@@ -293,7 +299,7 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
     },
     images,
     landlord: {
-      id: hostProfile?.id,
+      id: landlordId,
       name: landlordName,
       avatar: landlordAvatar,
       verified: Boolean(hostProfile?.is_certified),
@@ -301,6 +307,8 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
       reviewsCount: 0,
       username: landlordUsername,
       phone: landlordPhone,
+      enterpriseName: hostProfile?.enterprise_name ?? null,
+      enterpriseLogoUrl: hostProfile?.enterprise_logo_url ?? null,
     },
     bedrooms: full.rooms.bedrooms,
     bathrooms: full.rooms.bathrooms,
@@ -442,8 +450,6 @@ const PropertyProfileScreen = () => {
   const headerPaddingTop = Math.max(0, insets.top + 12 - 20) + 5;
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [showFullDescription, setShowFullDescription] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [isLiked, setIsLiked] = useState(false);
   const [isGalleryVisible, setIsGalleryVisible] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showLoginScreen, setShowLoginScreen] = useState(false);
@@ -457,8 +463,14 @@ const PropertyProfileScreen = () => {
   const [showVisitPaymentModal, setShowVisitPaymentModal] = useState(false);
   const [showVisitSuccessModal, setShowVisitSuccessModal] = useState(false);
   const [showCommentsBottomSheet, setShowCommentsBottomSheet] = useState(false);
+  const [pendingProfileNavigation, setPendingProfileNavigation] = useState<string | null>(null);
   const [showChatbot, setShowChatbot] = useState(false);
   const [isHostAvatarVisible, setIsHostAvatarVisible] = useState(false);
+  const hostSpinAnimRef = useRef(new RNAnimated.Value(0));
+  const hostFlipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hostSpinIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [showHostEnterpriseAvatar, setShowHostEnterpriseAvatar] = useState(false);
+  const [hostAvatarPreviewUri, setHostAvatarPreviewUri] = useState<string | null>(null);
   const [showAllFeatures, setShowAllFeatures] = useState(false);
   const galleryPan = useRef(new RNAnimated.Value(0)).current;
   const [reservationSummary, setReservationSummary] = useState({
@@ -485,7 +497,6 @@ const PropertyProfileScreen = () => {
   const isAuthenticated = isLoggedIn;
   const wasLoggedInRef = useRef(isLoggedIn);
   const supabaseProfileRef = useRef(supabaseProfile);
-  const [listingStats, setListingStats] = useState({ views: 0, likes: 0 });
 
   const {
     data: listingData,
@@ -502,9 +513,22 @@ const PropertyProfileScreen = () => {
   }, [listingData]);
 
   const propertyId = property?.id ?? null;
+  const listingOwnerId = property?.landlord?.id ?? null;
   const isFurnished = property?.isFurnished ?? false;
   const isShop = property?.type === 'boutique';
   const shouldLoadReviews = isFurnished && !isShop;
+  const isOwnListing = listingOwnerId && supabaseProfile?.id && listingOwnerId === supabaseProfile.id;
+  const hostEnterpriseName = property?.landlord?.enterpriseName?.trim() || null;
+  const hostEnterpriseLogoUrl = property?.landlord?.enterpriseLogoUrl?.trim() || null;
+  const hostHasEnterpriseBranding = Boolean(hostEnterpriseName && hostEnterpriseLogoUrl);
+  const hostAnimatedRotationY = hostSpinAnimRef.current.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+  const hostAnimatedOpacity = hostSpinAnimRef.current.interpolate({
+    inputRange: [0, 0.25, 0.5, 0.75, 1],
+    outputRange: [1, 0.4, 0.05, 0.4, 1],
+  });
 
   const { addVisit, updateVisit, getVisitByPropertyId } = useVisits();
   const { reservations, addReservation, refreshReservations } = useReservations();
@@ -521,6 +545,60 @@ const PropertyProfileScreen = () => {
   const hasReservation = Boolean(existingReservation);
 
   useEffect(() => {
+    const clearTimers = () => {
+      if (hostFlipTimeoutRef.current) {
+        clearTimeout(hostFlipTimeoutRef.current);
+        hostFlipTimeoutRef.current = null;
+      }
+      if (hostSpinIntervalRef.current) {
+        clearInterval(hostSpinIntervalRef.current);
+        hostSpinIntervalRef.current = null;
+      }
+      hostSpinAnimRef.current.stopAnimation();
+    };
+
+    if (!hostHasEnterpriseBranding || isHostAvatarVisible) {
+      setShowHostEnterpriseAvatar(false);
+      clearTimers();
+      hostSpinAnimRef.current.setValue(0);
+      return;
+    }
+
+    const runSpin = () => {
+      hostSpinAnimRef.current.stopAnimation();
+      hostSpinAnimRef.current.setValue(0);
+      if (hostFlipTimeoutRef.current) {
+        clearTimeout(hostFlipTimeoutRef.current);
+        hostFlipTimeoutRef.current = null;
+      }
+
+      RNAnimated.timing(hostSpinAnimRef.current, {
+        toValue: 1,
+        duration: 700,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          hostSpinAnimRef.current.setValue(0);
+        }
+      });
+
+      hostFlipTimeoutRef.current = setTimeout(() => {
+        setShowHostEnterpriseAvatar((prev) => !prev);
+        hostFlipTimeoutRef.current = null;
+      }, 350);
+    };
+
+    runSpin();
+    hostSpinIntervalRef.current = setInterval(runSpin, 5000);
+
+    return () => {
+      clearTimers();
+      hostSpinAnimRef.current.setValue(0);
+    };
+  }, [hostHasEnterpriseBranding, isHostAvatarVisible]);
+
+  useEffect(() => {
     supabaseProfileRef.current = supabaseProfile;
   }, [supabaseProfile]);
 
@@ -528,17 +606,19 @@ const PropertyProfileScreen = () => {
     if (!existingReservation) {
       return;
     }
+
+    const reservation = existingReservation;
     setReservationSummary({
-      checkIn: new Date(existingReservation.checkInDate),
-      checkOut: new Date(existingReservation.checkOutDate),
-      nights: existingReservation.nights,
-      total: existingReservation.totalPrice,
-      amountDueNow: existingReservation.amountPaid ?? existingReservation.totalPrice,
-      remainingAmount: existingReservation.amountRemaining ?? 0,
-      paymentScheme: existingReservation.amountRemaining && existingReservation.amountRemaining > 0 ? 'split' : 'full',
-      originalTotal: existingReservation.originalTotal ?? existingReservation.totalPrice,
-      discountAmount: existingReservation.discountAmount ?? 0,
-      discountPercent: existingReservation.discountPercent ?? null,
+      checkIn: new Date(reservation.checkInDate),
+      checkOut: new Date(reservation.checkOutDate),
+      nights: reservation.nights,
+      total: reservation.totalPrice,
+      amountDueNow: reservation.amountPaid ?? reservation.totalPrice,
+      remainingAmount: reservation.amountRemaining ?? 0,
+      paymentScheme: reservation.amountRemaining && reservation.amountRemaining > 0 ? 'split' : 'full',
+      originalTotal: reservation.originalTotal ?? reservation.totalPrice,
+      discountAmount: reservation.discountAmount ?? 0,
+      discountPercent: reservation.discountPercent ?? null,
     });
   }, [existingReservation]);
 
@@ -556,27 +636,6 @@ const PropertyProfileScreen = () => {
   }, [mediaItems]);
   const existingVisit = propertyId ? getVisitByPropertyId(propertyId) : undefined;
   const hasVisit = Boolean(existingVisit);
-
-  const {
-    averageRating,
-    totalCount: reviewsCount,
-    userReview,
-    eligibility,
-  } = useListingReviews(propertyId, supabaseProfile?.id ?? null);
-
-  const canReview = shouldLoadReviews && eligibility?.status !== 'no_booking' && eligibility?.status !== 'not_authenticated';
-
-  const handleOpenReviews = useCallback(
-    (intent?: 'write') => {
-      if (!propertyId) {
-        return;
-      }
-
-      const params = intent ? { id: propertyId, intent } : { id: propertyId };
-      router.push({ pathname: '/property/[id]/reviews', params } as never);
-    },
-    [propertyId, router],
-  );
 
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -626,6 +685,29 @@ const PropertyProfileScreen = () => {
   const scrollHandler = useAnimatedScrollHandler((event) => {
     scrollY.value = event.contentOffset.y;
   });
+
+  const handleHostAvatarPress = useCallback(() => {
+    if (!property?.landlord) {
+      return;
+    }
+
+    if (hostSpinIntervalRef.current) {
+      clearInterval(hostSpinIntervalRef.current);
+      hostSpinIntervalRef.current = null;
+    }
+
+    const fallbackAvatar = property.landlord.avatar || FALLBACK_LANDLORD_AVATAR;
+    const currentUri =
+      showHostEnterpriseAvatar && hostEnterpriseLogoUrl ? hostEnterpriseLogoUrl : fallbackAvatar;
+
+    setHostAvatarPreviewUri(currentUri);
+    setIsHostAvatarVisible(true);
+  }, [hostEnterpriseLogoUrl, property?.landlord, showHostEnterpriseAvatar]);
+
+  const handleCloseHostAvatar = useCallback(() => {
+    setIsHostAvatarVisible(false);
+    setHostAvatarPreviewUri(null);
+  }, []);
 
   const headerStyle = useAnimatedStyle(() => {
     const softOpacity = Math.min(scrollY.value / (HERO_HEIGHT * 0.45), 0.35);
@@ -786,6 +868,89 @@ const PropertyProfileScreen = () => {
     getCommentLikeCount,
   } = useComments(propertyId ?? '', supabaseProfile?.id ?? null, property?.landlord?.id ?? null);
 
+  const {
+    averageRating,
+    totalCount: reviewsCount,
+    userReview,
+    eligibility,
+  } = useListingReviews(propertyId, supabaseProfile?.id ?? null);
+
+  const canReview = shouldLoadReviews && eligibility?.status !== 'no_booking' && eligibility?.status !== 'not_authenticated';
+
+  // Tous les hooks doivent être appelés avant tout retour anticipé
+  const [listingStats, setListingStats] = useState({ views: 0, likes: 0 });
+  const [isLiked, setIsLiked] = useState(false);
+
+  const followState = useFollowState({
+    followerId: supabaseProfile?.id ?? null,
+    followedId: listingOwnerId,
+    enabled: Boolean(listingOwnerId && !isOwnListing && supabaseProfile?.id),
+  });
+
+  const loadListingStats = useCallback(async () => {
+    if (!propertyId) {
+      setListingStats({ views: 0, likes: 0 });
+      setIsLiked(false);
+      return;
+    }
+
+    try {
+      const [viewsRes, likesRes] = await Promise.all([
+        supabase
+          .from('listing_views')
+          .select('listing_id', { count: 'exact', head: true })
+          .eq('listing_id', propertyId),
+        supabase
+          .from('listing_likes')
+          .select('listing_id', { count: 'exact', head: true })
+          .eq('listing_id', propertyId),
+      ]);
+
+      if (viewsRes.error) throw viewsRes.error;
+      if (likesRes.error) throw likesRes.error;
+
+      setListingStats({
+        views: viewsRes.count ?? 0,
+        likes: likesRes.count ?? 0,
+      });
+    } catch (error) {
+      console.error('Failed to load listing stats:', error);
+      setListingStats({ views: 0, likes: 0 });
+    }
+  }, [propertyId]);
+
+  const refreshLikeState = useCallback(async () => {
+    if (!propertyId || !supabaseProfile?.id) {
+      setIsLiked(false);
+      return;
+    }
+
+    try {
+      const liked = await hasUserLikedListing(propertyId, supabaseProfile.id);
+      setIsLiked(liked);
+    } catch (error) {
+      console.error('Failed to refresh like state:', error);
+      setIsLiked(false);
+    }
+  }, [propertyId, supabaseProfile?.id]);
+
+  // Hooks qui doivent être avant tout retour anticipé
+  const applyStatDelta = useCallback(
+    (field: 'views' | 'likes', delta: number) => {
+      setListingStats((current) => {
+        const nextValue = Math.max(0, current[field] + delta);
+        if (nextValue === current[field]) {
+          return current;
+        }
+        return {
+          ...current,
+          [field]: nextValue,
+        };
+      });
+    },
+    [],
+  );
+
   useEffect(() => {
     if (property?.id) {
       loadComments();
@@ -797,6 +962,23 @@ const PropertyProfileScreen = () => {
       setShowCommentsBottomSheet(true);
     }
   }, [initialCommentId, comments]);
+
+  useEffect(() => {
+    if (!pendingProfileNavigation) {
+      return;
+    }
+    if (showCommentsBottomSheet) {
+      console.log('[PropertyScreen] Waiting bottom sheet to close before navigating', {
+        pendingProfileNavigation,
+      });
+      return;
+    }
+
+    const profileId = pendingProfileNavigation;
+    setPendingProfileNavigation(null);
+    console.log('[PropertyScreen] Navigating to profile after sheet closed', { profileId });
+    router.push({ pathname: '/profile/[profileId]', params: { profileId } } as never);
+  }, [pendingProfileNavigation, router, showCommentsBottomSheet]);
 
   const handleCloseGallery = useCallback(() => {
     setIsGalleryVisible(false);
@@ -846,68 +1028,6 @@ const PropertyProfileScreen = () => {
       }),
     [galleryPan, handleCloseGallery, isGalleryVisible],
   );
-
-  // Hooks qui doivent être avant tout retour anticipé
-  const applyStatDelta = useCallback(
-    (field: 'views' | 'likes', delta: number) => {
-      setListingStats((current) => {
-        const nextValue = Math.max(0, current[field] + delta);
-        if (nextValue === current[field]) {
-          return current;
-        }
-        return {
-          ...current,
-          [field]: nextValue,
-        };
-      });
-    },
-    [],
-  );
-
-  const loadListingStats = useCallback(async () => {
-    if (!propertyId) {
-      setListingStats({ views: 0, likes: 0 });
-      return;
-    }
-
-    try {
-      const [viewsRes, likesRes] = await Promise.all([
-        supabase
-          .from('listing_views')
-          .select('listing_id', { count: 'exact', head: true })
-          .eq('listing_id', propertyId),
-        supabase
-          .from('listing_likes')
-          .select('listing_id', { count: 'exact', head: true })
-          .eq('listing_id', propertyId),
-      ]);
-
-      if (viewsRes.error) throw viewsRes.error;
-      if (likesRes.error) throw likesRes.error;
-
-      setListingStats({
-        views: viewsRes.count ?? 0,
-        likes: likesRes.count ?? 0,
-      });
-    } catch (error) {
-      console.error('[PropertyProfileScreen] Failed to load listing stats', error);
-      setListingStats({ views: 0, likes: 0 });
-    }
-  }, [propertyId]);
-
-  const refreshLikeState = useCallback(async () => {
-    if (!propertyId || !supabaseProfile?.id) {
-      setIsLiked(false);
-      return;
-    }
-
-    try {
-      const liked = await hasUserLikedListing(propertyId, supabaseProfile.id);
-      setIsLiked(liked);
-    } catch (error) {
-      console.error('[PropertyProfileScreen] Failed to load like state', error);
-    }
-  }, [propertyId, supabaseProfile?.id]);
 
   useEffect(() => {
     if (!propertyId) {
@@ -998,6 +1118,152 @@ const PropertyProfileScreen = () => {
     };
   }, [applyStatDelta, loadListingStats, propertyId, refreshLikeState]);
 
+  const handleOpenReviews = useCallback(
+    (intent?: 'write') => {
+      if (!propertyId) {
+        return;
+      }
+
+      const params = intent ? { id: propertyId, intent } : { id: propertyId };
+      router.push({ pathname: '/property/[id]/reviews', params } as never);
+    },
+    [propertyId, router],
+  );
+
+  const handleNavigateToProfileFromComments = useCallback((targetProfileId: string) => {
+    if (!targetProfileId) {
+      return;
+    }
+    const profileId = String(targetProfileId);
+    console.log('[PropertyScreen] Comment author pressed -> pending navigation', {
+      profileId,
+    });
+    setPendingProfileNavigation(profileId);
+    setShowCommentsBottomSheet(false);
+  }, []);
+
+  const ensureSupabaseSession = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        return true;
+      }
+
+      const currentUser = firebaseAuth.currentUser;
+      if (currentUser) {
+        await syncSupabaseSession(currentUser);
+        const { data: refreshed } = await supabase.auth.getSession();
+        if (refreshed.session) {
+          return true;
+        }
+      }
+
+      // En phase dev (RLS parfois désactivé), on autorise la suite si on a déjà un profile Supabase.
+      if (__DEV__ && supabaseProfileRef.current?.id) {
+        console.warn('[PropertyProfileScreen] No Supabase session, but profile present (DEV fallback)');
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('[PropertyProfileScreen] ensureSupabaseSession error', error);
+      return false;
+    }
+  }, []);
+
+  const ensureAuthenticated = (purpose: AuthPurpose, action: () => void) => {
+    if (isAuthenticated) {
+      action();
+    } else {
+      pendingActionRef.current = action;
+      setAuthPurpose(purpose);
+      setShowAuthModal(true);
+    }
+  };
+
+  const openReservationModal = () => setShowReservationModal(true);
+  const startVisitFlow = () => {
+    if (hasVisit) {
+      setShowVisitScheduleModal(true);
+      return;
+    }
+    setShowVisitPaymentDialog(true);
+  };
+  const handleVisitRequest = () => ensureAuthenticated('visit', startVisitFlow);
+  const handleReservationRequest = () => {
+    ensureAuthenticated('reservation', openReservationModal);
+  };
+  const startChatFlow = () => setShowChatbot(true);
+  const handleMessageRequest = () => ensureAuthenticated('chat', startChatFlow);
+
+  const handleFollowToggle = () =>
+    ensureAuthenticated('follow', () => {
+      void (async () => {
+        const currentUserId = supabaseProfileRef.current?.id ?? null;
+        if (!listingOwnerId || !currentUserId || currentUserId === listingOwnerId || followState.isProcessing) {
+          return;
+        }
+
+        const hasSession = await ensureSupabaseSession();
+        if (!hasSession) {
+          setShowAuthModal(true);
+          return;
+        }
+
+        try {
+          if (followState.isFollowing) {
+            const { error } = await supabase
+              .from('user_follows')
+              .delete()
+              .eq('follower_id', currentUserId)
+              .eq('followed_id', listingOwnerId);
+            if (error) throw error;
+          } else {
+            const { error } = await supabase
+              .from('user_follows')
+              .insert({ follower_id: currentUserId, followed_id: listingOwnerId });
+            if (error) throw error;
+          }
+        } catch (error) {
+          console.error('[PropertyProfileScreen] Follow toggle error', error);
+        }
+      })();
+    });
+
+  const handleLike = async () => {
+    if (!propertyId || !supabaseProfile?.id) return;
+    
+    try {
+      const newLikedState = await toggleListingLike(propertyId, supabaseProfile.id);
+      setIsLiked(newLikedState);
+      applyStatDelta('likes', newLikedState ? 1 : -1);
+    } catch (error) {
+      console.error('[PropertyProfileScreen] Like toggle error', error);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!property) return;
+    
+    try {
+      await Share.share({
+        title: property.title,
+        message: `${property.title}\n${propertyLocationLabel}\n\nDécouvrez cette annonce sur PUOL !`,
+        url: buildListingShareUrl(property.id),
+      });
+      
+      // Enregistrer le partage
+      await recordListingShare({
+        listingId: property.id,
+        profileId: supabaseProfile?.id ?? null,
+        channel: resolveShareChannel('mobile'),
+      });
+    } catch (error) {
+      console.error('[PropertyProfileScreen] Share error', error);
+    }
+  };
+
+  // Maintenant nous pouvons faire le retour anticipé en toute sécurité
   if (!property) {
     if (listingError) {
       return (
@@ -1013,9 +1279,17 @@ const PropertyProfileScreen = () => {
         </SafeAreaView>
       );
     }
-    return <View style={styles.container} />;
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" />
+        <View style={styles.statusWrapper}>
+          <Text style={styles.statusTitle}>Chargement...</Text>
+        </View>
+      </SafeAreaView>
+    );
   }
 
+  
   // Construire le libellé de localisation en privilégiant l'adresse complète (address_text)
   const primaryAddress = property.location.address?.trim();
   const propertyLocationLabel = primaryAddress && primaryAddress.length > 0
@@ -1056,61 +1330,6 @@ const PropertyProfileScreen = () => {
 
   const shouldShowFeatureToggle = combinedCharacteristics.length > FEATURE_PREVIEW_COUNT;
 
-  const handleLike = () => {
-    if (!propertyId) {
-      return;
-    }
-
-    ensureAuthenticated('like', () => {
-      const profileId = supabaseProfileRef.current?.id;
-      if (!profileId) {
-        console.warn('[PropertyProfileScreen] toggle like skipped (missing profile)');
-        return;
-      }
-
-      void (async () => {
-        try {
-          const nextLiked = await toggleListingLike(propertyId, profileId);
-          setIsLiked(nextLiked);
-          await loadListingStats();
-        } catch (error) {
-          console.error('[PropertyProfileScreen] toggleListingLike error', error);
-        }
-      })();
-    });
-  };
-
-  const handleShare = async () => {
-    if (!property?.id) {
-      return;
-    }
-
-    const shareUrl = buildListingShareUrl(property.id);
-    const message = `Regarde ce logement sur Puol 👇\n${shareUrl}`;
-    const payload = {
-      title: property.title,
-      message,
-      url: shareUrl,
-    };
-
-    try {
-      const result = await Share.share(payload);
-
-      if (result.action === Share.sharedAction) {
-        const channel =
-          Platform.OS === 'ios' ? resolveShareChannel(result.activityType) : 'system_share_sheet';
-        const profileId = supabaseProfileRef.current?.id ?? null;
-        void recordListingShare({
-          listingId: property.id,
-          profileId,
-          channel,
-        });
-      }
-    } catch (error) {
-      console.warn('[PropertyProfileScreen] Share error', error);
-    }
-  };
-
   const totalMediaItems = mediaItems.length || 1;
   const galleryProgress = ((currentImageIndex + 1) / totalMediaItems) * 100;
   const currentMedia = mediaItems[currentImageIndex];
@@ -1123,32 +1342,6 @@ const PropertyProfileScreen = () => {
       property.whatsapp ?? property.phoneNumber,
       `Bonjour ${property.landlord.name}, je suis intéressé par ${property.title}`,
     );
-
-  const ensureAuthenticated = (purpose: AuthPurpose, action: () => void) => {
-    if (isAuthenticated) {
-      action();
-    } else {
-      pendingActionRef.current = action;
-      setAuthPurpose(purpose);
-      setShowAuthModal(true);
-    }
-  };
-
-  const openReservationModal = () => setShowReservationModal(true);
-  const startVisitFlow = () => {
-    if (hasVisit) {
-      setShowVisitScheduleModal(true);
-      return;
-    }
-    setShowVisitPaymentDialog(true);
-  };
-  const handleVisitRequest = () => ensureAuthenticated('visit', startVisitFlow);
-  const handleReservationRequest = () => {
-    ensureAuthenticated('reservation', openReservationModal);
-  };
-  const startChatFlow = () => setShowChatbot(true);
-  const handleMessageRequest = () => ensureAuthenticated('chat', startChatFlow);
-  const handleFollowToggle = () => ensureAuthenticated('follow', () => setIsFollowing((prev) => !prev));
 
   const handleViewReservations = () => {
     setShowPaymentSuccessModal(false);
@@ -1459,30 +1652,69 @@ const PropertyProfileScreen = () => {
         <Animated.View style={[styles.content, { marginTop: -32 }, sheetAnimatedStyle]}>
           <View style={[styles.landlordSection, styles.sectionSpacing]}>
             <View style={styles.landlordInfo}>
-              <TouchableOpacity onPress={() => setIsHostAvatarVisible(true)} activeOpacity={0.85}>
-                <Image source={{ uri: property.landlord.avatar }} style={styles.landlordAvatar} />
+              <TouchableOpacity onPress={handleHostAvatarPress} activeOpacity={0.85}>
+                <RNAnimated.View
+                  style={[
+                    styles.landlordAvatarWrapper,
+                    {
+                      transform: [{ perspective: 600 }, { rotateY: hostAnimatedRotationY }],
+                      opacity: hostAnimatedOpacity,
+                    },
+                  ]}
+                >
+                  <Image
+                    source={{
+                      uri:
+                        showHostEnterpriseAvatar && hostEnterpriseLogoUrl && hostHasEnterpriseBranding
+                          ? hostEnterpriseLogoUrl
+                          : property.landlord.avatar || FALLBACK_LANDLORD_AVATAR,
+                    }}
+                    style={styles.landlordAvatar}
+                  />
+                </RNAnimated.View>
               </TouchableOpacity>
-              <View style={styles.landlordDetails}>
+              <TouchableOpacity
+                style={styles.landlordDetails}
+                activeOpacity={0.8}
+                onPress={() => {
+                  if (listingOwnerId) {
+                    router.push({ pathname: '/profile/[profileId]', params: { profileId: listingOwnerId } } as never);
+                  }
+                }}
+              >
                 <View style={styles.landlordNameRow}>
                   <Text style={styles.landlordName}>{property.landlord.name}</Text>
                   {property.landlord.verified && (
                     <Image source={VERIFIED_BADGE_ICON} style={styles.verifiedBadgeIcon} />
                   )}
                 </View>
-                <Text style={styles.landlordRole}>{isFurnished ? 'Hôte' : 'Bailleur'}</Text>
-              </View>
+                {isFurnished ? (
+                  <View style={styles.landlordRoleRow}>
+                    <Text style={styles.landlordRole}>Hôte</Text>
+                    {hostHasEnterpriseBranding && hostEnterpriseName ? (
+                      <>
+                        <Text style={[styles.landlordRole, styles.landlordRoleDot]}>·</Text>
+                        <Text style={styles.landlordEnterpriseName}>{hostEnterpriseName}</Text>
+                      </>
+                    ) : null}
+                  </View>
+                ) : (
+                  <Text style={styles.landlordRole}>Bailleur</Text>
+                )}
+              </TouchableOpacity>
             </View>
 
-            <TouchableOpacity
-              style={[styles.followButton, isFollowing && styles.followButtonActive]}
-              onPress={handleFollowToggle}
-            >
-              <Text
-                style={[styles.followButtonText, isFollowing && styles.followButtonTextActive]}
+            {listingOwnerId && !isOwnListing && (
+              <TouchableOpacity
+                style={[styles.followButton, followState.isFollowing && styles.followButtonActive]}
+                onPress={handleFollowToggle}
+                disabled={followState.isProcessing || !followState.isReady}
               >
-                {isFollowing ? 'Suivi' : 'Suivre'}
-              </Text>
-            </TouchableOpacity>
+                <Text style={[styles.followButtonText, followState.isFollowing && styles.followButtonTextActive]}>
+                  {followState.isProcessing ? '...' : followState.isFollowing ? 'Suivi(e)' : 'Suivre'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <Text style={styles.title}>{property.title}</Text>
@@ -1713,6 +1945,7 @@ const PropertyProfileScreen = () => {
         getCommentLikeCount={getCommentLikeCount}
         listingHostId={property?.landlord?.id ?? null}
         onDeleteComment={deleteComment}
+        onAuthorPress={handleNavigateToProfileFromComments}
       />
 
       <LoginWithOTPScreen
@@ -1815,11 +2048,15 @@ const PropertyProfileScreen = () => {
         propertyTitle={property.title}
       />
 
-      <Modal visible={isHostAvatarVisible} transparent animationType="fade" onRequestClose={() => setIsHostAvatarVisible(false)}>
-        <TouchableOpacity style={styles.avatarOverlay} activeOpacity={1} onPress={() => setIsHostAvatarVisible(false)}>
+      <Modal visible={isHostAvatarVisible} transparent animationType="fade" onRequestClose={handleCloseHostAvatar}>
+        <TouchableOpacity style={styles.avatarOverlay} activeOpacity={1} onPress={handleCloseHostAvatar}>
           <View style={styles.avatarContent}>
-            <Image source={{ uri: property.landlord.avatar }} style={styles.avatarFullImage} resizeMode="cover" />
-            <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsHostAvatarVisible(false)} activeOpacity={0.8}>
+            <Image
+              source={{ uri: hostAvatarPreviewUri ?? property.landlord.avatar ?? FALLBACK_LANDLORD_AVATAR }}
+              style={styles.avatarFullImage}
+              resizeMode="cover"
+            />
+            <TouchableOpacity style={styles.avatarCloseButton} onPress={handleCloseHostAvatar} activeOpacity={0.8}>
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
@@ -1958,10 +2195,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  landlordAvatarWrapper: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   landlordAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: '#F3F4F6',
   },
   landlordDetails: {
@@ -1985,6 +2230,19 @@ const styles = StyleSheet.create({
   landlordRole: {
     fontSize: 12,
     color: '#6B7280',
+  },
+  landlordRoleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  landlordRoleDot: {
+    color: '#6B7280',
+  },
+  landlordEnterpriseName: {
+    fontSize: 12,
+    color: '#2ECC71',
+    fontWeight: '600',
   },
   followButton: {
     paddingHorizontal: 20,
