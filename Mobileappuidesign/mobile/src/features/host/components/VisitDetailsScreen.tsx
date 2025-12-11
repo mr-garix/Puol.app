@@ -29,15 +29,10 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [isAvatarVisible, setIsAvatarVisible] = useState(false);
-  const buyerProfile = useMemo(
-    () => ({
-      name: 'Alain Mbarga',
-      phone: '+237 690 12 34 56',
-      avatar: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80',
-      role: 'Bailleur principal',
-    }),
-    [],
-  );
+  const guestProfile = useMemo(() => visit.guest, [visit.guest]);
+  const buyerAvatar = guestProfile?.avatarUrl ?? 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80';
+  const buyerName = guestProfile?.name ?? guestProfile?.username ?? 'Visiteur inconnu';
+  const buyerPhone = guestProfile?.phone ?? 'Téléphone indisponible';
 
   const visitDate = useMemo(() => new Date(visit.visitDate), [visit.visitDate]);
   const isCancelled = visit.status === 'cancelled';
@@ -69,7 +64,17 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
   };
 
   const handleCallBuyer = () => {
-    Linking.openURL(`tel:${buyerProfile.phone.replace(/\s+/g, '')}`);
+    if (!guestProfile?.phone) {
+      return;
+    }
+    Linking.openURL(`tel:${guestProfile.phone.replace(/\s+/g, '')}`);
+  };
+
+  const handleViewGuestProfile = () => {
+    if (!guestProfile?.id) {
+      return;
+    }
+    router.push({ pathname: '/profile/[profileId]', params: { profileId: guestProfile.id } });
   };
 
    const handleViewListing = () => {
@@ -129,12 +134,14 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
 
           <View style={styles.buyerCard}>
             <TouchableOpacity onPress={() => setIsAvatarVisible(true)} activeOpacity={0.9}>
-              <Image source={{ uri: buyerProfile.avatar }} style={styles.buyerAvatar} />
+              <Image source={{ uri: buyerAvatar }} style={styles.buyerAvatar} />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.buyerLabel}>{buyerProfile.role}</Text>
+              <Text style={styles.buyerLabel}>Visiteur</Text>
               <View style={styles.buyerNameRow}>
-                <Text style={styles.buyerName}>{buyerProfile.name}</Text>
+                <TouchableOpacity onPress={handleViewGuestProfile} activeOpacity={0.85} disabled={!guestProfile?.id}>
+                  <Text style={styles.buyerName}>{buyerName}</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.buyerAnnouncementButton}
                   onPress={handleViewListing}
@@ -144,9 +151,14 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
                   <Text style={styles.buyerAnnouncementText}>Voir l'annonce</Text>
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity style={styles.buyerPhoneRow} onPress={handleCallBuyer} activeOpacity={0.85}>
-                <Feather name="phone" size={16} color="#2ECC71" />
-                <Text style={styles.buyerPhone}>{buyerProfile.phone}</Text>
+              <TouchableOpacity
+                style={[styles.buyerPhoneRow, !guestProfile?.phone && styles.disabledPhoneRow]}
+                onPress={handleCallBuyer}
+                activeOpacity={guestProfile?.phone ? 0.85 : 1}
+                disabled={!guestProfile?.phone}
+              >
+                <Feather name="phone" size={16} color={guestProfile?.phone ? '#2ECC71' : '#9CA3AF'} />
+                <Text style={[styles.buyerPhone, !guestProfile?.phone && styles.disabledPhoneText]}>{buyerPhone}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -246,7 +258,7 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
           <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsAvatarVisible(false)} activeOpacity={0.8}>
             <Feather name="x" size={20} color="#FFFFFF" />
           </TouchableOpacity>
-          <Image source={{ uri: buyerProfile.avatar }} style={styles.avatarFullImage} resizeMode="cover" />
+          <Image source={{ uri: buyerAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
         </View>
       </Modal>
     </View>
@@ -499,6 +511,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#2ECC71',
+  },
+  disabledPhoneRow: {
+    opacity: 0.6,
+  },
+  disabledPhoneText: {
+    color: '#9CA3AF',
   },
   avatarOverlay: {
     flex: 1,

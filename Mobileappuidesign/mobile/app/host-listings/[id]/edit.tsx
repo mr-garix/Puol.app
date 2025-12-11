@@ -39,7 +39,8 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import { useFeed } from '@/src/contexts/FeedContext';
 import { useListingDetails } from '@/src/features/listings/hooks';
 import type { FullListing, ListingFeatureFlagKeys, ListingFeaturesRow } from '@/src/types/listings';
-import { createListingWithRelations, updateListingWithRelations } from '@/src/features/listings/services';
+import { createListingWithRelations, updateListingWithRelations, deleteListingWithRelations } from '@/src/features/listings/services';
+import { hasOutstandingPaymentsForListing } from '@/src/features/bookings/services';
 import { MUSIC_LIBRARY } from '@/src/constants/music';
 import {
   createPlacesSessionToken,
@@ -100,6 +101,10 @@ const LISTING_TYPES = [
   'Suite',
   'Loft',
   'Maison d’hôtes',
+  'Boutique',
+  'Espace commercial',
+  'Bureau',
+  'Terrain',
 ] as const;
 
 const CALENDAR_CELLS = 42; // 6 semaines visibles
@@ -1335,7 +1340,7 @@ export default function HostListingEditScreen() {
     previewVisibleRef.current = !!previewMedia;
   }, [previewMedia]);
 
-  const handleSave = async () => {
+  const handleSave = async ({ publish = true }: { publish?: boolean } = {}) => {
     if (isSaving) {
       return;
     }
@@ -1406,6 +1411,7 @@ export default function HostListingEditScreen() {
         room: item.room,
         muted: item.muted,
       })),
+      publish,
     };
 
     let successTitle = '';
@@ -1420,17 +1426,27 @@ export default function HostListingEditScreen() {
         await refreshListing().catch(() => null);
         await refreshFeedListings().catch(() => null);
         setLastCreatedListingId(existingListing.listing.id);
-        setPublishSuccessVisible(true);
-        successTitle = 'Annonce mise à jour';
-        successMessage = 'Vos modifications sont en ligne et visibles immédiatement.';
+        if (publish) {
+          setPublishSuccessVisible(true);
+          successTitle = 'Annonce mise à jour';
+          successMessage = 'Vos modifications sont en ligne et visibles immédiatement.';
+        } else {
+          Alert.alert('Brouillon enregistré', "L’annonce a été sauvegardée en brouillon.");
+          router.back();
+        }
       } else {
         const { listingId } = await createListingWithRelations(payload);
         setLastCreatedListingId(listingId);
         resetForm();
         await refreshFeedListings().catch(() => null);
-        setPublishSuccessVisible(true);
-        successTitle = 'Annonce publiée';
-        successMessage = 'Votre annonce est maintenant visible par les clients sur PUOL.';
+        if (publish) {
+          setPublishSuccessVisible(true);
+          successTitle = 'Annonce publiée';
+          successMessage = 'Votre annonce est maintenant visible par les clients sur PUOL.';
+        } else {
+          Alert.alert('Brouillon enregistré', 'Votre brouillon est prêt, vous pourrez le publier plus tard.');
+          router.back();
+        }
       }
 
       if (successTitle) {
@@ -1449,6 +1465,86 @@ export default function HostListingEditScreen() {
     stopPreview().catch(() => null);
     setPublishSuccessVisible(false);
   }, [stopPreview]);
+
+  const withHostPaymentGuard = useCallback(
+    async (action: 'draft' | 'delete', onConfirm: () => void) => {
+      const listingId = existingListing?.listing?.id ?? null;
+
+      if (listingId) {
+        try {
+          const hasOutstanding = await hasOutstandingPaymentsForListing(listingId);
+          if (hasOutstanding) {
+            Alert.alert(
+              'Action impossible',
+              "Impossible de modifier le statut car certaines réservations attendent encore un paiement. Attendez l'encaissement complet avant de mettre l’annonce en brouillon ou de la supprimer.",
+            );
+            return;
+          }
+        } catch (error) {
+          console.error('[HostListingEdit] outstanding payment check failed', error);
+          Alert.alert(
+            'Vérification indisponible',
+            "Une erreur est survenue lors de la vérification des paiements. Réessayez dans un instant.",
+          );
+          return;
+        }
+      }
+
+      const note =
+        "Les réservations déjà confirmées restent actives et devront être honorées, même si l’annonce change de statut.";
+      const title = action === 'draft' ? 'Mettre en brouillon' : "Supprimer l’annonce";
+      const message =
+        action === 'draft'
+          ? `Souhaitez-vous enregistrer cette annonce en brouillon ?\n\n${note}`
+          : `Souhaitez-vous supprimer cette annonce ? Cette action est définitive.\n\n${note}`;
+
+      Alert.alert(title, message, [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: action === 'draft' ? 'Mettre en brouillon' : 'Supprimer',
+          style: action === 'delete' ? 'destructive' : 'default',
+          onPress: onConfirm,
+        },
+      ]);
+    },
+    [existingListing?.listing?.id],
+  );
+
+  const handleSaveDraft = useCallback(() => {
+    void withHostPaymentGuard('draft', () => {
+      void handleSave({ publish: false });
+    });
+  }, [handleSave, withHostPaymentGuard]);
+
+  const handlePublish = useCallback(() => {
+    void handleSave({ publish: true });
+  }, [handleSave]);
+
+  const handleDelete = useCallback(() => {
+    if (!existingListing?.listing?.id) {
+      return;
+    }
+
+    const listingId = existingListing.listing.id;
+
+    void withHostPaymentGuard('delete', () => {
+      setIsSaving(true);
+      stopPreview().catch(() => null);
+      deleteListingWithRelations(listingId)
+        .then(async () => {
+          await refreshFeedListings().catch(() => null);
+          Alert.alert('Annonce supprimée', 'Votre annonce a été supprimée.');
+          router.back();
+        })
+        .catch((error) => {
+          console.error('[HostListingEdit] delete error', error);
+          Alert.alert('Suppression impossible', 'Veuillez réessayer plus tard.');
+        })
+        .finally(() => {
+          setIsSaving(false);
+        });
+    });
+  }, [existingListing?.listing?.id, refreshFeedListings, router, stopPreview, withHostPaymentGuard]);
 
   const handleViewPublishedListing = useCallback(() => {
     stopPreview().catch(() => null);
@@ -1863,34 +1959,33 @@ export default function HostListingEditScreen() {
     );
   }
 
+  const isDraftStatus = isCreateMode || (existingListing?.listing?.status ?? '').toLowerCase() !== 'published';
+  const headerStatusLabel = isDraftStatus ? 'Brouillon' : 'Publié';
+  const headerStatusIcon: keyof typeof Feather.glyphMap = isDraftStatus ? 'edit-3' : 'zap';
+
   return (
     <SafeAreaView style={[styles.safeArea, { paddingTop: headerTopPadding }]} > 
       <StatusBar hidden />
-      <View style={[styles.header, { paddingTop: headerTopPadding }]}>
+      <View style={[styles.header, { paddingTop: headerTopPadding }]}> 
         <TouchableOpacity style={styles.headerButton} onPress={() => router.back()} activeOpacity={0.85}>
           <Feather name="chevron-left" size={20} color={COLORS.dark} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>{isCreateMode ? 'Création d’annonce' : 'Modifier l’annonce'}</Text>
         </View>
-        {!isCreateMode ? (
-          <View style={styles.headerBadge}>
-            <Feather name="zap" size={12} color={COLORS.accent} />
-            <Text style={styles.headerBadgeText}>En ligne</Text>
-          </View>
-        ) : (
-          <View style={styles.headerBadgeDraft}>
-            <Feather name="edit-3" size={12} color={COLORS.muted} />
-            <Text style={styles.headerBadgeTextDraft}>Brouillon</Text>
-          </View>
-        )}
+        <View
+          style={[styles.headerStatusPill, isDraftStatus ? styles.headerStatusDraft : styles.headerStatusPublished]}
+        >
+          <Feather name={headerStatusIcon} size={12} color={COLORS.accent} />
+          <Text style={styles.headerStatusText}>{headerStatusLabel}</Text>
+        </View>
       </View>
 
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
         ref={scrollViewRef}
       >
         <View
@@ -2151,7 +2246,7 @@ export default function HostListingEditScreen() {
           <LabeledInput label="Tarif" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
           <View style={{ marginBottom: 16 }}>
             <Label text="Quartier, ville" />
-            <View style={styles.addressInputWrapper}>
+            <View style={[styles.addressInputWrapper, styles.addressInputWrapperTop]}>
               <TextInput
                 style={[styles.addressInput, fieldErrors.address && styles.inputError]}
                 placeholder="Ex. Bonapriso, Douala"
@@ -2203,7 +2298,7 @@ export default function HostListingEditScreen() {
           </View>
           <View style={{ marginBottom: 16 }} onLayout={handleFieldLayout('city')}>
             <Label text="Ville" />
-            <View style={styles.addressInputWrapper}>
+            <View style={[styles.addressInputWrapper, styles.addressInputWrapperMid]}>
               <TextInput
                 style={[styles.addressInput, fieldErrors.city && styles.inputError]}
                 placeholder="Ex. Douala"
@@ -2430,14 +2525,19 @@ export default function HostListingEditScreen() {
           {isCreateMode ? (
             <>
               <View style={[styles.footerActions, styles.footerActionsColumn]}>
-                <TouchableOpacity style={[styles.secondaryButton, styles.secondaryButtonFullWidth]} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={[styles.secondaryButton, styles.secondaryButtonFullWidth]}
+                  activeOpacity={0.85}
+                  onPress={() => handleSaveDraft()}
+                  disabled={isSaving}
+                >
                   <Text style={styles.secondaryButtonText}>Enregistrer en brouillon</Text>
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
                 style={[styles.publishButton, isSaving && styles.buttonDisabled]}
                 activeOpacity={0.9}
-                onPress={handleSave}
+                onPress={() => handlePublish()}
                 disabled={isSaving}
               >
                 {isSaving ? (
@@ -2453,21 +2553,39 @@ export default function HostListingEditScreen() {
           ) : (
             <>
               <View style={styles.footerActions}>
-                <TouchableOpacity style={styles.secondaryButton} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  activeOpacity={0.85}
+                  onPress={() => handleSaveDraft()}
+                  disabled={isSaving}
+                >
                   <Text style={styles.secondaryButtonText}>Enregistrer en brouillon</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
                   activeOpacity={0.9}
-                  onPress={handleSave}
+                  onPress={() => handlePublish()}
                   disabled={isSaving}
                 >
-                  {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>Mettre à jour</Text>}
+                  {isSaving ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>
+                      {isDraftStatus ? "Publier l’annonce" : 'Mettre à jour'}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity style={styles.dangerButton} activeOpacity={0.85}>
+              <TouchableOpacity
+                style={styles.dangerButton}
+                activeOpacity={0.85}
+                onPress={() => handleDelete()}
+                disabled={isSaving}
+              >
                 <Feather name="alert-triangle" size={14} color="#FFFFFF" />
-                <Text style={styles.dangerButtonText}>Dépublier l’annonce</Text>
+                <Text style={styles.dangerButtonText}>
+                  {isDraftStatus ? 'Supprimer le brouillon' : "Supprimer l’annonce"}
+                </Text>
               </TouchableOpacity>
             </>
           )}
@@ -2660,35 +2778,33 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.dark,
   },
-  headerBadge: {
+  headerStatusPill: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: 'rgba(46,204,113,0.15)',
     borderRadius: 999,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(46,204,113,0.35)',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#2ECC71',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
   },
-  headerBadgeDraft: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(15,23,42,0.05)',
-    borderRadius: 999,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  headerStatusPublished: {
+    borderColor: 'rgba(46,204,113,0.35)',
   },
-  headerBadgeText: {
+  headerStatusDraft: {
+    borderColor: 'rgba(46,204,113,0.25)',
+  },
+  headerStatusText: {
     fontFamily: 'Manrope',
     fontSize: 12,
     fontWeight: '600',
     color: COLORS.accent,
-  },
-  headerBadgeTextDraft: {
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.muted,
   },
   content: {
     paddingHorizontal: 16,
@@ -2740,6 +2856,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     position: 'relative',
     zIndex: 10,
+    overflow: 'visible',
+  },
+  addressInputWrapperTop: {
+    zIndex: 40,
+  },
+  addressInputWrapperMid: {
+    zIndex: 30,
   },
   addressInput: {
     borderWidth: 1,
@@ -2766,6 +2889,7 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
+    zIndex: 1000,
     overflow: 'hidden',
   },
   addressDropdownItem: {

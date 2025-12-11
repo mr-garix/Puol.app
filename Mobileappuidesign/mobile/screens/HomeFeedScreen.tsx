@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+  import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 
 import {
   View,
@@ -178,7 +178,7 @@ export default function HomeScreen() {
   const lastTapRef = useRef<number>(0);
   const likeButtonScale = useRef(new Animated.Value(1)).current;
   const mediaScrollX = useRef(new Animated.Value(0)).current;
-  const { propertyListings, likesById, toggleLike, updateListingCommentCount } = useFeed();
+  const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings } = useFeed();
 
   const [activeListingIdx, setActiveListingIdx] = useState(0);
   const prevListingsLengthRef = useRef<number>(0);
@@ -206,6 +206,26 @@ export default function HomeScreen() {
   const activeListing = propertyListings[activeListingIdx] ?? null;
   const activeListingId = activeListing?.id ?? '';
   const activeListingHostId = activeListing?.hostId ?? null;
+
+  useEffect(() => {
+    const previousLength = prevListingsLengthRef.current;
+    if (previousLength > 0 && propertyListings.length === 0) {
+      void refreshListings();
+    }
+    prevListingsLengthRef.current = propertyListings.length;
+  }, [propertyListings.length, refreshListings]);
+
+  useEffect(() => {
+    if (propertyListings.length === 0) {
+      if (activeListingIdx !== 0) {
+        setActiveListingIdx(0);
+      }
+      return;
+    }
+    if (activeListingIdx >= propertyListings.length) {
+      setActiveListingIdx(0);
+    }
+  }, [activeListingIdx, propertyListings.length]);
 
   const {
     comments,
@@ -717,7 +737,7 @@ export default function HomeScreen() {
 
     const shareCount = listing.shares ?? 0;
     const shareUrl = `https://app.puol.co/property/${listing.id}`;
-    const tagTokens = [...(listing.tags ?? []), listing.surfaceAreaLabel].filter(Boolean) as string[];
+    const tagTokens = (listing.tags ?? []).filter(Boolean) as string[];
     const mediaItems = getMediaItems(listing);
 
     const heartScale = heartAnim.interpolate({
@@ -998,14 +1018,19 @@ export default function HomeScreen() {
   };
 
   const renderSearchResultCard = ({ item }: { item: SearchResultCard }) => {
-    const kitchenCount = item.kitchens ?? 1;
-    const roomMetrics = [
-      { icon: 'bed-outline', label: `${item.bedrooms} chambre${item.bedrooms > 1 ? 's' : ''}` },
-      { icon: 'shower', label: `${item.bathrooms} salle${item.bathrooms > 1 ? 's' : ''} de bain` },
-      { icon: 'silverware-fork-knife', label: `${kitchenCount} cuisine${kitchenCount > 1 ? 's' : ''}` },
-    ];
-
+    const isCommercial = ['boutique', 'espace commercial', 'bureau', 'terrain'].includes(item.propertyType);
     const badgesToShow = item.badges.slice(0, 4);
+
+    const roomMetrics = !isCommercial
+      ? [
+          { icon: 'bed-outline', label: `${item.bedrooms} chambre${item.bedrooms > 1 ? 's' : ''}` },
+          { icon: 'shower', label: `${item.bathrooms} salle${item.bathrooms > 1 ? 's' : ''} de bain` },
+          {
+            icon: 'silverware-fork-knife',
+            label: `${item.kitchens ?? 0} cuisine${(item.kitchens ?? 0) > 1 ? 's' : ''}`,
+          },
+        ]
+      : [];
 
     return (
       <TouchableOpacity
@@ -1047,22 +1072,29 @@ export default function HomeScreen() {
           </View>
 
           <View style={styles.searchResultMetricsRow}>
-            <View style={styles.searchResultMetrics}>
-              {roomMetrics.map(({ icon, label }) => (
-                <View key={label} style={styles.metricChip}>
-                  <MaterialCommunityIcons
-                    name={icon as keyof typeof MaterialCommunityIcons.glyphMap}
-                    size={18}
-                    color={PUOL_GREEN}
-                    style={styles.metricIcon}
-                  />
-                  <Text style={styles.metricText}>{label}</Text>
-                </View>
-              ))}
-            </View>
+            {!isCommercial && (
+              <View style={styles.searchResultMetrics}>
+                {roomMetrics.map(({ icon, label }) => (
+                  <View key={label} style={styles.metricChip}>
+                    <MaterialCommunityIcons
+                      name={icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                      size={18}
+                      color={PUOL_GREEN}
+                      style={styles.metricIcon}
+                    />
+                    <Text style={styles.metricText}>{label}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
 
             {!!badgesToShow.length && (
-              <View style={styles.searchResultTagsRowInline}>
+              <View
+                style={[
+                  styles.searchResultTagsRowInline,
+                  isCommercial && styles.searchResultTagsRowInlineFullWidth,
+                ]}
+              >
                 {badgesToShow.map((badge) => (
                   <View key={badge} style={styles.searchResultTagInline}>
                     <Text style={styles.searchResultTagInlineText}>{badge}</Text>
@@ -2156,6 +2188,10 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: 6,
     flexShrink: 1,
+  },
+  searchResultTagsRowInlineFullWidth: {
+    flexBasis: '100%',
+    justifyContent: 'flex-start',
   },
   searchResultTagInline: {
     backgroundColor: '#F1F5F9',

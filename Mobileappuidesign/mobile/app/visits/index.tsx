@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
-import { StatusBar } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 
 import VisitsScreen, { Visit as VisitCard } from '@/src/features/host/components/VisitsScreen';
 import { useVisits } from '@/src/contexts/VisitsContext';
@@ -11,7 +12,23 @@ const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1502672260066-6bc36a7c
 
 export default function VisitsListScreen() {
   const router = useRouter();
-  const { visits } = useVisits();
+  const { visits, isLoading, error, refreshVisits } = useVisits();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshVisits();
+    }, [refreshVisits]),
+  );
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshVisits();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshVisits]);
 
   const mappedVisits = useMemo<VisitCard[]>(
     () =>
@@ -47,11 +64,41 @@ export default function VisitsListScreen() {
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={{ flex: 1, backgroundColor: '#F9FAFB' }}>
       <StatusBar barStyle="dark-content" />
-      <VisitsScreen
-        visits={mappedVisits}
-        onVisitPress={(id) => router.push({ pathname: '/visits/[id]', params: { id } })}
-        onBack={router.canGoBack() ? router.back : undefined}
-      />
+      {error ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+          <Text style={{ fontSize: 16, fontWeight: '600', color: '#111827', marginBottom: 8 }}>Impossible de charger vos visites</Text>
+          <Text style={{ fontSize: 14, color: '#6B7280', textAlign: 'center', marginBottom: 16 }}>
+            Vérifiez votre connexion Internet puis réessayez.
+          </Text>
+          <TouchableOpacity
+            style={{ paddingHorizontal: 20, paddingVertical: 12, borderRadius: 24, backgroundColor: '#2ECC71' }}
+            onPress={handleRefresh}
+            activeOpacity={0.85}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '600' }}>Réessayer</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <>
+          {isLoading && visits.length === 0 ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator size="large" color="#2ECC71" />
+            </View>
+          ) : (
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ flexGrow: 1 }}
+              refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} tintColor="#2ECC71" />}
+            >
+              <VisitsScreen
+                visits={mappedVisits}
+                onVisitPress={(id) => router.push({ pathname: '/visits/[id]', params: { id } })}
+                onBack={router.canGoBack() ? router.back : undefined}
+              />
+            </ScrollView>
+          )}
+        </>
+      )}
     </SafeAreaView>
   );
 }

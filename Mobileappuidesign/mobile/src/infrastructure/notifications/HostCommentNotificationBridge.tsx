@@ -11,7 +11,7 @@ const HostCommentNotificationBridge = () => {
   const latestNotifiedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!isLoggedIn || !supabaseProfile?.id) {
+    if (!isLoggedIn || !supabaseProfile?.id || supabaseProfile.role !== 'host') {
       return;
     }
 

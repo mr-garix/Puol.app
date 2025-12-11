@@ -27,20 +27,26 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { PROPERTY_AMENITIES, type AmenityOption } from '@/src/constants/amenities';
+import { LANDLORD_AMENITIES, type AmenityOption } from '@/src/constants/amenities';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-/*
-import * as FileSystem from 'expo-file-system';
-import { FFmpegKit, ReturnCode } from 'ffmpeg-kit-react-native';
-*/
-
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useFeed } from '@/src/contexts/FeedContext';
-import { useListingDetails } from '@/src/features/listings/hooks';
-import type { FullListing, ListingFeatureFlagKeys, ListingFeaturesRow } from '@/src/types/listings';
-import { createListingWithRelations, updateListingWithRelations } from '@/src/features/listings/services';
-import { MUSIC_LIBRARY } from '@/src/constants/music';
+import {
+  useCreateLandlordListingWithRelations,
+  useUpdateLandlordListingWithRelations,
+  useLandlordListing,
+  useDeleteLandlordListing,
+} from '@/src/features/landlord-listings/hooks';
+import type {
+  FullListing,
+  ListingFeatureFlagKeys,
+  ListingFeaturesRow,
+  ListingMediaRow,
+  ListingRoomsRow,
+} from '@/src/types/listings';
+import { orderMediaRowsByType } from '@/src/utils/media';
+import { toCdnUrl } from '@/src/utils/cdn';
 import {
   createPlacesSessionToken,
   fetchPlaceSuggestions,
@@ -84,11 +90,6 @@ const createEmptyRoomCounts = (): Record<(typeof ROOM_COUNTERS)[number], number>
   'Salle à manger': 0,
   Toilette: 0,
 });
-const AVAILABILITY_MODES = [
-  { key: 'available', label: 'Dates disponibles', accent: COLORS.accent, tint: 'rgba(46,204,113,0.15)' },
-  { key: 'blocked', label: 'Dates bloquées', accent: COLORS.danger, tint: 'rgba(220,38,38,0.15)' },
-  { key: 'reserved', label: 'Dates réservées', accent: '#F97316', tint: 'rgba(249,115,22,0.2)' },
-] as const;
 const LISTING_TYPES = [
   'Appartement',
   'Studio',
@@ -100,9 +101,14 @@ const LISTING_TYPES = [
   'Suite',
   'Loft',
   'Maison d’hôtes',
+  'Boutique',
+  'Espace commercial',
+  'Bureau',
+  'Terrain',
 ] as const;
 
-const CALENDAR_CELLS = 42; // 6 semaines visibles
+const LISTING_TYPES_REQUIRING_SURFACE = new Set<string>(['boutique', 'espace commercial', 'bureau', 'terrain']);
+
 
 const getIsoDateWithOffset = (offset: number) => {
   const base = new Date();
@@ -199,60 +205,14 @@ const deriveDistrictValue = (params: { address: string; city: string; fallbackDi
   return district || addressValue;
 };
 
-type CalendarDay = {
-  iso: string;
-  shortWeekday: string;
-  dayNumber: number;
-  inCurrentMonth: boolean;
-  isPast: boolean;
-};
 
-type CalendarMonth = {
-  label: string;
-  days: CalendarDay[];
-};
-
-const toLocalIsoDate = (date: Date) => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const buildCalendarMonth = (monthOffset = 0): CalendarMonth => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const monthStart = new Date(today);
-  monthStart.setDate(1);
-  monthStart.setMonth(monthStart.getMonth() + monthOffset);
-
-  const labelRaw = monthStart.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-  const label = labelRaw.charAt(0).toUpperCase() + labelRaw.slice(1);
-
-  const firstWeekday = (monthStart.getDay() + 6) % 7; // lundi = 0
-  const cursor = new Date(monthStart);
-  cursor.setDate(monthStart.getDate() - firstWeekday);
-
-  const days: CalendarDay[] = [];
-  for (let index = 0; index < CALENDAR_CELLS; index += 1) {
-    cursor.setHours(0, 0, 0, 0);
-    const iso = toLocalIsoDate(cursor);
-    const shortWeekday = cursor.toLocaleDateString('fr-FR', { weekday: 'short' });
-    const dayNumber = cursor.getDate();
-    const inCurrentMonth = cursor.getMonth() === monthStart.getMonth();
-    const isPast = cursor < today;
-    days.push({ iso, shortWeekday, dayNumber, inCurrentMonth, isPast });
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return { label, days };
-};
 
 type FeatherIconName = React.ComponentProps<typeof Feather>['name'];
 type MaterialIconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 type IconDescriptor = { library: 'Feather'; name: FeatherIconName } | { library: 'MaterialCommunityIcons'; name: MaterialIconName };
 
-const AMENITY_OPTIONS: AmenityOption[] = [...PROPERTY_AMENITIES];
+const AMENITY_OPTIONS: AmenityOption[] = [...LANDLORD_AMENITIES];
+const ALLOWED_AMENITY_IDS = new Set(AMENITY_OPTIONS.map((option) => option.id));
 
 const renderAmenityIcon = (icon: IconDescriptor, color: string): React.ReactNode => {
   if (icon.library === 'Feather') {
@@ -261,18 +221,9 @@ const renderAmenityIcon = (icon: IconDescriptor, color: string): React.ReactNode
   return <MaterialCommunityIcons name={icon.name} size={16} color={color} />;
 };
 
-const VOLUME_PRESETS = [
-  { id: 'low', label: 'Faible', value: 0.35 },
-  { id: 'medium', label: 'Medium', value: 0.65 },
-  { id: 'high', label: 'Fort', value: 0.9 },
-] as const;
-
-type VolumePresetId = (typeof VOLUME_PRESETS)[number]['id'];
-
 type RoomType = (typeof ROOM_COUNTERS)[number];
 type ListingType = '' | (typeof LISTING_TYPES)[number];
 type AmenityId = (typeof AMENITY_OPTIONS)[number]['id'];
-type AvailabilityModeKey = (typeof AVAILABILITY_MODES)[number]['key'];
 
 type MediaItem = {
   id: string;
@@ -283,6 +234,7 @@ type MediaItem = {
   duration: number;
   source: 'camera' | 'library';
   coverUri?: string;
+  thumbnailUrl?: string | null;
 };
 
 type FieldErrorKey =
@@ -290,10 +242,14 @@ type FieldErrorKey =
   | 'cover'
   | 'title'
   | 'price'
+  | 'deposit_amount'
+  | 'min_lease_months'
   | 'address'
   | 'city'
+  | 'surfaceArea'
   | 'listingType'
   | 'rooms'
+  | 'capacity'
   | 'description'
   | 'amenities';
 
@@ -302,15 +258,19 @@ const createFieldErrors = (): Record<FieldErrorKey, string | null> => ({
   cover: null,
   title: null,
   price: null,
+  deposit_amount: null,
+  min_lease_months: null,
   address: null,
   city: null,
+  surfaceArea: null,
   listingType: null,
   rooms: null,
+  capacity: null,
   description: null,
   amenities: null,
 });
 
-const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'address', 'city', 'listingType', 'rooms', 'description', 'amenities'];
+const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'deposit_amount', 'min_lease_months', 'address', 'city', 'listingType', 'surfaceArea', 'rooms', 'capacity', 'description', 'amenities'];
 
 const LONG_CLIP_THRESHOLD = 90; // seconds
 const PHOTO_TARGET_RATIO = 9 / 16;
@@ -409,9 +369,6 @@ const formatDuration = (totalSeconds: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
-const getVolumeValue = (presetId: VolumePresetId) =>
-  VOLUME_PRESETS.find((preset) => preset.id === presetId)?.value ?? 0.65;
-
 const VIDEO_MEDIA_TYPES = ['videos'] as unknown as ImagePicker.MediaTypeOptions;
 const PHOTO_MEDIA_TYPES = ['images'] as unknown as ImagePicker.MediaTypeOptions;
 const LIBRARY_MEDIA_TYPES = ['videos', 'images'] as unknown as ImagePicker.MediaTypeOptions;
@@ -433,6 +390,7 @@ const buildMediaItemFromAsset = (
     muted: false,
     duration: isVideo ? asset.duration ?? 0 : 0,
     source,
+    thumbnailUrl: null,
   };
 };
 
@@ -494,6 +452,35 @@ const FEATURE_COLUMN_TO_AMENITY: Partial<Record<ListingFeatureFlagKeys, AmenityI
   accessible: 'accessible',
 };
 
+const mapListingFeaturesToAmenities = (features: any[] | null): AmenityId[] => {
+  if (!features) {
+    return [];
+  }
+
+  const amenities: AmenityId[] = [];
+  features.forEach((feature) => {
+    // Vérifier si c'est la nouvelle structure avec feature_key
+    if (feature.feature_key) {
+      const amenityId = FEATURE_COLUMN_TO_AMENITY[feature.feature_key as keyof typeof FEATURE_COLUMN_TO_AMENITY];
+      if (amenityId && ALLOWED_AMENITY_IDS.has(amenityId)) {
+        amenities.push(amenityId);
+      }
+    } else {
+      // Ancienne structure - mapper directement les clés
+      Object.entries(feature).forEach(([key, value]) => {
+        if (value) {
+          const amenityId = FEATURE_COLUMN_TO_AMENITY[key as keyof typeof FEATURE_COLUMN_TO_AMENITY];
+          if (amenityId && ALLOWED_AMENITY_IDS.has(amenityId)) {
+            amenities.push(amenityId);
+          }
+        }
+      });
+    }
+  });
+
+  return amenities;
+};
+
 const mapFeaturesToAmenities = (features: ListingFeaturesRow | null): AmenityId[] => {
   if (!features) {
     return [];
@@ -523,6 +510,22 @@ const mapFeaturesToAmenities = (features: ListingFeaturesRow | null): AmenityId[
   return amenities;
 };
 
+const mapLandlordRoomsToCounts = (rooms?: ListingRoomsRow | null) => {
+  const base = createEmptyRoomCounts();
+  if (!rooms) {
+    return base;
+  }
+  return {
+    ...base,
+    Salon: rooms.living_room ?? base.Salon,
+    Chambre: rooms.bedrooms ?? base.Chambre,
+    Cuisine: rooms.kitchen ?? base.Cuisine,
+    'Salle de bain': rooms.bathrooms ?? base['Salle de bain'],
+    'Salle à manger': rooms.dining_room ?? base['Salle à manger'],
+    Toilette: rooms.toilets ?? base.Toilette,
+  };
+};
+
 const mapRoomsToCounts = (rooms?: FullListing['rooms']) => {
   const base = createEmptyRoomCounts();
   if (!rooms) {
@@ -539,22 +542,6 @@ const mapRoomsToCounts = (rooms?: FullListing['rooms']) => {
   };
 };
 
-const mapAvailability = (availability?: FullListing['availability']) => {
-  const blocked = new Set<string>();
-  const reserved = new Set<string>();
-  availability?.forEach((entry) => {
-    if (!entry.date) {
-      return;
-    }
-    if (entry.status === 'blocked') {
-      blocked.add(entry.date);
-    }
-    if (entry.status === 'reserved') {
-      reserved.add(entry.date);
-    }
-  });
-  return { blocked, reserved };
-};
 
 export default function HostListingEditScreen() {
   const router = useRouter();
@@ -564,13 +551,11 @@ export default function HostListingEditScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const isCreateMode = !id;
   const { firebaseUser } = useAuth();
+  const { data: existingListing, error: loadError, refresh: refreshListing, isLoading: isLoadingListing } = useLandlordListing(id ?? null);
   const { refreshListings: refreshFeedListings } = useFeed();
-  const {
-    data: existingListing,
-    isLoading: isLoadingListing,
-    error: loadError,
-    refresh: refreshListing,
-  } = useListingDetails(id ?? null);
+  const createMutation = useCreateLandlordListingWithRelations();
+  const updateMutation = useUpdateLandlordListingWithRelations();
+  const deleteMutation = useDeleteLandlordListing();
 
   useEffect(() => {
     navigation.setOptions({ headerShown: false });
@@ -578,31 +563,18 @@ export default function HostListingEditScreen() {
 
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
+  const [deposit, setDeposit] = useState('');
+  const [minLease, setMinLease] = useState('');
   const [address, setAddress] = useState('');
   const [googleAddress, setGoogleAddress] = useState('');
   const [description, setDescription] = useState('');
   const [listingType, setListingType] = useState<ListingType>(LISTING_TYPES[0]);
   const [roomCounts, setRoomCounts] = useState<Record<RoomType, number>>(() => createEmptyRoomCounts() as Record<RoomType, number>);
   const [amenities, setAmenities] = useState<AmenityId[]>([]);
-  const [selectedAvailabilityMode, setSelectedAvailabilityMode] = useState<AvailabilityModeKey>('available');
-  const [guestCapacity, setGuestCapacity] = useState(0);
-  const [promoNights, setPromoNights] = useState(isCreateMode ? '' : '7');
-  const [promoDiscount, setPromoDiscount] = useState(isCreateMode ? '' : '10');
-  const [calendarMonthOffset, setCalendarMonthOffset] = useState(0);
-  const calendarMonth = useMemo(() => buildCalendarMonth(calendarMonthOffset), [calendarMonthOffset]);
-  const calendarDays = calendarMonth.days;
-  const [blockedDates, setBlockedDates] = useState<Set<string>>(() =>
-    isCreateMode ? new Set() : new Set([getIsoDateWithOffset(7), getIsoDateWithOffset(8), getIsoDateWithOffset(20), getIsoDateWithOffset(35)]),
-  );
-  const [reservedDates, setReservedDates] = useState<Set<string>>(() =>
-    isCreateMode ? new Set() : new Set([getIsoDateWithOffset(2), getIsoDateWithOffset(5), getIsoDateWithOffset(12), getIsoDateWithOffset(40)]),
-  );
-  const [selectedCalendarDates, setSelectedCalendarDates] = useState<Set<string>>(new Set());
-  const [media, setMedia] = useState<MediaItem[]>([]);
+  const [guestCapacity, setGuestCapacity] = useState(1);
+  const [surfaceArea, setSurfaceArea] = useState('');
+    const [media, setMedia] = useState<MediaItem[]>([]);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
-  const [musicEnabled, setMusicEnabled] = useState(true);
-  const [selectedMusicId, setSelectedMusicId] = useState<string>(MUSIC_LIBRARY[0].id);
-  const [volumePreset, setVolumePreset] = useState<VolumePresetId>('medium');
   const [coverPhotoUri, setCoverPhotoUri] = useState<string>('');
   const [addressSearch, setAddressSearch] = useState('');
   const [addressSuggestions, setAddressSuggestions] = useState<PlaceSuggestion[]>([]);
@@ -624,53 +596,63 @@ export default function HostListingEditScreen() {
   const [selectedLongitude, setSelectedLongitude] = useState<number | null>(null);
   const [formattedAddress, setFormattedAddress] = useState('');
   const [resolvedDistrict, setResolvedDistrict] = useState('');
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const previewVideoRef = useRef<Video | null>(null);
+    const previewVideoRef = useRef<Video | null>(null);
   const previewWasPlayingRef = useRef(true);
   const previewCompletedRef = useRef(false);
   const previewVisibleRef = useRef(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
   const fieldPositionsRef = useRef<Partial<Record<FieldErrorKey, number>>>({});
-  const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(null);
-  const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
+    const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
   const [previewSeekMillis, setPreviewSeekMillis] = useState(0);
   const [previewVideoLoading, setPreviewVideoLoading] = useState(false);
   const [previewDurationMillis, setPreviewDurationMillis] = useState(0);
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(true);
+  const [currentlyPlayingTrackId, setCurrentlyPlayingTrackId] = useState<string | null>(null);
   const [isTypePickerOpen, setIsTypePickerOpen] = useState(false);
   const [publishSuccessVisible, setPublishSuccessVisible] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lastCreatedListingId, setLastCreatedListingId] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState(createFieldErrors());
 
+  const requiresSurface = useMemo(
+    () => LISTING_TYPES_REQUIRING_SURFACE.has((listingType ?? '').toLowerCase()),
+    [listingType],
+  );
+
+  const visibleRoomCounters = useMemo(
+    () =>
+      requiresSurface
+        ? ROOM_COUNTERS.filter((room) => !['Salon', 'Chambre', 'Salle de bain', 'Salle à manger'].includes(room))
+        : ROOM_COUNTERS,
+    [requiresSurface],
+  );
+
+  useEffect(() => {
+    if (!requiresSurface) {
+      setSurfaceArea('');
+      setFieldErrors((prev) => (prev.surfaceArea ? { ...prev, surfaceArea: null } : prev));
+    }
+  }, [requiresSurface]);
+
+  const handleSurfaceChange = useCallback((value: string) => {
+    setSurfaceArea(value);
+    setFieldErrors((prev) => (prev.surfaceArea ? { ...prev, surfaceArea: null } : prev));
+  }, []);
+
   const resetForm = useCallback(() => {
     setTitle('');
     setPrice('');
+    setDeposit('');
+    setMinLease('');
     setAddress('');
     setGoogleAddress('');
     setDescription('');
     setListingType('' as ListingType);
     setRoomCounts(createEmptyRoomCounts() as Record<RoomType, number>);
-    setGuestCapacity(1);
-    setAddress('');
-    setAddressSearch('');
-    setAddressSuggestions([]);
-    setShowAddressDropdown(false);
-    setIsAddressLoading(false);
-    setCityInput('');
-    setCitySuggestions([]);
-    setShowCityDropdown(false);
-    setIsCityLoading(false);
-    setGoogleAddress('');
-    setDescription('');
     setAmenities([]);
-    setBlockedDates(new Set());
-    setSelectedCalendarDates(new Set());
-    setPromoDiscount('');
-    setMusicEnabled(true);
-    setSelectedMusicId(MUSIC_LIBRARY[0].id);
-    setVolumePreset('medium');
+    setGuestCapacity(1);
     setCoverPhotoUri('');
+    setAddressSearch('');
     setSelectedPlaceId(null);
     setSelectedLatitude(null);
     setSelectedLongitude(null);
@@ -681,32 +663,14 @@ export default function HostListingEditScreen() {
     addressDetailsRequestRef.current = null;
     setFieldErrors(createFieldErrors());
     setPreviewMedia(null);
-  }, []);
-
-  const stopPreview = useCallback(async () => {
-    if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync();
-      } catch (error) {
-        // ignore
-      }
-      try {
-        await soundRef.current.unloadAsync();
-      } catch (error) {
-        // ignore
-      }
-      soundRef.current = null;
-    }
-    setCurrentlyPlayingId(null);
-  }, []);
-
-  const handleGoBack = useCallback(() => {
-    stopPreview().catch(() => null);
-    router.back();
-  }, [router, stopPreview]);
-
-  const updateMedia = useCallback((updater: (current: MediaItem[]) => MediaItem[]) => {
-    setMedia((current) => ensureLeadVideo(updater(current)));
+    setSurfaceArea('');
+    setPreviewSeekMillis(0);
+    setPreviewVideoLoading(false);
+    setPreviewDurationMillis(0);
+    setIsPreviewPlaying(false);
+    previewWasPlayingRef.current = false;
+    previewCompletedRef.current = false;
+    previewVisibleRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -714,50 +678,52 @@ export default function HostListingEditScreen() {
       return;
     }
 
-    const { listing, media: listingMedia, rooms, features, availability } = existingListing;
+    const { listing, media: listingMedia, rooms, features } = existingListing;
     setTitle(listing.title ?? '');
-    setPrice(listing.price_per_night ? String(listing.price_per_night) : '');
+    setPrice(listing.price_per_month ? String(listing.price_per_month) : '');
+    setDeposit(listing.deposit_amount ? String(listing.deposit_amount) : '');
+    setMinLease(listing.min_lease_months ? String(listing.min_lease_months) : '');
     const fallbackAddress = [listing.district, listing.city].filter(Boolean).join(', ');
     const parsedLocation = parseCityDistrict(listing.address_text ?? fallbackAddress);
     setAddress(listing.address_text ?? fallbackAddress);
     setGoogleAddress(listing.google_address ?? '');
     setDescription(listing.description ?? '');
     setListingType((listing.property_type as ListingType) ?? LISTING_TYPES[0]);
-    setGuestCapacity(listing.capacity ?? 0);
-    setCityInput(listing.city ?? parsedLocation.city ?? '');
+    setGuestCapacity(Math.max(1, listing.capacity ?? 1));
+        setCityInput(listing.city ?? parsedLocation.city ?? '');
     setResolvedDistrict(listing.district ?? parsedLocation.district ?? '');
     setSelectedPlaceId(listing.place_id ?? null);
     setSelectedLatitude(listing.latitude ?? null);
     setSelectedLongitude(listing.longitude ?? null);
     setFormattedAddress(listing.formatted_address ?? listing.address_text ?? fallbackAddress);
-    setAmenities(mapFeaturesToAmenities(features));
-    setRoomCounts(mapRoomsToCounts(rooms));
-    const { blocked, reserved } = mapAvailability(availability);
-    setBlockedDates(blocked);
-    setReservedDates(reserved);
+    setAmenities(mapListingFeaturesToAmenities(features));
+    setRoomCounts(mapLandlordRoomsToCounts(rooms));
     setCoverPhotoUri(listing.cover_photo_url ?? '');
     setAddressSearch(listing.address_text ?? fallbackAddress);
-    setMusicEnabled(Boolean(listing.music_enabled));
-    if (listing.music_id) {
-      setSelectedMusicId(listing.music_id);
-    }
 
-    if (listingMedia?.length) {
-      setMedia(
-        ensureLeadVideo(
-          listingMedia.map((item) => ({
-            id: item.id,
-            type: item.type,
-            uri: item.url,
-            room: (item.tag as RoomType | null) ?? null,
-            muted: false,
-            duration: 0,
-            source: 'library',
-          })),
-        ),
-      );
+    const normalizedMedia = orderMediaRowsByType(listingMedia ?? []).map<MediaItem>((item: ListingMediaRow, index: number) => {
+      const isVideo = item.media_type === 'video';
+      const sourceUri = isVideo ? toCdnUrl(item.media_url) ?? item.media_url : item.media_url;
+      return {
+        id: item.id,
+        type: isVideo ? 'video' : 'photo',
+        uri: sourceUri,
+        room: (item.media_tag as RoomType | null) ?? null,
+        muted: true,
+        duration: 0,
+        source: 'library',
+        coverUri: item.media_type === 'photo' && index === 0 ? (item.media_url ?? undefined) : undefined,
+        thumbnailUrl: item.thumbnail_url ?? null,
+      };
+    });
+
+    setMedia(normalizedMedia);
+
+    const firstMedia = normalizedMedia[0];
+    if (firstMedia?.thumbnailUrl) {
+      setSurfaceArea(firstMedia.thumbnailUrl);
     }
-  }, [ensureLeadVideo, existingListing, isCreateMode]);
+  }, [existingListing, isCreateMode]);
 
   useEffect(() => {
     if (addressDebounceRef.current) {
@@ -872,33 +838,38 @@ export default function HostListingEditScreen() {
     };
   }, [cityInput]);
 
-  useEffect(() => {
-    Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      staysActiveInBackground: false,
-      playsInSilentModeIOS: true,
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      shouldDuckAndroid: true,
-    }).catch((error) => console.warn('[HostListingEdit] audio mode error', error));
+  const updateMedia = useCallback((updater: (current: MediaItem[]) => MediaItem[]) => {
+    setMedia((current) => ensureLeadVideo(updater(current)));
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (addressBlurTimeoutRef.current) {
-        clearTimeout(addressBlurTimeoutRef.current);
-        addressBlurTimeoutRef.current = null;
+  const appendMediaFromAsset = useCallback(
+    (asset: ImagePicker.ImagePickerAsset, source: MediaItem['source']) => {
+      try {
+        const nextItem = buildMediaItemFromAsset(asset, source);
+        updateMedia((current) => {
+          const next = [...current, nextItem];
+          return next;
+        });
+      } catch (error) {
+        console.warn('[HostListingEdit] failed to process media asset', error);
+        Alert.alert('Import impossible', getPickerErrorMessage(error, "Impossible d'ajouter ce média."));
       }
-    };
-  }, []);
+    },
+    [updateMedia],
+  );
 
-  useEffect(() => {
-    return () => {
-      if (cityBlurTimeoutRef.current) {
-        clearTimeout(cityBlurTimeoutRef.current);
-        cityBlurTimeoutRef.current = null;
-      }
-    };
-  }, []);
+  const optimizeVideoAsset = useCallback(async (asset: ImagePicker.ImagePickerAsset) => asset, []);
+
+  const stopPreviewAudio = useCallback(async () => {
+    if (currentlyPlayingTrackId) {
+      setCurrentlyPlayingTrackId(null);
+    }
+  }, [currentlyPlayingTrackId]);
+
+  const handleGoBack = useCallback(() => {
+    stopPreviewAudio().catch(() => null);
+    router.back();
+  }, [router, stopPreviewAudio]);
 
   const toggleSelection = (value: string, collection: string[], setter: (next: string[]) => void) => {
     setter(
@@ -907,66 +878,6 @@ export default function HostListingEditScreen() {
         : [...collection, value],
     );
   };
-
-  const appendMediaFromAsset = useCallback(
-    (asset: ImagePicker.ImagePickerAsset, source: MediaItem['source']) => {
-      try {
-        const nextItem = buildMediaItemFromAsset(asset, source);
-        if (nextItem.type === 'photo' && !media.some((item) => item.type === 'video')) {
-          Alert.alert('Vidéo obligatoire', 'Ajoutez une vidéo en premier : elle sert de média principal.');
-          return;
-        }
-        updateMedia((current) => [...current, nextItem]);
-      } catch (error) {
-        console.warn('[HostListingEdit] invalid asset', error);
-        Alert.alert('Import impossible', "Le média sélectionné n'a pas pu être ajouté.");
-      }
-    },
-    [media, updateMedia],
-  );
-
-  const optimizeVideoAsset = useCallback(async (asset: ImagePicker.ImagePickerAsset) => asset, []);
-
-  /*
-  const optimizeVideoAsset = useCallback(async (asset: ImagePicker.ImagePickerAsset) => {
-    if (!asset?.uri) {
-      throw new Error('video_asset_missing_uri');
-    }
-    const outputUri = ensureCachePath();
-    const inputPath = stripFileScheme(asset.uri);
-    const outputPath = stripFileScheme(outputUri);
-    const filter = `scale=${VIDEO_OPTIMIZATION.width}:-2,fps=${VIDEO_OPTIMIZATION.fps}`;
-    const command = [
-      '-y',
-      `-i "${inputPath}"`,
-      `-vf "${filter}"`,
-      '-c:v libx264',
-      '-preset medium',
-      '-profile:v high',
-      '-level 4.1',
-      `-b:v ${VIDEO_OPTIMIZATION.bitrate}k`,
-      `-maxrate ${VIDEO_OPTIMIZATION.maxrate}k`,
-      `-bufsize ${VIDEO_OPTIMIZATION.bufsize}k`,
-      '-c:a aac',
-      '-b:a 128k',
-      '-movflags +faststart',
-      `"${outputPath}"`,
-    ].join(' ');
-
-    console.log('[HostListingEdit] optimizing video with command:', command);
-    const session = await FFmpegKit.execute(command);
-    const returnCode = await session.getReturnCode();
-    if (!ReturnCode.isSuccess(returnCode)) {
-      const failStack = await session.getFailStackTrace();
-      console.warn('[HostListingEdit] video optimization failed', failStack);
-      throw new Error('video_optimization_failed');
-    }
-    return {
-      ...asset,
-      uri: outputUri,
-    };
-  }, []);
-  */
 
   const handlePickFromLibrary = useCallback(async () => {
     setIsProcessingMedia(true);
@@ -1164,7 +1075,7 @@ export default function HostListingEditScreen() {
       }
       return next;
     });
-  }, [updateMedia]);
+  }, []);
 
   const handleAssignRoom = useCallback((mediaId: string, room: RoomType) => {
     updateMedia((current) =>
@@ -1177,11 +1088,7 @@ export default function HostListingEditScreen() {
           : item,
       ),
     );
-  }, [updateMedia]);
-
-  const handleToggleMute = useCallback((mediaId: string, muted: boolean) => {
-    updateMedia((current) => current.map((item) => (item.id === mediaId ? { ...item, muted } : item)));
-  }, [updateMedia]);
+  }, []);
 
   const handleFieldLayout = useCallback(
     (key: FieldErrorKey) => (event: LayoutChangeEvent) => {
@@ -1197,11 +1104,10 @@ export default function HostListingEditScreen() {
 
   const validateForm = useCallback(() => {
     const errors = createFieldErrors();
-    const hasVideo = media.some((item) => item.type === 'video');
     const roomsTotal = Object.values(roomCounts).reduce((sum, value) => sum + value, 0);
 
-    if (media.length < 4 || !hasVideo) {
-      errors.media = 'Ajoutez au moins 4 médias dont une vidéo.';
+    if (media.length === 0) {
+      errors.media = 'Ajoutez au moins un média (photo ou vidéo).';
     }
     if (!coverPhotoUri.trim()) {
       errors.cover = 'Ajoutez une photo de couverture.';
@@ -1228,10 +1134,19 @@ export default function HostListingEditScreen() {
     if (!cityInput.trim()) {
       errors.city = 'Sélectionnez ou tapez une ville.';
     }
+    if (requiresSurface) {
+      const trimmedSurface = surfaceArea.trim();
+      const parsedSurface = Number(trimmedSurface.replace(/[^0-9.,]/g, '').replace(/,/g, '.'));
+      if (!trimmedSurface) {
+        errors.surfaceArea = 'Indiquez la surface en m².';
+      } else if (!Number.isFinite(parsedSurface) || parsedSurface <= 0) {
+        errors.surfaceArea = 'Surface invalide.';
+      }
+    }
     if (!listingType.trim()) {
       errors.listingType = 'Sélectionnez un type de bien.';
     }
-    if (roomsTotal === 0) {
+    if (!requiresSurface && roomsTotal === 0) {
       errors.rooms = 'Déclarez au moins une pièce.';
     }
     if (description.trim().length < 100) {
@@ -1248,13 +1163,14 @@ export default function HostListingEditScreen() {
       return false;
     }
     return true;
-  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, roomCounts, scrollToError, title]);
+  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, requiresSurface, roomCounts, scrollToError, surfaceArea, title]);
 
   useEffect(() => {
     setFieldErrors((prev) => {
       let next: typeof prev | null = null;
-      const hasVideo = media.some((item) => item.type === 'video');
       const roomsTotal = Object.values(roomCounts).reduce((sum, value) => sum + value, 0);
+      const surfaceTrimmed = surfaceArea.trim();
+      const parsedSurface = Number(surfaceTrimmed.replace(/[^0-9.,]/g, '').replace(/,/g, '.'));
 
       const clearIfValid = (key: FieldErrorKey, condition: boolean) => {
         if (condition && prev[key]) {
@@ -1265,86 +1181,28 @@ export default function HostListingEditScreen() {
         }
       };
 
-      clearIfValid('media', media.length >= 4 && hasVideo);
+      clearIfValid('media', media.length >= 1);
       clearIfValid('cover', coverPhotoUri.trim().length > 0);
       clearIfValid('title', title.trim().length > 0);
       clearIfValid('price', price.trim().length > 0);
       clearIfValid('address', address.trim().length > 0);
       clearIfValid('city', cityInput.trim().length > 0);
       clearIfValid('listingType', !!listingType.trim());
-      clearIfValid('rooms', roomsTotal > 0);
+      clearIfValid('surfaceArea', !requiresSurface || (surfaceTrimmed.length > 0 && Number.isFinite(parsedSurface) && parsedSurface > 0));
+      if (!requiresSurface) {
+        clearIfValid('rooms', roomsTotal > 0);
+        clearIfValid('capacity', guestCapacity > 0);
+      }
+      clearIfValid('deposit_amount', !deposit || Number(deposit) >= 0);
+      clearIfValid('min_lease_months', !minLease || Number(minLease) > 0);
       clearIfValid('description', description.trim().length >= 100);
       clearIfValid('amenities', amenities.length > 0);
 
       return next ?? prev;
     });
-  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, roomCounts, title]);
+  }, [amenities.length, coverPhotoUri, description, address, cityInput, listingType, media, price, requiresSurface, roomCounts, surfaceArea, title, deposit, minLease, guestCapacity]);
 
-  const handlePreviewMusic = useCallback(
-    async (trackId: string) => {
-      if (currentlyPlayingId === trackId) {
-        await stopPreview();
-        return;
-      }
-      const track = MUSIC_LIBRARY.find((item) => item.id === trackId);
-      if (!track) {
-        return;
-      }
-      await stopPreview();
-      try {
-        const { sound } = await Audio.Sound.createAsync({ uri: track.uri }, { shouldPlay: false, volume: getVolumeValue(volumePreset) });
-        soundRef.current = sound;
-        setCurrentlyPlayingId(trackId);
-        await sound.playAsync();
-        sound.setOnPlaybackStatusUpdate((status) => {
-          if (status.isLoaded && status.didJustFinish) {
-            stopPreview().catch(() => null);
-          }
-        });
-      } catch (error) {
-        console.warn('[HostListingEdit] preview error', error);
-        Alert.alert('Lecture impossible', 'Nous ne pouvons pas lire ce morceau pour le moment.');
-        await stopPreview();
-      }
-    },
-    [currentlyPlayingId, volumePreset, stopPreview],
-  );
-
-  useEffect(() => {
-    if (soundRef.current) {
-      soundRef.current.setVolumeAsync(getVolumeValue(volumePreset)).catch(() => null);
-    }
-  }, [volumePreset]);
-
-  useEffect(() => {
-    return () => {
-      stopPreview().catch(() => null);
-    };
-  }, [stopPreview]);
-
-  useFocusEffect(
-    useCallback(() => {
-      return () => {
-        stopPreview().catch(() => null);
-      };
-    }, [stopPreview]),
-  );
-
-  useEffect(() => {
-    if (!musicEnabled && currentlyPlayingId) {
-      stopPreview().catch(() => null);
-    }
-  }, [musicEnabled, currentlyPlayingId, stopPreview]);
-
-  useEffect(() => {
-    previewVisibleRef.current = !!previewMedia;
-  }, [previewMedia]);
-
-  const handleSave = async () => {
-    if (isSaving) {
-      return;
-    }
-    await stopPreview();
+  const handleSave = async ({ publish }: { publish: boolean }) => {
     if (!validateForm()) {
       Alert.alert('Champs manquants', 'Complétez tous les champs obligatoires avant de continuer.');
       return;
@@ -1361,6 +1219,33 @@ export default function HostListingEditScreen() {
       Alert.alert('Tarif invalide', 'Indiquez un montant numérique valide.');
       return;
     }
+    const sanitizedDeposit = deposit ? Number(deposit.replace(/[^0-9.,]/g, '').replace(',', '.')) : null;
+    if (sanitizedDeposit !== null && (!Number.isFinite(sanitizedDeposit) || sanitizedDeposit < 0)) {
+      setFieldErrors((prev) => ({ ...prev, deposit_amount: 'Entrez un montant valide.' }));
+      Alert.alert('Caution invalide', 'Indiquez un montant numérique valide.');
+      return;
+    }
+
+    const sanitizedMinLease = minLease ? Number(minLease.replace(/[^0-9.,]/g, '').replace(/,/g, '.')) : null;
+    if (sanitizedMinLease !== null && (!Number.isFinite(sanitizedMinLease) || sanitizedMinLease <= 0)) {
+      setFieldErrors((prev) => ({ ...prev, min_lease_months: 'Durée minimale en mois (> 0).' }));
+      Alert.alert('Durée minimale invalide', 'Indiquez un nombre de mois supérieur à zéro.');
+      return;
+    }
+
+    const surfaceForStorage = (() => {
+      if (!requiresSurface) {
+        return null;
+      }
+      const trimmed = surfaceArea.trim();
+      const normalized = trimmed.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+      const parsed = Number(normalized);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+      }
+      return normalized;
+    })();
+
     const trimmedAddress = address.trim();
     const parsedLocation = parseCityDistrict(trimmedAddress);
     const finalCity = cityInput.trim() || parsedLocation.city;
@@ -1370,80 +1255,121 @@ export default function HostListingEditScreen() {
       fallbackDistrict: resolvedDistrict || parsedLocation.district || '',
     });
     const addressText = trimmedAddress || formattedAddress || '';
-    const coverFileName = coverPhotoUri.split('/').pop();
-    const promotion = promoNights && promoDiscount ? { nights: Number(promoNights), discountPercent: Number(promoDiscount) } : null;
 
-    const payload = {
-      hostId: firebaseUser.uid,
-      title: title.trim(),
-      city: finalCity,
-      district: derivedDistrict,
-      addressText,
-      googleAddress: googleAddress.trim() || null,
-      placeId: selectedPlaceId,
-      latitude: selectedLatitude,
-      longitude: selectedLongitude,
-      formattedAddress: formattedAddress.trim() ? formattedAddress.trim() : null,
-      propertyType: listingType || LISTING_TYPES[0],
-      pricePerNight: Math.round(sanitizedPrice),
-      capacity: Math.max(1, guestCapacity || 1),
-      description: description.trim(),
-      coverPhotoUri,
-      coverFileName,
-      musicEnabled,
-      musicId: musicEnabled ? selectedMusicId : null,
-      amenities,
-      rooms: {
-        living: roomCounts.Salon ?? 0,
+    setIsSaving(true);
+    try {
+      const listingPayload = {
+        title: title.trim(),
+        property_type: listingType || LISTING_TYPES[0],
+        city: finalCity,
+        district: derivedDistrict,
+        address_text: addressText,
+        google_address: googleAddress.trim() || '',
+        place_id: selectedPlaceId,
+        latitude: selectedLatitude,
+        longitude: selectedLongitude,
+        formatted_address: formattedAddress.trim() || '',
+        price_per_month: Math.round(sanitizedPrice),
+        deposit_amount: sanitizedDeposit,
+        min_lease_months: sanitizedMinLease,
+        description: description.trim(),
+        is_available: publish,
+        capacity: guestCapacity,
+        cover_photo_url: coverPhotoUri || undefined,
+      };
+
+      const roomsPayload = {
+        living_room: roomCounts.Salon ?? 0,
         bedrooms: roomCounts.Chambre ?? 0,
         kitchen: roomCounts.Cuisine ?? 0,
         bathrooms: roomCounts['Salle de bain'] ?? 0,
-        dining: roomCounts['Salle à manger'] ?? 0,
+        dining_room: roomCounts['Salle à manger'] ?? 0,
         toilets: roomCounts.Toilette ?? 0,
-      },
-      blockedDates,
-      reservedDates,
-      promotion: promotion && promotion.nights > 0 && promotion.discountPercent > 0 ? promotion : null,
-      media: media.map((item) => ({
+      };
+
+      // Convert amenities to feature keys (inverse mapping)
+      const featureKeys = amenities.map(amenity => {
+        const featureEntry = Object.entries(FEATURE_COLUMN_TO_AMENITY).find(([_, amenityId]) => amenityId === amenity);
+        return featureEntry ? featureEntry[0] : amenity;
+      });
+
+      const mediaPayload = media.map((item, index) => ({
         id: item.id,
         uri: item.uri,
         type: item.type,
         room: item.room,
         muted: item.muted,
-      })),
-    };
+        thumbnailUrl:
+          index === 0
+            ? surfaceForStorage ?? null
+            : item.thumbnailUrl ?? null,
+      }));
 
-    let successTitle = '';
-    let successMessage = '';
-    setIsSaving(true);
-    try {
+      let successTitle = '';
+      let successMessage = '';
+
       if (isEditingExisting) {
         if (!existingListing?.listing?.id) {
           throw new Error('listing_introuvable');
         }
-        await updateListingWithRelations({ ...payload, listingId: existingListing.listing.id });
-        await refreshListing().catch(() => null);
-        await refreshFeedListings().catch(() => null);
+        
+        await updateMutation.execute({
+          id: existingListing.listing.id,
+          listing: listingPayload,
+          rooms: roomsPayload,
+          features: featureKeys,
+          media: mediaPayload,
+          coverUri: coverPhotoUri,
+        });
+
+        await Promise.all([refreshListing().catch(() => null), refreshFeedListings().catch(() => null)]);
         setLastCreatedListingId(existingListing.listing.id);
-        setPublishSuccessVisible(true);
-        successTitle = 'Annonce mise à jour';
-        successMessage = 'Vos modifications sont en ligne et visibles immédiatement.';
+        if (publish) {
+          setPublishSuccessVisible(true);
+          successTitle = 'Annonce mise à jour';
+          successMessage = 'Vos modifications sont en ligne et visibles immédiatement.';
+        } else {
+          Alert.alert('Brouillon enregistré', 'L’annonce a été sauvegardée en brouillon.');
+          router.back();
+        }
       } else {
-        const { listingId } = await createListingWithRelations(payload);
-        setLastCreatedListingId(listingId);
+        const newListing = await createMutation.execute({
+          listing: listingPayload,
+          rooms: roomsPayload,
+          features: featureKeys,
+          media: mediaPayload,
+          coverUri: coverPhotoUri,
+        });
+
+        setLastCreatedListingId(newListing.id);
         resetForm();
         await refreshFeedListings().catch(() => null);
-        setPublishSuccessVisible(true);
-        successTitle = 'Annonce publiée';
-        successMessage = 'Votre annonce est maintenant visible par les clients sur PUOL.';
+        if (publish) {
+          setPublishSuccessVisible(true);
+          successTitle = 'Annonce publiée';
+          successMessage = 'Votre annonce est maintenant visible par les clients sur PUOL.';
+        } else {
+          Alert.alert('Brouillon enregistré', 'Votre brouillon est prêt, vous pourrez le publier plus tard.');
+          router.back();
+        }
       }
 
       if (successTitle) {
         Alert.alert(successTitle, successMessage);
       }
     } catch (error) {
-      console.error('[HostListingEdit] save error', error);
-      const message = error instanceof Error ? error.message : "Une erreur est survenue pendant la publication.";
+      console.error('[LandlordListingEdit] save error', error);
+      console.error('[LandlordListingEdit] error details', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack',
+        error
+      });
+      
+      let message = "Une erreur est survenue pendant la publication.";
+      if (error instanceof Error) {
+        message = error.message;
+      }
+      
       Alert.alert('Publication impossible', message);
     } finally {
       setIsSaving(false);
@@ -1451,12 +1377,53 @@ export default function HostListingEditScreen() {
   };
 
   const handleClosePublishModal = useCallback(() => {
-    stopPreview().catch(() => null);
     setPublishSuccessVisible(false);
-  }, [stopPreview]);
+  }, []);
+
+  const handleSaveDraft = useCallback(() => {
+    void handleSave({ publish: false });
+  }, [handleSave]);
+
+  const handlePublish = useCallback(() => {
+    void handleSave({ publish: true });
+  }, [handleSave]);
+
+  const handleDelete = useCallback(() => {
+    if (!id) {
+      return;
+    }
+
+    Alert.alert(
+      'Supprimer l’annonce',
+      'Cette action est définitive. Confirmez-vous la suppression ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            setIsSaving(true);
+            deleteMutation
+              .execute(id)
+              .then(async () => {
+                await refreshFeedListings().catch(() => null);
+                Alert.alert('Annonce supprimée', 'Le brouillon a été supprimé.');
+                router.back();
+              })
+              .catch((error) => {
+                console.error('[LandlordListingEdit] delete error', error);
+                Alert.alert('Suppression impossible', 'Veuillez réessayer plus tard.');
+              })
+              .finally(() => {
+                setIsSaving(false);
+              });
+          },
+        },
+      ],
+    );
+  }, [deleteMutation, id, refreshFeedListings, router]);
 
   const handleViewPublishedListing = useCallback(() => {
-    stopPreview().catch(() => null);
     setPublishSuccessVisible(false);
     const targetId = id || lastCreatedListingId;
     if (targetId) {
@@ -1464,7 +1431,7 @@ export default function HostListingEditScreen() {
       return;
     }
     router.push('/host-listings' as never);
-  }, [id, lastCreatedListingId, router, stopPreview]);
+  }, [id, lastCreatedListingId, router]);
 
   const handleRoomAdjust = (room: (typeof ROOM_COUNTERS)[number], delta: 1 | -1) => {
     setRoomCounts((prev) => {
@@ -1561,160 +1528,6 @@ export default function HostListingEditScreen() {
     [cancelCityDropdownClose],
   );
 
-  const currentAvailabilityMode = useMemo(() => {
-    return AVAILABILITY_MODES.find((mode) => mode.key === selectedAvailabilityMode) ?? AVAILABILITY_MODES[0];
-  }, [selectedAvailabilityMode]);
-
-  const calendarButtonLabel = useMemo(() => {
-    if (selectedAvailabilityMode === 'blocked') {
-      return 'Bloquer des dates';
-    }
-    if (selectedAvailabilityMode === 'available') {
-      return 'Débloquer des dates';
-    }
-    return 'Voir les réservations';
-  }, [selectedAvailabilityMode]);
-
-  const getCalendarStatus = useCallback(
-    (iso: string): AvailabilityModeKey => {
-      if (reservedDates.has(iso)) {
-        return 'reserved';
-      }
-      if (blockedDates.has(iso)) {
-        return 'blocked';
-      }
-      return 'available';
-    },
-    [blockedDates, reservedDates],
-  );
-
-  const handleCalendarDayPress = useCallback(
-    (iso: string, status: AvailabilityModeKey) => {
-      if (selectedAvailabilityMode === 'reserved') {
-        return;
-      }
-      setSelectedCalendarDates((prev) => {
-        const next = new Set(prev);
-        if (next.has(iso)) {
-          next.delete(iso);
-        } else if (selectedAvailabilityMode === 'available' && status === 'blocked') {
-          next.add(iso);
-        } else if (selectedAvailabilityMode === 'blocked' && status === 'available') {
-          next.add(iso);
-        } else if (selectedAvailabilityMode === status) {
-          next.add(iso);
-        }
-        return next;
-      });
-    },
-    [selectedAvailabilityMode],
-  );
-
-  const handleCalendarAction = useCallback(() => {
-    if (selectedAvailabilityMode === 'reserved' || selectedCalendarDates.size === 0) {
-      return;
-    }
-    if (selectedAvailabilityMode === 'blocked') {
-      setBlockedDates((current) => new Set([...current, ...selectedCalendarDates]));
-    } else if (selectedAvailabilityMode === 'available') {
-      setBlockedDates((current) => {
-        const next = new Set(current);
-        selectedCalendarDates.forEach((date) => next.delete(date));
-        return next;
-      });
-    }
-    setSelectedCalendarDates(new Set());
-  }, [selectedAvailabilityMode, selectedCalendarDates]);
-
-  const handleViewReservations = useCallback(() => {
-    router.push('/host-reservations' as never);
-  }, [router]);
-
-  const CalendarCard = () => (
-    <View style={styles.calendarCard}>
-      <View style={styles.calendarHeader}>
-        <View>
-          <Text style={styles.calendarTitle}>Calendrier</Text>
-          <Text style={styles.calendarSubtitle}>{calendarMonth.label}</Text>
-        </View>
-        <View style={styles.calendarHeaderActions}>
-          <TouchableOpacity
-            style={[styles.calendarNavButton, calendarMonthOffset <= 0 && styles.calendarNavButtonDisabled]}
-            activeOpacity={calendarMonthOffset <= 0 ? 1 : 0.8}
-            onPress={() => calendarMonthOffset > 0 && setCalendarMonthOffset((value) => Math.max(0, value - 1))}
-          >
-            <Feather
-              name="chevron-left"
-              size={16}
-              color={calendarMonthOffset <= 0 ? COLORS.border : COLORS.dark}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.calendarNavButton}
-            activeOpacity={0.8}
-            onPress={() => setCalendarMonthOffset((value) => value + 1)}
-          >
-            <Feather name="chevron-right" size={16} color={COLORS.dark} />
-          </TouchableOpacity>
-          <Text
-            style={[
-              styles.calendarBadge,
-              { backgroundColor: currentAvailabilityMode.tint, color: currentAvailabilityMode.accent },
-            ]}
-          >
-            {currentAvailabilityMode.label}
-          </Text>
-        </View>
-      </View>
-      <View style={styles.availabilityLegend}>
-        {AVAILABILITY_MODES.map((mode) => (
-          <View key={mode.key} style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: mode.accent }]} />
-            <Text style={styles.legendLabel}>{mode.label}</Text>
-          </View>
-        ))}
-      </View>
-      <View style={styles.calendarGrid}>
-        {calendarDays.map((day) => {
-          const status = getCalendarStatus(day.iso);
-          const isSelected = selectedCalendarDates.has(day.iso);
-          const disabled = status === 'reserved' || day.isPast;
-          return (
-            <TouchableOpacity
-              key={day.iso}
-              style={[
-                styles.calendarDay,
-                styles[`calendarDay_${status}`],
-                !day.inCurrentMonth && styles.calendarDayFaded,
-                day.isPast && styles.calendarDayPast,
-                isSelected && styles.calendarDaySelected,
-              ]}
-              onPress={() => handleCalendarDayPress(day.iso, status)}
-              activeOpacity={0.85}
-              disabled={disabled}
-            >
-              <Text style={styles.calendarDayWeek}>{day.shortWeekday}</Text>
-              <Text style={styles.calendarDayNumber}>{day.dayNumber}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-      <TouchableOpacity
-        style={[
-          styles.calendarButton,
-          { backgroundColor: currentAvailabilityMode.accent },
-          selectedAvailabilityMode !== 'reserved' && selectedCalendarDates.size === 0 && styles.calendarButtonDisabled,
-        ]}
-        activeOpacity={0.9}
-        disabled={selectedAvailabilityMode !== 'reserved' && selectedCalendarDates.size === 0}
-        onPress={selectedAvailabilityMode === 'reserved' ? handleViewReservations : handleCalendarAction}
-      >
-        <Feather name="calendar" size={16} color="#FFFFFF" />
-        <Text style={styles.calendarButtonText}>{calendarButtonLabel}</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
   const { videoOrderMap, photoOrderMap } = useMemo(() => {
     const videoMap: Record<string, number> = {};
     const photoMap: Record<string, number> = {};
@@ -1745,28 +1558,40 @@ export default function HostListingEditScreen() {
     }
     return activePreviewMedia?.duration ?? 0;
   }, [activePreviewMedia?.duration, previewDurationMillis]);
+
   const previewSliderMax = Math.max(previewDurationMillis || previewDurationSeconds * 1000, 1000);
+
   useEffect(() => {
+    previewVisibleRef.current = !!previewMedia;
     if (!previewMedia || previewMedia.type !== 'video') {
-      setPreviewSeekMillis(0);
-      setPreviewVideoLoading(false);
-      setPreviewDurationMillis(0);
       setIsPreviewPlaying(false);
       previewWasPlayingRef.current = false;
       previewCompletedRef.current = false;
-      return;
+      setPreviewSeekMillis(0);
+      setPreviewDurationMillis(0);
+      setPreviewVideoLoading(false);
+    } else {
+      setPreviewSeekMillis(0);
+      setPreviewDurationMillis(0);
+      setPreviewVideoLoading(true);
+      setIsPreviewPlaying(false);
+      previewWasPlayingRef.current = false;
+      previewCompletedRef.current = false;
     }
-    setPreviewSeekMillis(0);
-    setPreviewVideoLoading(true);
-    setPreviewDurationMillis(0);
-    setIsPreviewPlaying(false);
-    previewWasPlayingRef.current = false;
-    previewCompletedRef.current = false;
-  }, [previewMedia?.id, previewMedia?.type]);
+  }, [previewMedia]);
+
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      staysActiveInBackground: false,
+      playsInSilentModeIOS: true,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      shouldDuckAndroid: true,
+    }).catch((error) => console.warn('[LandlordListingEdit] audio mode error', error));
+  }, []);
 
   const handlePreviewStatus = useCallback(
     (status: AVPlaybackStatus) => {
-      console.log('[PreviewStatus]', JSON.stringify(status));
       if (!status.isLoaded) {
         return;
       }
@@ -1792,6 +1617,9 @@ export default function HostListingEditScreen() {
   );
 
   const handlePreviewPlayPause = useCallback(() => {
+    if (!previewMedia || previewMedia.type !== 'video') {
+      return;
+    }
     setIsPreviewPlaying((current) => {
       const next = !current;
       previewWasPlayingRef.current = next;
@@ -1808,7 +1636,7 @@ export default function HostListingEditScreen() {
       }
       return next;
     });
-  }, []);
+  }, [previewMedia]);
 
   const handlePreviewSlidingStart = useCallback(() => {
     previewWasPlayingRef.current = isPreviewPlaying;
@@ -1839,7 +1667,7 @@ export default function HostListingEditScreen() {
         <View style={[styles.sectionCard, { margin: 16, alignItems: 'center', gap: 12 }]} > 
           <Feather name="alert-triangle" size={24} color={COLORS.danger} />
           <Text style={styles.sectionTitle}>Impossible de charger l’annonce</Text>
-          <Text style={styles.sectionSubtitle}>{loadError}</Text>
+          <Text style={styles.sectionSubtitle}>{loadError?.message || 'Une erreur est survenue'}</Text>
           <TouchableOpacity style={styles.primaryButton} onPress={() => router.back()} activeOpacity={0.85}> 
             <Text style={styles.primaryButtonText}>Retour</Text>
           </TouchableOpacity>
@@ -1895,7 +1723,7 @@ export default function HostListingEditScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
         ref={scrollViewRef}
       >
         <View
@@ -1918,7 +1746,7 @@ export default function HostListingEditScreen() {
                     style={styles.mediaImage}
                     resizeMode={ResizeMode.COVER}
                     shouldPlay={false}
-                    isMuted
+                    isMuted={item.muted}
                     useNativeControls={false}
                   />
                 )}
@@ -2037,77 +1865,9 @@ export default function HostListingEditScreen() {
                     );
                   })}
                 </ScrollView>
-                {item.type === 'video' && (
-                  <View style={styles.muteRow}>
-                    <Text style={styles.muteLabel}>{item.muted ? 'Son coupé' : 'Son actif'}</Text>
-                    <Switch value={!item.muted} onValueChange={(value) => handleToggleMute(item.id, !value)} />
-                  </View>
-                )}
-                </View>
+              </View>
             ))}
           </View>
-        </View>
-
-        <View style={[styles.sectionCard, fieldErrors.cover && styles.sectionCardError]} onLayout={handleFieldLayout('cover')}>
-          <SectionHeader
-            title="Ambiance musicale"
-            subtitle="Ajoutez une musique maison qui jouera pendant les swipes"
-          />
-          {fieldErrors.cover && <Text style={styles.fieldErrorText}>{fieldErrors.cover}</Text>}
-          <View style={styles.musicToggleRow}>
-            <Text style={styles.musicToggleText}>Activer la musique</Text>
-            <Switch value={musicEnabled} onValueChange={setMusicEnabled} />
-          </View>
-          {musicEnabled && (
-            <>
-              <View style={styles.volumeRow}>
-                {VOLUME_PRESETS.map((preset) => (
-                  <TouchableOpacity
-                    key={preset.id}
-                    style={[styles.volumeChip, volumePreset === preset.id && styles.volumeChipActive]}
-                    onPress={() => setVolumePreset(preset.id)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.volumeChipText, volumePreset === preset.id && styles.volumeChipTextActive]}>
-                      {preset.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <View style={styles.musicList}>
-                {MUSIC_LIBRARY.map((track) => {
-                  const isSelected = selectedMusicId === track.id;
-                  const isPlaying = currentlyPlayingId === track.id;
-                  return (
-                    <View key={track.id} style={[styles.musicItem, isSelected && styles.musicItemSelected]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.musicTitle}>{track.title}</Text>
-                        <Text style={styles.musicSubtitle}>
-                          {track.artist} • {track.duration}
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        style={[styles.musicActionButton, isSelected && styles.musicActionButtonActive]}
-                        onPress={() => setSelectedMusicId(track.id)}
-                        activeOpacity={0.85}
-                      >
-                        <Text style={[styles.musicActionText, isSelected && styles.musicActionTextActive]}>
-                          {isSelected ? 'Sélectionné' : 'Choisir'}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.previewButton}
-                        onPress={() => handlePreviewMusic(track.id)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name={isPlaying ? 'pause' : 'play'} size={16} color={COLORS.accent} />
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })}
-              </View>
-            </>
-          )}
         </View>
 
         <View style={[styles.sectionCard, fieldErrors.title && styles.sectionCardError]} onLayout={handleFieldLayout('title')}>
@@ -2153,10 +1913,22 @@ export default function HostListingEditScreen() {
               </View>
             )}
           </View>
-          <LabeledInput label="Tarif" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
+          <LabeledInput label="Loyer mensuel" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
+          <LabeledInput label="Montant de la caution" value={deposit} onChangeText={setDeposit} keyboardType="numeric" error={fieldErrors.deposit_amount} />
+          <LabeledInput label="Durée minimale (mois)" value={minLease} onChangeText={setMinLease} keyboardType="numeric" error={fieldErrors.min_lease_months} />
+          {requiresSurface ? (
+            <LabeledInput
+              label="Surface (m²)"
+              value={surfaceArea}
+              onChangeText={handleSurfaceChange}
+              keyboardType="numeric"
+              placeholder="Ex. 75"
+              error={fieldErrors.surfaceArea}
+            />
+          ) : null}
           <View style={{ marginBottom: 16 }}>
             <Label text="Quartier, ville" />
-            <View style={styles.addressInputWrapper}>
+            <View style={[styles.addressInputWrapper, styles.addressInputWrapperTop]}>
               <TextInput
                 style={[styles.addressInput, fieldErrors.address && styles.inputError]}
                 placeholder="Ex. Bonapriso, Douala"
@@ -2208,7 +1980,7 @@ export default function HostListingEditScreen() {
           </View>
           <View style={{ marginBottom: 16 }} onLayout={handleFieldLayout('city')}>
             <Label text="Ville" />
-            <View style={styles.addressInputWrapper}>
+            <View style={[styles.addressInputWrapper, styles.addressInputWrapperMid]}>
               <TextInput
                 style={[styles.addressInput, fieldErrors.city && styles.inputError]}
                 placeholder="Ex. Douala"
@@ -2260,66 +2032,70 @@ export default function HostListingEditScreen() {
           />
         </View>
 
-        <View style={[styles.sectionCard, fieldErrors.rooms && styles.sectionCardError]} onLayout={handleFieldLayout('rooms')}>
-          <SectionHeader
-            title="Répartition des pièces"
-            subtitle="Déclarez précisément le nombre de pièces"
-          />
-          {fieldErrors.rooms && <Text style={styles.fieldErrorText}>{fieldErrors.rooms}</Text>}
-          <View style={{ gap: 12 }}>
-            {ROOM_COUNTERS.map((room) => (
-              <View key={room} style={styles.counterRow}>
-                <Text style={styles.counterLabel}>{room}</Text>
-                <View style={styles.counterControls}>
-                  <TouchableOpacity
-                    style={styles.counterButton}
-                    onPress={() => handleRoomAdjust(room, -1)}
-                    activeOpacity={0.8}
-                  >
-                    <Feather name="minus" size={16} color={COLORS.dark} />
-                  </TouchableOpacity>
-                  <Text style={styles.counterValue}>{roomCounts[room] ?? 0}</Text>
-                  <TouchableOpacity
-                    style={styles.counterButton}
-                    onPress={() => handleRoomAdjust(room, 1)}
-                    activeOpacity={0.8}
-                  >
-                    <Feather name="plus" size={16} color={COLORS.dark} />
-                  </TouchableOpacity>
+        {!requiresSurface || (requiresSurface && visibleRoomCounters.length > 0) ? (
+          <View style={[styles.sectionCard, fieldErrors.rooms && styles.sectionCardError]} onLayout={handleFieldLayout('rooms')}>
+            <SectionHeader
+              title="Répartition des pièces"
+              subtitle="Déclarez précisément le nombre de pièces"
+            />
+            {fieldErrors.rooms && <Text style={styles.fieldErrorText}>{fieldErrors.rooms}</Text>}
+            <View style={{ gap: 12 }}>
+              {visibleRoomCounters.map((room) => (
+                <View key={room} style={styles.counterRow}>
+                  <Text style={styles.counterLabel}>{room}</Text>
+                  <View style={styles.counterControls}>
+                    <TouchableOpacity
+                      style={styles.counterButton}
+                      onPress={() => handleRoomAdjust(room, -1)}
+                      activeOpacity={0.8}
+                    >
+                      <Feather name="minus" size={16} color={COLORS.dark} />
+                    </TouchableOpacity>
+                    <Text style={styles.counterValue}>{roomCounts[room] ?? 0}</Text>
+                    <TouchableOpacity
+                      style={styles.counterButton}
+                      onPress={() => handleRoomAdjust(room, 1)}
+                      activeOpacity={0.8}
+                    >
+                      <Feather name="plus" size={16} color={COLORS.dark} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            ))}
+              ))}
+            </View>
+            <Text style={styles.supportText}>Ajustez les nombres pour refléter fidèlement votre bien.</Text>
           </View>
-          <Text style={styles.supportText}>Ajustez les nombres pour refléter fidèlement votre bien.</Text>
-        </View>
+        ) : null}
 
-        <View style={styles.sectionCard}>
-          <SectionHeader
-            title="Nombre de personnes"
-            subtitle="Indiquez combien de clients peuvent être accueillis confortablement"
-          />
-          <View style={styles.guestCapacityRow}>
-            <Text style={styles.counterLabel}>Nombre de clients</Text>
-            <View style={styles.counterControls}>
-              <TouchableOpacity
-                style={styles.counterButton}
-                onPress={() => setGuestCapacity((value) => Math.max(1, value - 1))}
-                activeOpacity={0.8}
-              >
-                <Feather name="minus" size={16} color={COLORS.dark} />
-              </TouchableOpacity>
-              <Text style={styles.counterValue}>{guestCapacity}</Text>
-              <TouchableOpacity
-                style={styles.counterButton}
-                onPress={() => setGuestCapacity((value) => value + 1)}
-                activeOpacity={0.8}
-              >
-                <Feather name="plus" size={16} color={COLORS.dark} />
-              </TouchableOpacity>
+        {!requiresSurface && (
+          <View style={[styles.sectionCard, fieldErrors.capacity && styles.sectionCardError]} onLayout={handleFieldLayout('capacity')}>
+            <SectionHeader
+              title="Capacité d’accueil"
+              subtitle="Indiquez le nombre maximum de locataires admis"
+            />
+            {fieldErrors.capacity && <Text style={styles.fieldErrorText}>{fieldErrors.capacity}</Text>}
+            <View style={styles.counterRow}>
+              <Text style={styles.counterLabel}>Nombre de personnes</Text>
+              <View style={styles.counterControls}>
+                <TouchableOpacity
+                  style={styles.counterButton}
+                  onPress={() => setGuestCapacity((value) => Math.max(1, value - 1))}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="minus" size={16} color={COLORS.dark} />
+                </TouchableOpacity>
+                <Text style={styles.counterValue}>{guestCapacity}</Text>
+                <TouchableOpacity
+                  style={styles.counterButton}
+                  onPress={() => setGuestCapacity((value) => value + 1)}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="plus" size={16} color={COLORS.dark} />
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-          <Text style={styles.supportText}>Ce nombre sera affiché sur la fiche pour informer les clients.</Text>
-        </View>
+        )}
 
         <View style={[styles.sectionCard, fieldErrors.description && styles.sectionCardError]} onLayout={handleFieldLayout('description')}>
           <SectionHeader
@@ -2372,61 +2148,6 @@ export default function HostListingEditScreen() {
           </View>
         </View>
 
-        <View style={styles.sectionCard}>
-          <SectionHeader
-            title="Disponibilités"
-            subtitle="Choisissez un mode, touchez les jours puis validez pour bloquer ou débloquer. Les dates vertes sont libres par défaut."
-          />
-          <View style={styles.badgeGrid}>
-            {AVAILABILITY_MODES.map((mode) => (
-              <TouchableOpacity
-                key={mode.key}
-                style={[styles.badge, selectedAvailabilityMode === mode.key && styles.badgeActive]}
-                onPress={() => setSelectedAvailabilityMode(mode.key)}
-              >
-                <Text
-                  style={[styles.badgeText, selectedAvailabilityMode === mode.key && styles.badgeTextActive]}
-                >
-                  {mode.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <CalendarCard />
-        </View>
-
-        <View style={styles.sectionCard}>
-          <SectionHeader
-            title="Promotion automatique"
-            subtitle="Appliquez une remise au-delà d’un certain nombre de nuits"
-          />
-          <Text style={[styles.supportText, styles.supportTextTight]}>
-            Définissez en combien de nuits la remise s’active, puis le pourcentage. Nous calculerons la réduction lors des
-            réservations longues.
-          </Text>
-          <View style={styles.promoRow}>
-            <View style={{ flex: 1 }}>
-              <Label text="Nombre de nuits" />
-              <TextInput
-                style={styles.promoInput}
-                value={promoNights}
-                onChangeText={setPromoNights}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ width: 18 }} />
-            <View style={{ flex: 1 }}>
-              <Label text="Remise (%)" />
-              <TextInput
-                style={styles.promoInput}
-                value={promoDiscount}
-                onChangeText={setPromoDiscount}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-        </View>
-
         <View style={[styles.sectionCard, { marginBottom: 48 }]}>
           <SectionHeader
             title="Publication"
@@ -2435,44 +2156,54 @@ export default function HostListingEditScreen() {
           {isCreateMode ? (
             <>
               <View style={[styles.footerActions, styles.footerActionsColumn]}>
-                <TouchableOpacity style={[styles.secondaryButton, styles.secondaryButtonFullWidth]} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={[styles.secondaryButton, styles.secondaryButtonFullWidth]}
+                  activeOpacity={0.85}
+                  onPress={handleSaveDraft}
+                  disabled={isSaving}
+                >
                   <Text style={styles.secondaryButtonText}>Enregistrer en brouillon</Text>
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
-                style={[styles.publishButton, isSaving && styles.buttonDisabled]}
+                style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
                 activeOpacity={0.9}
-                onPress={handleSave}
+                onPress={handlePublish}
                 disabled={isSaving}
               >
-                {isSaving ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <>
-                    <Feather name="check-circle" size={16} color="#FFFFFF" />
-                    <Text style={styles.publishButtonText}>Publier l’annonce</Text>
-                  </>
-                )}
+                <Text style={styles.primaryButtonText}>{isCreateMode ? 'Publier' : 'Mettre à jour'}</Text>
+                <Feather name="send" size={16} color="#FFFFFF" />
               </TouchableOpacity>
             </>
           ) : (
             <>
               <View style={styles.footerActions}>
-                <TouchableOpacity style={styles.secondaryButton} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  activeOpacity={0.85}
+                  onPress={handleSaveDraft}
+                  disabled={isSaving}
+                >
                   <Text style={styles.secondaryButtonText}>Enregistrer en brouillon</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
                   activeOpacity={0.9}
-                  onPress={handleSave}
+                  onPress={handlePublish}
                   disabled={isSaving}
                 >
-                  {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>Mettre à jour</Text>}
+                  <Text style={styles.primaryButtonText}>Mettre à jour</Text>
+                  <Feather name="send" size={16} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity style={styles.dangerButton} activeOpacity={0.85}>
-                <Feather name="alert-triangle" size={14} color="#FFFFFF" />
-                <Text style={styles.dangerButtonText}>Dépublier l’annonce</Text>
+              <TouchableOpacity
+                style={[styles.dangerButton, isSaving && styles.buttonDisabled]}
+                activeOpacity={0.88}
+                onPress={handleDelete}
+                disabled={isSaving}
+              >
+                <Text style={styles.dangerButtonText}>Supprimer l’annonce</Text>
+                <Feather name="trash-2" size={16} color="#FFFFFF" />
               </TouchableOpacity>
             </>
           )}
@@ -2480,7 +2211,7 @@ export default function HostListingEditScreen() {
       </ScrollView>
 
       <Modal
-        visible={!!activePreviewMedia}
+        visible={!!previewMedia}
         animationType="fade"
         presentationStyle="fullScreen"
         hardwareAccelerated
@@ -2505,12 +2236,13 @@ export default function HostListingEditScreen() {
                     resizeMode={ResizeMode.CONTAIN}
                     shouldPlay={isPreviewPlaying}
                     isMuted={activePreviewMedia?.muted ?? false}
+                    useNativeControls={false}
                     onPlaybackStatusUpdate={handlePreviewStatus}
                     onLoadStart={() => setPreviewVideoLoading(true)}
                     onLoad={() => setPreviewVideoLoading(false)}
                     onError={(error) => {
                       setPreviewVideoLoading(false);
-                      console.warn('[PreviewVideo] error', error);
+                      console.warn('[LandlordPreviewVideo] error', error);
                       if (!previewVisibleRef.current) {
                         return;
                       }
@@ -2564,9 +2296,7 @@ export default function HostListingEditScreen() {
                     onSlidingStart={handlePreviewSlidingStart}
                     onSlidingComplete={handlePreviewSlidingComplete}
                   />
-                  <Text style={styles.previewTimeText}>
-                    {formatDuration(Math.floor((previewDurationMillis || previewSliderMax) / 1000))}
-                  </Text>
+                  <Text style={styles.previewTimeText}>{formatDuration(Math.floor((previewDurationMillis || previewSliderMax) / 1000))}</Text>
                 </View>
               </View>
             )}
@@ -2745,6 +2475,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     position: 'relative',
     zIndex: 10,
+    overflow: 'visible',
+  },
+  addressInputWrapperTop: {
+    zIndex: 40,
+  },
+  addressInputWrapperMid: {
+    zIndex: 30,
   },
   addressInput: {
     borderWidth: 1,
@@ -2771,6 +2508,7 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
+    zIndex: 1000,
     overflow: 'hidden',
   },
   addressDropdownItem: {
@@ -2851,21 +2589,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: COLORS.accent,
-  },
-  mediaDurationPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: 'rgba(15,23,42,0.65)',
-  },
-  mediaDurationText: {
-    fontFamily: 'Manrope',
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
   },
   mediaImage: {
     width: '100%',
@@ -3003,16 +2726,6 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontWeight: '600',
   },
-  muteRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  muteLabel: {
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    color: COLORS.muted,
-  },
   coverPreviewCard: {
     marginTop: 12,
     borderRadius: 18,
@@ -3144,94 +2857,10 @@ const styles = StyleSheet.create({
   supportTextTight: {
     marginTop: -10,
   },
-  musicToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  musicToggleText: {
-    fontFamily: 'Manrope',
-    fontSize: 14,
-    color: COLORS.dark,
-    fontWeight: '600',
-  },
-  volumeRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-  },
-  volumeChip: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-  },
-  volumeChipActive: {
-    borderColor: 'rgba(46,204,113,0.4)',
-    backgroundColor: 'rgba(46,204,113,0.12)',
-  },
-  volumeChipText: {
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    color: COLORS.muted,
-  },
-  volumeChipTextActive: {
-    color: COLORS.accent,
-    fontWeight: '700',
-  },
-  musicList: {
-    marginTop: 12,
-    gap: 10,
-  },
-  musicItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 16,
-    padding: 12,
-  },
-  musicItemSelected: {
-    borderColor: COLORS.accent,
-    backgroundColor: 'rgba(46,204,113,0.08)',
-  },
-  musicTitle: {
-    fontFamily: 'Manrope',
-    fontSize: 14,
-    fontWeight: '700',
-    color: COLORS.dark,
-  },
-  musicSubtitle: {
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    color: COLORS.muted,
-  },
-  musicActionButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  musicActionButtonActive: {
-    borderColor: COLORS.accent,
-    backgroundColor: 'rgba(46,204,113,0.15)',
-  },
-  musicActionText: {
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    color: COLORS.dark,
-  },
-  musicActionTextActive: {
-    color: COLORS.accent,
-    fontWeight: '600',
-  },
   dropdownOptionText: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.dark,
+    fontWeight: '500',
   },
   dropdownOptionTextActive: {
     color: COLORS.accent,
@@ -3512,172 +3141,6 @@ const styles = StyleSheet.create({
     color: COLORS.dark,
     minWidth: 24,
     textAlign: 'center',
-  },
-  guestCapacityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-  },
-  calendarCard: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: 'rgba(15,23,42,0.02)',
-    gap: 12,
-  },
-  calendarHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  calendarTitle: {
-    fontFamily: 'Manrope',
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.dark,
-  },
-  calendarSubtitle: {
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    color: COLORS.muted,
-    marginTop: 2,
-  },
-  calendarHeaderActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  calendarNavButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  calendarNavButtonDisabled: {
-    opacity: 0.4,
-  },
-  calendarBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: 'rgba(46,204,113,0.12)',
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.accent,
-  },
-  availabilityLegend: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginVertical: 10,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  legendDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  legendLabel: {
-    fontFamily: 'Manrope',
-    fontSize: 12,
-    color: COLORS.muted,
-  },
-  calendarGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginVertical: 8,
-    gap: 8,
-  },
-  calendarDay: {
-    width: '14%',
-    aspectRatio: 0.75,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 6,
-    backgroundColor: '#FFFFFF',
-  },
-  calendarDay_available: {
-    backgroundColor: 'rgba(46,204,113,0.12)',
-    borderColor: 'rgba(46,204,113,0.35)',
-  },
-  calendarDay_blocked: {
-    backgroundColor: 'rgba(220,38,38,0.08)',
-    borderColor: COLORS.danger,
-  },
-  calendarDay_reserved: {
-    backgroundColor: 'rgba(249,115,22,0.1)',
-    borderColor: '#F97316',
-  },
-  calendarDaySelected: {
-    borderColor: COLORS.accent,
-    borderWidth: 2,
-  },
-  calendarDayFaded: {
-    opacity: 0.35,
-  },
-  calendarDayPast: {
-    opacity: 0.4,
-  },
-  calendarDayWeek: {
-    fontFamily: 'Manrope',
-    fontSize: 11,
-    color: COLORS.muted,
-  },
-  calendarDayNumber: {
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.dark,
-  },
-  calendarButton: {
-    marginTop: 4,
-    borderRadius: 16,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.accent,
-    flexDirection: 'row',
-    gap: 8,
-  },
-  calendarButtonDisabled: {
-    opacity: 0.4,
-  },
-  calendarButtonText: {
-    fontFamily: 'Manrope',
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  promoRow: {
-    flexDirection: 'row',
-    marginTop: 16,
-  },
-  promoInput: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontFamily: 'Manrope',
-    fontSize: 14,
-    color: COLORS.dark,
-    backgroundColor: '#FFFFFF',
   },
   footerActions: {
     flexDirection: 'row',

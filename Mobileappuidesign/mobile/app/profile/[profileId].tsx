@@ -7,6 +7,7 @@ import {
   Image,
   InteractionManager,
   Modal,
+  Platform,
   ScrollView,
   Share,
   StyleSheet,
@@ -29,6 +30,12 @@ import {
   unfollowProfile,
   type ProfileFollowListItem,
 } from '@/src/features/follows/services';
+import {
+  fetchProfileShareCount,
+  recordProfileShare,
+  resolveProfileShareChannel,
+} from '@/src/features/profiles/services/shareService';
+import { buildProfileShareUrl } from '@/src/utils/helpers';
 import { supabase } from '@/src/supabaseClient';
 import { AuthModal } from '@/src/features/auth/components/AuthModal';
 import { LoginWithOTPScreen } from '@/src/features/auth/components/LoginWithOTPScreen';
@@ -689,6 +696,7 @@ export default function PublicProfileScreen() {
   const [viewerFollowingIds, setViewerFollowingIds] = useState<Set<string>>(new Set());
   const [viewerFollowerIds, setViewerFollowerIds] = useState<Set<string>>(new Set());
   const [viewerMutualIds, setViewerMutualIds] = useState<Set<string>>(new Set());
+  const [profileShareCount, setProfileShareCount] = useState<number>(0);
   const viewerMode = useMemo(() => Boolean(currentUserId && profileId && currentUserId !== profileId), [currentUserId, profileId]);
   const fetchUserLikes = useCallback(async () => {
     if (!shouldLoadRegularStats || !profileId) {
@@ -1314,22 +1322,50 @@ export default function PublicProfileScreen() {
     </TouchableOpacity>
   );
 
+  const loadProfileShareCount = useCallback(async () => {
+    if (!profileId) {
+      setProfileShareCount(0);
+      return;
+    }
+    try {
+      const count = await fetchProfileShareCount(profileId);
+      setProfileShareCount(count);
+    } catch (error) {
+      console.error('[PublicProfile] failed to load share count', error);
+      setProfileShareCount(0);
+    }
+  }, [profileId]);
+
+  useEffect(() => {
+    void loadProfileShareCount();
+  }, [loadProfileShareCount]);
+
   const handleShareProfile = useCallback(async () => {
     if (!profileId) {
       return;
     }
-    const shareUrl = `https://puol.app/profile/${profileId}`;
+    const shareUrl = buildProfileShareUrl(profileId);
     const message = `Regarde ce profil sur Puol 👇\n${shareUrl}`;
     try {
-      await Share.share({
+      const result = await Share.share({
         title: fullName,
         message,
         url: shareUrl,
       });
+
+      if (result.action === Share.sharedAction) {
+        const channel = Platform.OS === 'ios' ? resolveProfileShareChannel(result.activityType) : 'system_share_sheet';
+        void recordProfileShare({
+          profileId,
+          sharedByProfileId: currentUserId,
+          channel,
+        });
+        setProfileShareCount((prev) => prev + 1);
+      }
     } catch (error) {
       console.warn('[PublicProfile] Share error', error);
     }
-  }, [fullName, profileId]);
+  }, [currentUserId, fullName, profileId]);
 
   const profileBadge = useMemo(() => {
     if (!profile) {
@@ -1490,6 +1526,9 @@ export default function PublicProfileScreen() {
                     >
                       <MetricCard icon="heart" label="Likes" value={formatCount(displayStats.likes)} />
                     </TouchableOpacity>
+                    <TouchableOpacity style={styles.metricCardButton} activeOpacity={0.85} onPress={handleShareProfile}>
+                      <MetricCard icon="share-2" label="Partages" value={formatCount(profileShareCount)} />
+                    </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.metricCardButton}
                       activeOpacity={0.85}
@@ -1513,6 +1552,9 @@ export default function PublicProfileScreen() {
                       onPress={() => setShowUserLikesModal(true)}
                     >
                       <MetricCard icon="heart" label="Likes" value={formatCount(displayStats.likes)} />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.metricCardButton} activeOpacity={0.85} onPress={handleShareProfile}>
+                      <MetricCard icon="share-2" label="Partages" value={formatCount(profileShareCount)} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.metricCardButton}
@@ -1744,6 +1786,14 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerShareWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#F3F4F6',
     alignItems: 'center',
     justifyContent: 'center',

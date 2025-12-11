@@ -192,6 +192,9 @@ export const getHostCommentThreads = async (hostId: string): Promise<HostComment
     return bTime - aTime;
   });
 };
+
+export const getLandlordCommentThreads = async (landlordId: string): Promise<HostCommentThread[]> =>
+  getHostCommentThreads(landlordId);
 const mapCommentRowToCommentWithAuthor = (comment: any): CommentWithAuthor => {
   const { content, mentionName } = extractMentionFromContent(comment.content);
 

@@ -9,7 +9,20 @@ import React, {
   type ReactNode,
 } from 'react';
 
-export type VisitStatus = 'pending' | 'confirmed' | 'cancelled';
+import { useAuth } from '@/src/contexts/AuthContext';
+import {
+  cancelRentalVisit,
+  checkRentalVisitAvailability,
+  createRentalVisit,
+  fetchGuestRentalVisits,
+  fetchOccupiedTimeslots,
+  fetchExistingVisitForListing,
+  updateRentalVisit,
+  type GuestRentalVisit,
+  type RentalVisitStatus,
+} from '@/src/features/rental-visits/services';
+
+export type VisitStatus = RentalVisitStatus;
 
 export interface VisitRecord {
   id: string;
@@ -23,11 +36,21 @@ export interface VisitRecord {
   propertyType?: string | null;
   propertySurfaceArea?: string | null;
   propertyIsRoadside?: boolean | null;
-  visitDate: string; // ISO string
+  visitDate: string;
   visitTime: string;
   status: VisitStatus;
+  rawStatus: VisitStatus;
   amount: number;
-  createdAt: string; // ISO string
+  createdAt: string;
+  source?: string | null;
+  notes?: string | null;
+  guest?: {
+    id?: string;
+    name?: string;
+    username?: string | null;
+    phone?: string | null;
+    avatarUrl?: string | null;
+  } | null;
 }
 
 type VisitInput = {
@@ -44,143 +67,296 @@ type VisitInput = {
   visitDate: Date;
   visitTime: string;
   amount: number;
+  notes?: string | null;
+};
+
+type VisitUpdateInput = Partial<Omit<VisitInput, 'visitDate' | 'visitTime'>> & {
+  visitDate?: Date;
+  visitTime?: string;
 };
 
 interface VisitsContextValue {
   visits: VisitRecord[];
-  addVisit: (visit: VisitInput) => string;
-  updateVisit: (visitId: string, data: Partial<Omit<VisitInput, 'visitDate'>> & { visitDate?: Date }) => void;
-  cancelVisit: (visitId: string) => void;
+  isLoading: boolean;
+  error: string | null;
+  refreshVisits: () => Promise<void>;
+  addVisit: (visit: VisitInput) => Promise<VisitRecord>;
+  updateVisit: (visitId: string, data: VisitUpdateInput) => Promise<VisitRecord | null>;
+  cancelVisit: (visitId: string) => Promise<VisitRecord | null>;
   confirmVisit: (visitId: string) => void;
   getVisitByPropertyId: (propertyId: string) => VisitRecord | undefined;
   getVisitById: (visitId: string) => VisitRecord | undefined;
+  checkSlotAvailability: (listingId: string, visitDate: string, visitTime: string) => Promise<boolean>;
+  getOccupiedTimeslots: (listingId: string, visitDate: string) => Promise<string[]>;
+  fetchLatestVisitForListing: (listingId: string) => Promise<VisitRecord | null>;
 }
 
-const AUTO_CONFIRM_DELAY = 30000; // 30s
+const AUTO_CONFIRM_DELAY_MS = 2 * 60 * 1000;
+const DEFAULT_VISIT_PRICE = 5000;
 
 const VisitsContext = createContext<VisitsContextValue | undefined>(undefined);
 
+const mapGuestVisitToRecord = (
+  visit: GuestRentalVisit,
+  extras?: Partial<VisitRecord>,
+  previous?: VisitRecord,
+): VisitRecord => {
+  return {
+    id: visit.id,
+    propertyId: visit.listingId,
+    propertyTitle: extras?.propertyTitle ?? previous?.propertyTitle ?? visit.listingTitle,
+    propertyImage: extras?.propertyImage ?? previous?.propertyImage ?? visit.listingCoverUrl ?? null,
+    propertyLocation: extras?.propertyLocation ?? previous?.propertyLocation ?? visit.listingLocation,
+    propertyBedrooms: extras?.propertyBedrooms ?? previous?.propertyBedrooms ?? null,
+    propertyKitchens: extras?.propertyKitchens ?? previous?.propertyKitchens ?? null,
+    propertyLivingRooms: extras?.propertyLivingRooms ?? previous?.propertyLivingRooms ?? null,
+    propertyType: extras?.propertyType ?? previous?.propertyType ?? null,
+    propertySurfaceArea: extras?.propertySurfaceArea ?? previous?.propertySurfaceArea ?? null,
+    propertyIsRoadside: extras?.propertyIsRoadside ?? previous?.propertyIsRoadside ?? null,
+    visitDate: visit.visitDate,
+    visitTime: visit.visitTime,
+    status: visit.status,
+    rawStatus: visit.rawStatus,
+    amount: extras?.amount ?? previous?.amount ?? DEFAULT_VISIT_PRICE,
+    createdAt: visit.createdAt,
+    source: visit.source ?? previous?.source ?? null,
+    notes: visit.notes ?? previous?.notes ?? null,
+    guest: visit.guest ?? previous?.guest ?? null,
+  };
+};
+
+type VisitExtrasInput = (VisitInput | VisitUpdateInput | Partial<VisitRecord>) & {
+  visitDate?: Date | string;
+  visitTime?: string;
+  amount?: number;
+  notes?: string | null;
+};
+
+const buildExtrasFromInput = (input: VisitExtrasInput): Partial<VisitRecord> => {
+  return {
+    propertyId: input.propertyId,
+    propertyTitle: input.propertyTitle,
+    propertyImage: input.propertyImage,
+    propertyLocation: input.propertyLocation,
+    propertyBedrooms: input.propertyBedrooms ?? null,
+    propertyKitchens: input.propertyKitchens ?? null,
+    propertyLivingRooms: input.propertyLivingRooms ?? null,
+    propertyType: input.propertyType ?? null,
+    propertySurfaceArea: input.propertySurfaceArea ?? null,
+    propertyIsRoadside: input.propertyIsRoadside ?? null,
+    visitDate: input.visitDate instanceof Date ? input.visitDate.toISOString() : input.visitDate,
+    visitTime: input.visitTime ?? undefined,
+    amount: input.amount ?? undefined,
+    notes: input.notes ?? undefined,
+  };
+};
+
 export const VisitsProvider = ({ children }: { children: ReactNode }) => {
+  const { supabaseProfile, isLoggedIn } = useAuth();
   const [visits, setVisits] = useState<VisitRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const visitsRef = useRef<VisitRecord[]>([]);
   const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  const scheduleAutoConfirm = useCallback((visitId: string, delay = AUTO_CONFIRM_DELAY) => {
+  const clearTimer = useCallback((visitId: string) => {
     if (timersRef.current[visitId]) {
       clearTimeout(timersRef.current[visitId]);
-    }
-
-    timersRef.current[visitId] = setTimeout(() => {
-      setVisits((prev) =>
-        prev.map((visit) =>
-          visit.id === visitId && visit.status === 'pending'
-            ? { ...visit, status: 'confirmed' as VisitStatus }
-            : visit,
-        ),
-      );
       delete timersRef.current[visitId];
-    }, delay);
+    }
   }, []);
+
+  const scheduleAutoConfirm = useCallback(
+    (visit: VisitRecord) => {
+      clearTimer(visit.id);
+
+      if (visit.status !== 'pending') {
+        return;
+      }
+
+      const createdAt = visit.createdAt ? new Date(visit.createdAt).getTime() : null;
+      if (!createdAt) {
+        return;
+      }
+
+      const elapsed = Date.now() - createdAt;
+      const remaining = AUTO_CONFIRM_DELAY_MS - elapsed;
+
+      if (remaining <= 0) {
+        setVisits((prev) =>
+          prev.map((item) =>
+            item.id === visit.id ? { ...item, status: 'confirmed' as VisitStatus, rawStatus: 'confirmed' } : item,
+          ),
+        );
+        return;
+      }
+
+      timersRef.current[visit.id] = setTimeout(() => {
+        setVisits((prev) =>
+          prev.map((item) =>
+            item.id === visit.id ? { ...item, status: 'confirmed' as VisitStatus, rawStatus: 'confirmed' } : item,
+          ),
+        );
+        delete timersRef.current[visit.id];
+      }, remaining);
+    },
+    [clearTimer],
+  );
+
+  const applyVisits = useCallback(
+    (nextVisits: VisitRecord[]) => {
+      setVisits((prevVisits) => {
+        const prevIds = new Set(prevVisits.map((visit) => visit.id));
+        nextVisits.forEach((visit) => {
+          scheduleAutoConfirm(visit);
+          prevIds.delete(visit.id);
+        });
+        prevIds.forEach((id) => clearTimer(id));
+        visitsRef.current = nextVisits;
+        return nextVisits;
+      });
+    },
+    [clearTimer, scheduleAutoConfirm],
+  );
 
   useEffect(() => {
     return () => {
       Object.values(timersRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+      timersRef.current = {};
     };
   }, []);
 
-  const addVisit: VisitsContextValue['addVisit'] = useCallback((visit) => {
-    const id = `visit-${Date.now()}`;
-    const createdAt = new Date();
-    const visitRecord: VisitRecord = {
-      id,
-      status: 'pending',
-      createdAt: createdAt.toISOString(),
-      visitDate: visit.visitDate.toISOString(),
-      visitTime: visit.visitTime,
-      propertyId: visit.propertyId,
-      propertyTitle: visit.propertyTitle,
-      propertyImage: visit.propertyImage ?? null,
-      propertyLocation: visit.propertyLocation,
-      propertyBedrooms: visit.propertyBedrooms ?? null,
-      propertyKitchens: visit.propertyKitchens ?? null,
-      propertyLivingRooms: visit.propertyLivingRooms ?? null,
-      propertyType: visit.propertyType ?? null,
-      propertySurfaceArea: visit.propertySurfaceArea ?? null,
-      propertyIsRoadside: visit.propertyIsRoadside ?? null,
-      amount: visit.amount,
-    };
+  const refreshVisits = useCallback(async () => {
+    if (!isLoggedIn || !supabaseProfile) {
+      applyVisits([]);
+      return;
+    }
 
-    setVisits((prev) => [visitRecord, ...prev]);
-    scheduleAutoConfirm(id);
-    return id;
-  }, [scheduleAutoConfirm]);
+    setIsLoading(true);
+    try {
+      const fetched = await fetchGuestRentalVisits(supabaseProfile.id);
+      const previousIndex = new Map(visitsRef.current.map((visit) => [visit.id, visit] as const));
+      const mapped = fetched
+        .map((visit) => {
+          const previous = previousIndex.get(visit.id);
+          return mapGuestVisitToRecord(visit, undefined, previous ?? undefined);
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-  const updateVisit: VisitsContextValue['updateVisit'] = useCallback(
-    (visitId, data) => {
-      setVisits((prev) =>
-        prev.map((visit) => {
-          if (visit.id !== visitId) {
-            return visit;
-          }
+      applyVisits(mapped);
+      setError(null);
+    } catch (err) {
+      console.error('[VisitsContext] Failed to refresh visits', err);
+      setError('unable_to_load');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [applyVisits, isLoggedIn, supabaseProfile]);
 
-          const nextDate = data.visitDate ? data.visitDate.toISOString() : visit.visitDate;
-          const updated: VisitRecord = {
-            ...visit,
-            propertyTitle: data.propertyTitle ?? visit.propertyTitle,
-            propertyLocation: data.propertyLocation ?? visit.propertyLocation,
-            propertyImage: data.propertyImage ?? visit.propertyImage ?? null,
-            propertyBedrooms:
-              data.propertyBedrooms !== undefined ? data.propertyBedrooms : visit.propertyBedrooms ?? null,
-            propertyKitchens:
-              data.propertyKitchens !== undefined ? data.propertyKitchens : visit.propertyKitchens ?? null,
-            propertyLivingRooms:
-              data.propertyLivingRooms !== undefined
-                ? data.propertyLivingRooms
-                : visit.propertyLivingRooms ?? null,
-            propertyType: data.propertyType ?? visit.propertyType ?? null,
-            propertySurfaceArea: data.propertySurfaceArea ?? visit.propertySurfaceArea ?? null,
-            propertyIsRoadside:
-              data.propertyIsRoadside !== undefined
-                ? data.propertyIsRoadside
-                : visit.propertyIsRoadside ?? null,
-            amount: data.amount ?? visit.amount,
-            visitDate: nextDate,
-            visitTime: data.visitTime ?? visit.visitTime,
-            status: 'pending',
-            createdAt: new Date().toISOString(),
-          };
-          scheduleAutoConfirm(visitId);
-          return updated;
-        }),
-      );
+  useEffect(() => {
+    if (isLoggedIn && supabaseProfile) {
+      void refreshVisits();
+    } else {
+      visitsRef.current = [];
+      setVisits([]);
+      Object.keys(timersRef.current).forEach((id) => clearTimer(id));
+    }
+  }, [clearTimer, isLoggedIn, refreshVisits, supabaseProfile]);
+
+  const addVisit = useCallback<VisitsContextValue['addVisit']>(
+    async (visit) => {
+      if (!supabaseProfile) {
+        throw new Error('not_authenticated');
+      }
+
+      const created = await createRentalVisit({
+        listingId: visit.propertyId,
+        guestProfileId: supabaseProfile.id,
+        visitDate: visit.visitDate,
+        visitTime: visit.visitTime,
+        source: 'mobile_guest',
+        notes: visit.notes ?? null,
+      });
+
+      const extras = buildExtrasFromInput(visit);
+      const record = mapGuestVisitToRecord(created, extras);
+
+      setVisits((prev) => {
+        const next = [record, ...prev.filter((item) => item.id !== record.id)];
+        scheduleAutoConfirm(record);
+        visitsRef.current = next;
+        return next;
+      });
+
+      return record;
     },
-    [scheduleAutoConfirm],
+    [scheduleAutoConfirm, supabaseProfile],
   );
 
-  const cancelVisit: VisitsContextValue['cancelVisit'] = useCallback((visitId) => {
-    if (timersRef.current[visitId]) {
-      clearTimeout(timersRef.current[visitId]);
-      delete timersRef.current[visitId];
-    }
+  const updateVisit = useCallback<VisitsContextValue['updateVisit']>(
+    async (visitId, data) => {
+      if (!supabaseProfile || (!data.visitDate && !data.visitTime)) {
+        throw new Error('invalid_update_payload');
+      }
 
-    setVisits((prev) =>
-      prev.map((visit) =>
-        visit.id === visitId ? { ...visit, status: 'cancelled' as VisitStatus } : visit,
-      ),
-    );
-  }, []);
+      const current = visits.find((visit) => visit.id === visitId);
+      try {
+        const updated = await updateRentalVisit({
+          visitId,
+          newDate: data.visitDate ?? new Date(current?.visitDate ?? new Date().toISOString()),
+          newTime: data.visitTime ?? current?.visitTime ?? '11:00',
+        });
 
-  const confirmVisit: VisitsContextValue['confirmVisit'] = useCallback((visitId) => {
-    if (timersRef.current[visitId]) {
-      clearTimeout(timersRef.current[visitId]);
-      delete timersRef.current[visitId];
-    }
+        const extras = buildExtrasFromInput({ ...(current ?? {}), ...data } as VisitExtrasInput);
+        const record = mapGuestVisitToRecord(updated, extras, current);
+        setVisits((prev) => {
+          const next = prev.map((visit) => (visit.id === record.id ? record : visit));
+          scheduleAutoConfirm(record);
+          visitsRef.current = next;
+          return next;
+        });
+        return record;
+      } catch (err) {
+        console.error('[VisitsContext] Failed to update visit', err);
+        throw err;
+      }
+    },
+    [scheduleAutoConfirm, supabaseProfile],
+  );
 
-    setVisits((prev) =>
-      prev.map((visit) =>
-        visit.id === visitId ? { ...visit, status: 'confirmed' as VisitStatus } : visit,
-      ),
-    );
-  }, []);
+  const handleCancelVisit = useCallback<VisitsContextValue['cancelVisit']>(
+    async (visitId) => {
+      try {
+        const cancelled = await cancelRentalVisit(visitId);
+        const previous = visitsRef.current.find((visit) => visit.id === visitId);
+        const record = mapGuestVisitToRecord(cancelled, undefined, previous);
+        clearTimer(visitId);
+        setVisits((prev) => {
+          const next = prev.map((visit) => (visit.id === visitId ? record : visit));
+          visitsRef.current = next;
+          return next;
+        });
+        return record;
+      } catch (err) {
+        console.error('[VisitsContext] Failed to cancel visit', err);
+        throw err;
+      }
+    },
+    [clearTimer],
+  );
+
+  const confirmVisit = useCallback((visitId: string) => {
+    clearTimer(visitId);
+    setVisits((prev) => {
+      const next: VisitRecord[] = prev.map((visit) =>
+        visit.id === visitId
+          ? { ...visit, status: 'confirmed' as VisitStatus, rawStatus: 'confirmed' as VisitStatus }
+          : visit,
+      );
+      visitsRef.current = next;
+      return next;
+    });
+  }, [clearTimer]);
 
   const getVisitByPropertyId = useCallback(
     (propertyId: string) => visits.find((visit) => visit.propertyId === propertyId && visit.status !== 'cancelled'),
@@ -189,9 +365,78 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
 
   const getVisitById = useCallback((visitId: string) => visits.find((visit) => visit.id === visitId), [visits]);
 
+  const checkSlotAvailability = useCallback<VisitsContextValue['checkSlotAvailability']>(
+    async (listingId, visitDate, visitTime) => {
+      try {
+        return await checkRentalVisitAvailability({ listingId, visitDate, visitTime });
+      } catch (err) {
+        console.error('[VisitsContext] Failed to check slot availability', err);
+        throw err;
+      }
+    },
+    [],
+  );
+
+  const getOccupiedTimeslots = useCallback<VisitsContextValue['getOccupiedTimeslots']>(
+    async (listingId, visitDate) => {
+      try {
+        return await fetchOccupiedTimeslots({ listingId, visitDate });
+      } catch (err) {
+        console.error('[VisitsContext] Failed to fetch occupied timeslots', err);
+        throw err;
+      }
+    },
+    [],
+  );
+
+  const fetchLatestVisitForListing = useCallback<VisitsContextValue['fetchLatestVisitForListing']>(
+    async (listingId) => {
+      if (!supabaseProfile) {
+        throw new Error('not_authenticated');
+      }
+
+      const visit = await fetchExistingVisitForListing(supabaseProfile.id, listingId);
+      if (!visit) {
+        return null;
+      }
+
+      const current = visits.find((item) => item.id === visit.id);
+      return mapGuestVisitToRecord(visit, undefined, current);
+    },
+    [supabaseProfile, visits],
+  );
+
   const value = useMemo<VisitsContextValue>(
-    () => ({ visits, addVisit, updateVisit, cancelVisit, confirmVisit, getVisitByPropertyId, getVisitById }),
-    [visits, addVisit, updateVisit, cancelVisit, confirmVisit, getVisitByPropertyId, getVisitById],
+    () => ({
+      visits,
+      isLoading,
+      error,
+      refreshVisits,
+      addVisit,
+      updateVisit,
+      cancelVisit: handleCancelVisit,
+      confirmVisit,
+      getVisitByPropertyId,
+      getVisitById,
+      checkSlotAvailability,
+      getOccupiedTimeslots,
+      fetchLatestVisitForListing,
+    }),
+    [
+      visits,
+      isLoading,
+      error,
+      refreshVisits,
+      addVisit,
+      updateVisit,
+      handleCancelVisit,
+      confirmVisit,
+      getVisitByPropertyId,
+      getVisitById,
+      checkSlotAvailability,
+      getOccupiedTimeslots,
+      fetchLatestVisitForListing,
+    ],
   );
 
   return <VisitsContext.Provider value={value}>{children}</VisitsContext.Provider>;

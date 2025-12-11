@@ -36,6 +36,26 @@ export default function SearchPropertyScreen() {
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const backNavigationInFlightRef = useRef(false);
 
+  useEffect(() => {
+    const loadPreferences = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEYS.RENTAL_PREFERENCES);
+        if (!raw) {
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+          return;
+        }
+        setSelectedTypes(parsed.filter((value): value is string => typeof value === 'string'));
+      } catch (error) {
+        console.warn('[SearchPropertyScreen] Failed to load preferences', error);
+      }
+    };
+
+    loadPreferences();
+  }, []);
+
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerTranslateY = useRef(new Animated.Value(-20)).current;
   const illustrationOpacity = useRef(new Animated.Value(0)).current;

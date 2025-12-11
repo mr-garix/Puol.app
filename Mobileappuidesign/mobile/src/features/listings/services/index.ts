@@ -90,6 +90,7 @@ export type CreateListingPayload = {
     discountPercent: number;
   } | null;
   media: MediaUploadItem[];
+  publish?: boolean;
 };
 
 export type CreateListingResult = {
@@ -316,7 +317,7 @@ export const createListingWithRelations = async (payload: CreateListingPayload):
       music_enabled: payload.musicEnabled,
       music_id: payload.musicId ?? null,
       is_furnished: isFurnished,
-      status: 'published',
+      status: payload.publish === false ? 'draft' : 'published',
     })
     .select('id')
     .single();
@@ -378,6 +379,27 @@ export const createListingWithRelations = async (payload: CreateListingPayload):
   return { listingId };
 };
 
+export const deleteListingWithRelations = async (listingId: string): Promise<void> => {
+  if (!listingId) {
+    throw new Error('missing_listing_id');
+  }
+
+  await supabase.from('listing_media').delete().eq('listing_id', listingId);
+  await supabase.from('listing_rooms').delete().eq('listing_id', listingId);
+  await supabase.from('listing_features').delete().eq('listing_id', listingId);
+  await supabase.from('listing_availability').delete().eq('listing_id', listingId);
+  await supabase.from('listing_promotions').delete().eq('listing_id', listingId);
+
+  const { error } = await supabase
+    .from('listings')
+    .delete()
+    .eq('id', listingId);
+
+  if (error) {
+    throw error;
+  }
+};
+
 export type UpdateListingPayload = CreateListingPayload & {
   listingId: string;
 };
@@ -409,7 +431,7 @@ export const updateListingWithRelations = async (payload: UpdateListingPayload):
       cover_photo_url: coverUrl,
       music_enabled: payload.musicEnabled,
       music_id: payload.musicId ?? null,
-      status: 'published',
+      status: payload.publish === false ? 'draft' : 'published',
     })
     .eq('id', listingId);
 

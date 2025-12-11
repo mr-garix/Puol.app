@@ -15,6 +15,8 @@ export type AmenityOption = {
 };
 
 export const PROPERTY_AMENITIES = [
+  { id: 'road-direct', label: 'En bord de route', icon: { library: 'MaterialCommunityIcons', name: 'road-variant' as MaterialIconName } },
+  { id: 'road-50', label: 'À moins de 50 m de la route', icon: { library: 'MaterialCommunityIcons', name: 'map-marker-distance' as MaterialIconName } },
   { id: 'ac', label: 'Climatisation', icon: { library: 'MaterialCommunityIcons', name: 'air-conditioner' as MaterialIconName } },
   { id: 'wifi', label: 'Wifi', icon: { library: 'MaterialCommunityIcons', name: 'wifi' as MaterialIconName } },
   { id: 'parking', label: 'Parking', icon: { library: 'MaterialCommunityIcons', name: 'parking' as MaterialIconName } },
@@ -56,3 +58,18 @@ export const SHOP_AMENITIES = [
 ] as const satisfies ReadonlyArray<AmenityOption>;
 
 export type ShopAmenityId = (typeof SHOP_AMENITIES)[number]['id'];
+
+const LANDLORD_HIDDEN_AMENITIES = new Set(['housekeeping', 'fan', 'tv', 'smart-tv', 'netflix', 'washer', 'ac', 'wifi']);
+
+export const LANDLORD_AMENITIES = PROPERTY_AMENITIES.filter((option) => !LANDLORD_HIDDEN_AMENITIES.has(option.id));
+
+export const ROAD_AMENITY_VALUE_MAP: Record<string, string> = {
+  'road-direct': 'roadside',
+  'road-50': 'within_50m',
+  'road-100': 'within_100m',
+  'road-200': 'beyond_200m',
+};
+
+export const ROAD_VALUE_AMENITY_MAP: Record<string, PropertyAmenityId> = Object.fromEntries(
+  Object.entries(ROAD_AMENITY_VALUE_MAP).map(([amenityId, value]) => [value, amenityId as PropertyAmenityId]),
+) as Record<string, PropertyAmenityId>;

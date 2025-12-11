@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { supabase } from '@/src/supabaseClient';
+import { getListingLikeCount, hasUserLikedListing, toggleListingLike } from '@/src/features/likes/services';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { orderMediaRowsByType } from '@/src/utils/media';
 import { toCdnUrl } from '@/src/utils/cdn';
+import { formatListingLocation } from '@/src/utils/location';
+import { supabase } from '@/src/supabaseClient';
+import { buildListingTags, buildSurfaceTag } from '@/src/contexts/FeedContext';
 import type {
   FullListing,
   HostProfileSummary,
@@ -99,20 +103,9 @@ const buildFeatureBadges = (features: ListingFeaturesRow | null) => {
     .map((key) => FEATURE_LABELS[key]);
 };
 
-const buildTags = (listing: ListingRow) => {
-  const tags: string[] = [];
-  if (listing.property_type) {
-    tags.push(listing.property_type);
-  }
-  if (listing.capacity) {
-    const suffix = listing.capacity > 1 ? 'personnes' : 'personne';
-    tags.push(`${listing.capacity} ${suffix}`);
-  }
-  tags.push(listing.is_furnished ? 'Meublé' : 'Non Meublé');
-  if (listing.city) {
-    tags.push(listing.city);
-  }
-  return tags;
+const buildTags = (listing: ListingRow, mediaRows: ListingMediaRow[]) => {
+  const surfaceTag = buildSurfaceTag(listing, mediaRows);
+  return buildListingTags(listing, surfaceTag);
 };
 
 const listingCache = new Map<string, FullListing>();
@@ -203,7 +196,7 @@ const fetchFullListing = async (listingId: string): Promise<FullListing> => {
 
   const { media, gallery, mainMediaUrl } = mapMediaRows(mediaRows, listingRow.cover_photo_url);
   const featureBadges = buildFeatureBadges(featuresRow);
-  const tags = buildTags(listingRow);
+  const tags = buildTags(listingRow, mediaRows);
   const hostProfile = mapHostProfileSummary(hostProfileRes.data ?? null);
 
   return {

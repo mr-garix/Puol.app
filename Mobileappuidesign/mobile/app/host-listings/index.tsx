@@ -222,12 +222,15 @@ export default function HostListingsScreen() {
             : 'none';
         }
 
+        const isDraft = (listing.status ?? '').toLowerCase() !== 'published';
+        const statusLabel = isDraft ? 'Brouillon' : 'Publié';
+
         return {
           id: listing.id,
           title: listing.title,
           locationLabel: formatLocation(listing.address_text, listing.district, listing.city),
           priceLabel: formatPrice(listing.price_per_night),
-          statusLabel: listing.status ?? 'Brouillon',
+          statusLabel,
           previewUrl,
           previewType,
           createdAtLabel: formatCreatedAt(listing.created_at),
@@ -429,8 +432,14 @@ export default function HostListingsScreen() {
                   <Feather name="edit-3" size={14} color="#FFFFFF" />
                   <Text style={styles.overlayEditText}>Modifier</Text>
                 </TouchableOpacity>
-                <View style={styles.statusPill}>
-                  <Feather name="zap" size={12} color={COLORS.accent} />
+                <View
+                  style={[styles.statusPill, listing.statusLabel === 'Publié' ? styles.statusPillPublished : styles.statusPillDraft]}
+                >
+                  <Feather
+                    name={listing.statusLabel === 'Publié' ? 'zap' : 'edit-3'}
+                    size={12}
+                    color={COLORS.accent}
+                  />
                   <Text style={styles.statusPillText}>{listing.statusLabel}</Text>
                 </View>
               </View>
@@ -686,10 +695,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: 'rgba(46,204,113,0.12)',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(46,204,113,0.35)',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#2ECC71',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  statusPillPublished: {
+    borderColor: 'rgba(46,204,113,0.35)',
+  },
+  statusPillDraft: {
+    borderColor: 'rgba(46,204,113,0.25)',
   },
   statusPillText: {
     fontFamily: 'Manrope',

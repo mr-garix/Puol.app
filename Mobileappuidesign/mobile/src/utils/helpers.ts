@@ -143,3 +143,10 @@ export const buildListingShareUrl = (listingId: string): string => {
   }
   return `https://puol.app/l/${listingId}`;
 };
+
+export const buildProfileShareUrl = (profileId: string): string => {
+  if (!profileId) {
+    return 'https://puol.app';
+  }
+  return `https://puol.app/profile/${profileId}`;
+};

@@ -3,6 +3,8 @@ import { supabase } from '@/src/supabaseClient';
 import type { SearchCriteria } from '@/src/types/search';
 import type { Tables } from '@/src/types/supabase.generated';
 import { formatListingLocation } from '@/src/utils/location';
+import { buildListingTags, buildSurfaceTag, COMMERCIAL_TYPES } from '@/src/contexts/FeedContext';
+import { orderMediaRowsByType } from '@/src/utils/media';
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
 
@@ -13,6 +15,9 @@ const PROPERTY_TYPE_LABELS = {
   house: 'Maison',
   villa: 'Villa',
   boutique: 'Boutique',
+  'espace commercial': 'Espace commercial',
+  bureau: 'Bureau',
+  terrain: 'Terrain',
 } as const;
 
 type PropertyType = keyof typeof PROPERTY_TYPE_LABELS;
@@ -23,6 +28,50 @@ const normalizePropertyType = (value?: string | null): PropertyType => {
     return key;
   }
   return 'apartment';
+};
+
+const LONG_TERM_RENTAL_KIND = 'long_term';
+const NIGHTLY_PRICE_LABEL = 'par nuit';
+const MONTHLY_PRICE_LABEL = 'par mois';
+const SURFACE_TOLERANCE_RATIO = 0.15;
+const SURFACE_TOLERANCE_MIN = 5;
+
+const formatNightlyPrice = (price?: number | null) => {
+  if (!price || price <= 0) {
+    return 'Tarif sur demande';
+  }
+  return `${price.toLocaleString('fr-FR')} FCFA`;
+};
+
+const formatMonthlyPrice = (price?: number | null) => {
+  if (!price || price <= 0) {
+    return 'Loyer sur demande';
+  }
+  return `${price.toLocaleString('fr-FR')} FCFA`;
+};
+
+type PriceMeta = {
+  display: string;
+  periodLabel: string;
+  value: number;
+  isLongTerm: boolean;
+  hasPrice: boolean;
+};
+
+const buildPriceMeta = (listing: ListingWithRelations): PriceMeta => {
+  const isLongTerm = (listing.rental_kind ?? '').toLowerCase() === LONG_TERM_RENTAL_KIND;
+  const rawValue = isLongTerm ? listing.price_per_month ?? 0 : listing.price_per_night ?? 0;
+  const display = isLongTerm ? formatMonthlyPrice(listing.price_per_month) : formatNightlyPrice(listing.price_per_night);
+  const hasPrice = rawValue > 0;
+  const periodLabel = hasPrice ? (isLongTerm ? MONTHLY_PRICE_LABEL : NIGHTLY_PRICE_LABEL) : '';
+
+  return {
+    display,
+    periodLabel,
+    value: rawValue,
+    isLongTerm,
+    hasPrice,
+  };
 };
 
 export type SearchResultCard = {
@@ -63,7 +112,11 @@ const SEARCH_SELECT = `
   id,
   title,
   property_type,
+  rental_kind,
   price_per_night,
+  price_per_month,
+  min_lease_months,
+  deposit_amount,
   city,
   district,
   address_text,
@@ -93,7 +146,8 @@ const SEARCH_SELECT = `
   listing_media (
     media_url,
     media_type,
-    position
+    position,
+    thumbnail_url
   )
 `;
 
@@ -113,9 +167,9 @@ const AMENITY_COLUMN_MAP: Record<string, keyof ListingFeaturesRow | 'near_main_r
   roadside: 'near_main_road',
 };
 
-const PRICE_PERIOD_LABEL = 'par nuit';
-
 const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? '';
+
+const isCommercialPropertyType = (value?: string | null) => COMMERCIAL_TYPES.has(normalize(value));
 
 const parseNumericValue = (value?: string | number | null) => {
   if (value === undefined || value === null) {
@@ -126,6 +180,56 @@ const parseNumericValue = (value?: string | number | null) => {
 };
 
 const isUsableUrl = (value?: string | null) => Boolean(value && value.trim().length > 0);
+
+const extractSurfaceArea = (mediaRows: ListingMediaRow[]): number | undefined => {
+  if (!mediaRows.length) {
+    return undefined;
+  }
+  const rawValue = mediaRows[0]?.thumbnail_url;
+  if (!rawValue) {
+    return undefined;
+  }
+  const parsed = parseNumericValue(rawValue);
+  return parsed ?? undefined;
+};
+
+const computeCommercialSurfaceScore = (
+  listing: ListingWithRelations,
+  criteria: SearchCriteria,
+  orderedMedia: ListingMediaRow[],
+): number => {
+  const requestedType = normalize(criteria.type ?? '');
+  if (requestedType !== 'boutique') {
+    return 0;
+  }
+
+  if (!isCommercialPropertyType(listing.property_type)) {
+    return 0;
+  }
+
+  const requestedSurface = parseNumericValue(criteria.surfaceArea);
+  if (!requestedSurface || requestedSurface <= 0) {
+    return 0;
+  }
+
+  const listingSurface = extractSurfaceArea(orderedMedia);
+  if (!listingSurface || listingSurface <= 0) {
+    return 0;
+  }
+
+  const tolerance = Math.max(SURFACE_TOLERANCE_MIN, requestedSurface * SURFACE_TOLERANCE_RATIO);
+  const difference = Math.abs(listingSurface - requestedSurface);
+
+  if (difference <= tolerance) {
+    return 25;
+  }
+
+  if (difference <= tolerance * 2) {
+    return 15;
+  }
+
+  return 0;
+};
 
 const pickHeroImage = (listing: ListingWithRelations) => {
   if (isUsableUrl(listing.cover_photo_url)) {
@@ -146,16 +250,9 @@ const pickHeroImage = (listing: ListingWithRelations) => {
   return FALLBACK_IMAGE;
 };
 
-const buildBadges = (listing: ListingWithRelations) => {
-  const badges: string[] = [];
-  const typeKey = normalizePropertyType(listing.property_type);
-  badges.push(PROPERTY_TYPE_LABELS[typeKey]);
-  badges.push(listing.is_furnished ? 'Meublé' : 'Non meublé');
-  if (listing.capacity) {
-    const suffix = listing.capacity > 1 ? 'pers.' : 'pers';
-    badges.push(`${listing.capacity} ${suffix}`);
-  }
-  return badges;
+const buildResultTags = (listing: ListingWithRelations, mediaRows: ListingMediaRow[]) => {
+  const surfaceTag = buildSurfaceTag(listing, mediaRows);
+  return buildListingTags(listing, surfaceTag);
 };
 
 const buildHashtags = (listing: ListingWithRelations) => {
@@ -167,13 +264,6 @@ const buildHashtags = (listing: ListingWithRelations) => {
   ].filter(Boolean) as string[];
   tags.push(listing.is_furnished ? '#Meublé' : '#NonMeublé');
   return tags;
-};
-
-const formatPriceDisplay = (price?: number | null) => {
-  if (!price || price <= 0) {
-    return 'Tarif sur demande';
-  }
-  return `${price.toLocaleString('fr-FR')} FCFA`;
 };
 
 type LocationMatchQuality = 'exact_address' | 'district_partial' | 'city_only' | 'none';
@@ -300,7 +390,13 @@ const matchesPropertyTypePreference = (listing: ListingWithRelations, criteria: 
   if (!requestedType) {
     return true;
   }
-  return normalizePropertyType(listing.property_type) === requestedType;
+
+  const listingType = normalizePropertyType(listing.property_type);
+  if (requestedType === 'boutique') {
+    return COMMERCIAL_TYPES.has(listingType);
+  }
+
+  return listingType === requestedType;
 };
 
 const matchesFurnishingPreference = (listing: ListingWithRelations, criteria: SearchCriteria) => {
@@ -311,10 +407,14 @@ const matchesFurnishingPreference = (listing: ListingWithRelations, criteria: Se
 };
 
 const listingMatchesPrice = (listing: ListingWithRelations, criteria: SearchCriteria) => {
+  const priceMeta = buildPriceMeta(listing);
+  if (!priceMeta.hasPrice) {
+    return false;
+  }
+
   const minPrice = parseNumericValue(criteria.priceRange?.min) ?? 0;
   const maxPrice = parseNumericValue(criteria.priceRange?.max) ?? Infinity;
-  const price = listing.price_per_night ?? 0;
-  return price >= minPrice && price <= maxPrice;
+  return priceMeta.value >= minPrice && priceMeta.value <= maxPrice;
 };
 
 const computeRoomCoverageScore = (listing: ListingWithRelations, criteria: SearchCriteria) => {
@@ -373,9 +473,9 @@ const computePriceScore = (
 ) => {
   const matches = listingMatchesPrice(listing, criteria);
   if (prioritize) {
-    return matches ? 12 : -8;
+    return matches ? 12 : -6;
   }
-  return matches ? 8 : -3;
+  return matches ? 8 : -4;
 };
 
 type ListingEvaluation = {
@@ -396,37 +496,113 @@ const computeMatchScore = (
     matchesFurnishing: boolean;
     prioritizePrice: boolean;
     hasLocationFilter: boolean;
+    skipFurnishingScore?: boolean;
+    surfaceScore?: number;
+    commercialMode?: boolean;
+    listingIsCommercial?: boolean;
   },
 ) => {
-  let score = 8;
+  if (options.commercialMode) {
+    let commercialScore = 0;
 
-  if (options.hasLocationFilter) {
+    // Type commercial (boutique) correspond
+    if (options.matchesType) {
+      commercialScore += 35;
+    }
+
+    if (options.hasLocationFilter) {
+      switch (options.locationQuality) {
+        case 'exact_address':
+          commercialScore += 35;
+          break;
+        case 'district_partial':
+          commercialScore += 25;
+          break;
+        case 'city_only':
+          commercialScore += 15;
+          break;
+        default:
+          break; // reste à zéro si aucune correspondance
+      }
+    }
+
+    if (options.surfaceScore && options.surfaceScore > 0) {
+      commercialScore += Math.min(options.surfaceScore, 25);
+    }
+
+    if (listingMatchesPrice(listing, criteria)) {
+      commercialScore += 10;
+    }
+
+    const amenityScore = computeAmenityMatchScore(listing, criteria);
+    if (amenityScore > 0) {
+      commercialScore += Math.min(amenityScore * 2, 8); // pondéré pour boutique
+    }
+
+    return Math.min(99, Math.max(0, Math.round(commercialScore)));
+  }
+
+  let score = 15;
+
+  const normalizeLocationImpact = () => {
+    if (!options.hasLocationFilter) {
+      return;
+    }
+
     switch (options.locationQuality) {
       case 'exact_address':
-        score += 65;
-        break;
+        score += 47;
+        return;
       case 'district_partial':
-        score += 55;
-        break;
+        score += 37;
+        return;
       case 'city_only':
-        score += 10;
-        break;
+        score += 22;
+        return;
       default:
-        score -= 30;
-        break;
+        return;
+    }
+  };
+
+  normalizeLocationImpact();
+
+  const locationPenalty = options.hasLocationFilter && options.locationQuality === 'none';
+  const applyContextualWeight = (value: number, { penalize }: { penalize: boolean }) => {
+    if (!penalize) {
+      return value;
+    }
+    return Math.max(10, Math.round(value * 0.5));
+  };
+
+  if (options.hasLocationFilter) {
+    // Already handled in normalizeLocationImpact
+  }
+
+  if (!options.skipFurnishingScore) {
+    if (criteria.furnishingType) {
+      const reward = applyContextualWeight(35, { penalize: locationPenalty });
+      score += options.matchesFurnishing ? reward : 5;
+    } else if (options.matchesFurnishing) {
+      score += Math.max(8, applyContextualWeight(12, { penalize: locationPenalty }));
     }
   }
 
-  if (options.matchesType) {
-    score += 20;
-  } else if (criteria.type) {
-    score -= 10;
+  if (criteria.type) {
+    const reward = applyContextualWeight(27, { penalize: locationPenalty });
+    const minimal = options.listingIsCommercial ? 0 : Math.max(12, applyContextualWeight(14, { penalize: locationPenalty }));
+    score += options.matchesType ? reward : minimal;
+  } else if (options.matchesType) {
+    score += Math.max(10, applyContextualWeight(14, { penalize: locationPenalty }));
   }
 
-  if (options.matchesFurnishing) {
-    score += 10;
-  } else if (criteria.furnishingType) {
-    score -= 5;
+  if (
+    !options.listingIsCommercial &&
+    criteria.type &&
+    criteria.furnishingType &&
+    options.matchesType &&
+    options.matchesFurnishing
+  ) {
+    score += Math.max(10, applyContextualWeight(18, { penalize: locationPenalty }));
   }
 
   score += computePriceScore(listing, criteria, { prioritize: options.prioritizePrice });
@@ -445,6 +621,10 @@ const computeMatchScore = (
     score += Math.min(4, Math.round(listing.capacity / 2));
   }
 
+  if (options.surfaceScore) {
+    score += options.surfaceScore;
+  }
+
   return Math.min(99, Math.max(0, Math.round(score)));
 };
 
@@ -455,7 +635,12 @@ const evaluateListing = (
 ): ListingEvaluation => {
   const locationQuality = evaluateLocationMatch(listing, criteria);
   const matchesType = matchesPropertyTypePreference(listing, criteria);
-  const matchesFurnishing = matchesFurnishingPreference(listing, criteria);
+  const orderedMedia = orderMediaRowsByType((listing.listing_media ?? []) as ListingMediaRow[]);
+  const surfaceScore = computeCommercialSurfaceScore(listing, criteria, orderedMedia);
+  const isCommercialListing = isCommercialPropertyType(listing.property_type);
+  const matchesFurnishing = isCommercialListing
+    ? true
+    : matchesFurnishingPreference(listing, criteria);
   const prioritizePrice = (criteria.furnishingType ?? '') === 'furnished';
   const prioritizedDistrictMatch = matchesPriorityDistrictToken(listing, options.priorityDistrictToken);
   const hasLocationFilter = Boolean(normalize(criteria.location ?? ''));
@@ -465,6 +650,10 @@ const evaluateListing = (
     matchesFurnishing,
     prioritizePrice,
     hasLocationFilter,
+    skipFurnishingScore: isCommercialListing,
+    surfaceScore,
+    commercialMode: normalize(criteria.type ?? '') === 'boutique',
+    listingIsCommercial: isCommercialListing,
   });
 
   return {
@@ -488,6 +677,10 @@ const mapListingToResult = (listing: ListingWithRelations, score: number): Searc
       addressText: listing.address_text,
       fallback: 'Localisation à venir',
     }) || 'Localisation à venir';
+  const orderedMedia = orderMediaRowsByType((listing.listing_media ?? []) as ListingMediaRow[]);
+  const surfaceTag = buildSurfaceTag(listing, orderedMedia);
+  const tags = buildListingTags(listing, surfaceTag);
+  const priceMeta = buildPriceMeta(listing);
 
   return {
     id: listing.id,
@@ -495,15 +688,15 @@ const mapListingToResult = (listing: ListingWithRelations, score: number): Searc
     propertyType: typeKey,
     furnishingLabel,
     locationLabel,
-    priceDisplay: formatPriceDisplay(listing.price_per_night),
-    pricePeriodLabel: PRICE_PERIOD_LABEL,
+    priceDisplay: priceMeta.display,
+    pricePeriodLabel: priceMeta.periodLabel,
     image: pickHeroImage(listing),
-    badges: buildBadges(listing),
+    badges: tags,
     hashtags: buildHashtags(listing),
-    bedrooms: rooms?.bedrooms ?? 1,
-    bathrooms: rooms?.bathrooms ?? 1,
-    kitchens: rooms?.kitchen ?? 1,
-    surfaceAreaLabel: undefined,
+    bedrooms: rooms?.bedrooms ?? 0,
+    bathrooms: rooms?.bathrooms ?? 0,
+    kitchens: rooms?.kitchen ?? 0,
+    surfaceAreaLabel: surfaceTag ?? undefined,
     matchScore: score,
   } satisfies SearchResultCard;
 };
@@ -524,7 +717,16 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
     throw error;
   }
 
-  const listings = data ?? [];
+  const rawListings = data ?? [];
+  const requestedType = normalize(criteria.type ?? '');
+  const wantsCommercialOnly = requestedType === 'boutique';
+  const listings = rawListings.filter((listing) => {
+    const isCommercial = isCommercialPropertyType(listing.property_type);
+    if (wantsCommercialOnly) {
+      return isCommercial;
+    }
+    return !isCommercial;
+  });
   const evaluations = listings.map((listing) =>
     evaluateListing(listing, criteria, { priorityDistrictToken }),
   );
@@ -629,9 +831,10 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
     : { ordered: [], usedFallback: false };
 
   const combined = [...prioritizedRank.ordered, ...secondaryRank.ordered];
+  const orderedCombined = [...combined].sort(sortByScoreDesc);
 
   return {
-    results: combined.map(toResult),
+    results: orderedCombined.map(toResult),
     isFallback: !hasPrimaryMatch && bestScore < 65,
   };
 };

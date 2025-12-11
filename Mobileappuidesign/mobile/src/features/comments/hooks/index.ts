@@ -10,6 +10,7 @@ import {
   deleteListingComment,
   getReplyCountForComment,
   getHostCommentThreads,
+  getLandlordCommentThreads,
 } from '../services';
 import type { CommentWithAuthor, HostCommentThread } from '../types';
 import { supabase } from '@/src/supabaseClient';
@@ -600,6 +601,61 @@ export const useHostCommentThreads = (hostId?: string | null) => {
       void supabase.removeChannel(channel);
     };
   }, [hostId, loadThreads]);
+
+  const totalCount = useMemo(
+    () => threads.reduce((acc, thread) => acc + 1 + (thread.replies?.length ?? 0), 0),
+    [threads],
+  );
+
+  return {
+    threads,
+    isLoading,
+    refresh: loadThreads,
+    totalCount,
+  };
+};
+
+export const useLandlordCommentThreads = (landlordId?: string | null) => {
+  const [threads, setThreads] = useState<HostCommentThread[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadThreads = useCallback(async () => {
+    if (!landlordId) {
+      setThreads([]);
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const data = await getLandlordCommentThreads(landlordId);
+      setThreads(data);
+    } catch (error) {
+      console.error('Failed to load landlord comment threads:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [landlordId]);
+
+  useEffect(() => {
+    void loadThreads();
+  }, [loadThreads]);
+
+  useEffect(() => {
+    if (!landlordId) {
+      return undefined;
+    }
+
+    const channel = supabase
+      .channel(`landlord-comments:${landlordId}`)
+      .on('postgres_changes', { schema: 'public', table: 'listing_comments', event: '*' }, () => {
+        void loadThreads();
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [landlordId, loadThreads]);
 
   const totalCount = useMemo(
     () => threads.reduce((acc, thread) => acc + 1 + (thread.replies?.length ?? 0), 0),

@@ -6,6 +6,33 @@ export type BookingRow = Tables<'bookings'>['Row'] & {
   updated_at?: string;
   remaining_payment_status?: 'idle' | 'requested' | 'paid' | null;
 };
+
+export const hasOutstandingPaymentsForListing = async (listingId: string): Promise<boolean> => {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('id, status, remaining_amount, remaining_paid, remaining_payment_status')
+    .eq('listing_id', listingId)
+    .in('status', ['pending', 'confirmed', 'in_progress'])
+    .limit(1);
+
+  if (error) {
+    console.error('[hasOutstandingPaymentsForListing] error', error);
+    throw error;
+  }
+
+  if (!data || !data.length) {
+    return false;
+  }
+
+  return data.some((booking) => {
+    const amount = booking.remaining_amount ?? 0;
+    const status = booking.remaining_payment_status ?? null;
+    const isPaidFlag = booking.remaining_paid ?? false;
+    const hasOutstandingStatus = status === 'requested';
+    const hasOutstandingAmount = amount > 0 && !isPaidFlag;
+    return hasOutstandingStatus || hasOutstandingAmount;
+  });
+};
 export type ListingRow = Tables<'listings'>['Row'];
 export type ProfileRow = Tables<'profiles'>['Row'];
 
@@ -429,7 +456,7 @@ export const fetchHostBookings = async (hostProfileId: string) => {
 
 export const fetchHostBookingById = async (hostProfileId: string, bookingId: string) => {
   console.log(`[fetchHostBookingById] Fetching booking ${bookingId} for host ${hostProfileId}`);
-  
+
   try {
     const { data, error } = await supabase
       .from('bookings')

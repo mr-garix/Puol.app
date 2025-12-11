@@ -279,15 +279,27 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
   }
   const isFurnished = Boolean(listing.is_furnished);
 
+  const isLongTerm = listing.rental_kind === 'long_term';
+  if (isLongTerm) {
+    const monthlyAmenities: string[] = [];
+    if (listing.deposit_amount) {
+      monthlyAmenities.push(`Caution ${listing.deposit_amount.toLocaleString('fr-FR')} FCFA`);
+    }
+    if (listing.min_lease_months) {
+      monthlyAmenities.push(`Bail min ${listing.min_lease_months} mois`);
+    }
+    amenities.unshift(...monthlyAmenities);
+  }
+
   return {
     id: listing.id,
     type: normalizePropertyType(listing.property_type),
     isFurnished,
     title: listing.title,
     description: listing.description,
-    price: Math.round(listing.price_per_night ?? 0).toString(),
-    priceType: 'daily',
-    deposit: undefined,
+    price: Math.round((isLongTerm ? listing.price_per_month : listing.price_per_night) ?? 0).toString(),
+    priceType: isLongTerm ? 'monthly' : 'daily',
+    deposit: isLongTerm && listing.deposit_amount ? Math.round(listing.deposit_amount).toString() : undefined,
     location: {
       // Utiliser directement address_text comme adresse, avec un fallback sur 'quartier, ville' si nécessaire
       address: listing.address_text ?? (listing.district && listing.city 
@@ -530,7 +542,7 @@ const PropertyProfileScreen = () => {
     outputRange: [1, 0.4, 0.05, 0.4, 1],
   });
 
-  const { addVisit, updateVisit, getVisitByPropertyId } = useVisits();
+  const { addVisit, updateVisit, getVisitByPropertyId, fetchLatestVisitForListing, refreshVisits } = useVisits();
   const { reservations, addReservation, refreshReservations } = useReservations();
 
   const existingReservation = useMemo(() => {
@@ -636,6 +648,8 @@ const PropertyProfileScreen = () => {
   }, [mediaItems]);
   const existingVisit = propertyId ? getVisitByPropertyId(propertyId) : undefined;
   const hasVisit = Boolean(existingVisit);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [schedulingError, setSchedulingError] = useState<string | null>(null);
 
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -680,6 +694,23 @@ const PropertyProfileScreen = () => {
       setVisitDetails((prev) => (prev.date ? prev : { date: null, time: '' }));
     }
   }, [existingVisit, showVisitScheduleModal]);
+
+  useEffect(() => {
+    if (!supabaseProfile?.id || !propertyId) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const latest = await fetchLatestVisitForListing(propertyId);
+        if (latest) {
+          setVisitDetails({ date: new Date(latest.visitDate), time: latest.visitTime });
+        }
+      } catch (error) {
+        console.error('[PropertyProfileScreen] fetchLatestVisitForListing failed', error);
+      }
+    })();
+  }, [fetchLatestVisitForListing, propertyId, supabaseProfile?.id]);
 
   const scrollY = useSharedValue(0);
   const scrollHandler = useAnimatedScrollHandler((event) => {
@@ -1187,9 +1218,19 @@ const PropertyProfileScreen = () => {
       setShowVisitScheduleModal(true);
       return;
     }
+    setVisitDetails((prev) => ({
+      date: prev.date ?? new Date(),
+      time: prev.time || '',
+    }));
+    setSchedulingError(null);
     setShowVisitPaymentDialog(true);
   };
-  const handleVisitRequest = () => ensureAuthenticated('visit', startVisitFlow);
+  const handleVisitRequest = () => {
+    if (isScheduling) {
+      return;
+    }
+    ensureAuthenticated('visit', startVisitFlow);
+  };
   const handleReservationRequest = () => {
     ensureAuthenticated('reservation', openReservationModal);
   };
@@ -1310,17 +1351,30 @@ const PropertyProfileScreen = () => {
     ? `${property.bedrooms} ${property.bedrooms > 1 ? 'Chambres' : 'Chambre'}`
     : 'Capacité inconnue';
 
+  const feedTags = listingData?.tags ?? [];
   const fallbackTags = isShop
     ? ['Boutique', `${property.surfaceArea ?? '50'} m²`, 'À louer']
     : [
         property.type === 'apartment'
           ? 'Appartement'
-          : property.type.charAt(0).toUpperCase() + property.type.slice(1),
-        furnishingLabel || 'Meublé',
+          : property.type === 'house'
+          ? 'Maison'
+          : property.type === 'studio'
+          ? 'Studio'
+          : property.type === 'chambre'
+          ? 'Chambre'
+          : property.type === 'villa'
+          ? 'Villa'
+          : 'Logement',
+        property.isFurnished ? 'Meublé' : 'Non meublé',
         capacityLabel,
       ];
 
-  const tags = fallbackTags;
+  const tags = feedTags.length ? feedTags : fallbackTags;
+
+  const bailMonths = listingData?.listing.min_lease_months ?? null;
+  const bailLabel = bailMonths ? `${bailMonths} ${bailMonths > 1 ? 'mois' : 'mois'}` : null;
+  const cautionAmount = listingData?.listing.deposit_amount ?? null;
   const nearMainRoadInfo = translateRoadProximity(listingData?.features?.near_main_road ?? null);
 
   const shortDescription =
@@ -1440,9 +1494,12 @@ const PropertyProfileScreen = () => {
   const handleVisitScheduleConfirm = (date: Date, time: string) => {
     setVisitDetails({ date, time });
     setShowVisitScheduleModal(false);
+    setSchedulingError(null);
 
     if (hasVisit && existingVisit) {
+      setIsScheduling(true);
       updateVisit(existingVisit.id, {
+        propertyId: property.id,
         propertyTitle: property.title,
         propertyLocation: propertyLocationLabel,
         propertyImage: property.images[0],
@@ -1455,13 +1512,23 @@ const PropertyProfileScreen = () => {
         amount: VISIT_PRICE_FCFA,
         visitDate: date,
         visitTime: time,
-      });
-      setVisitSuccessCopy({
-        title: 'Visite mise à jour',
-        message: 'Votre visite a été mise à jour avec succès.',
-        buttonLabel: 'Voir ma visite',
-      });
-      setShowVisitSuccessModal(true);
+      })
+        .then(() => {
+          setVisitSuccessCopy({
+            title: 'Visite mise à jour',
+            message: 'Votre visite a été mise à jour avec succès.',
+            buttonLabel: 'Voir ma visite',
+          });
+          setShowVisitSuccessModal(true);
+          void refreshVisits();
+        })
+        .catch((error) => {
+          console.error('[PropertyProfileScreen] updateVisit error', error);
+          setSchedulingError("Impossible de mettre à jour la visite. Réessayez plus tard.");
+        })
+        .finally(() => {
+          setIsScheduling(false);
+        });
       return;
     }
 
@@ -1471,6 +1538,9 @@ const PropertyProfileScreen = () => {
   const handleVisitPaymentSuccess = () => {
     setShowVisitPaymentModal(false);
     const visitDate = visitDetails.date ?? new Date();
+
+    setIsScheduling(true);
+    setSchedulingError(null);
 
     addVisit({
       propertyId: property.id,
@@ -1486,14 +1556,24 @@ const PropertyProfileScreen = () => {
       visitDate,
       visitTime: visitDetails.time,
       amount: VISIT_PRICE_FCFA,
-    });
-
-    setVisitSuccessCopy({
-      title: 'Visite programmée !',
-      message: 'Votre visite a été programmée. Elle sera confirmée automatiquement sous peu.',
-      buttonLabel: 'Voir ma visite',
-    });
-    setShowVisitSuccessModal(true);
+    })
+      .then(() => {
+        setVisitSuccessCopy({
+          title: 'Visite programmée !',
+          message: 'Votre visite a été programmée. Elle sera confirmée automatiquement sous peu.',
+          buttonLabel: 'Voir ma visite',
+        });
+        setShowVisitSuccessModal(true);
+        void refreshVisits();
+      })
+      .catch((error) => {
+        console.error('[PropertyProfileScreen] addVisit error', error);
+        Alert.alert('Visite non programmée', "Nous n'avons pas pu sauvegarder votre visite. Vérifiez votre connexion puis réessayez.");
+        setSchedulingError("Nous n'avons pas pu programmer la visite. Réessayez.");
+      })
+      .finally(() => {
+        setIsScheduling(false);
+      });
   };
 
   const handleLoginAuthenticated = () => {
@@ -1778,8 +1858,12 @@ const PropertyProfileScreen = () => {
                 {!isShop && isFurnished && (
                   <Text style={styles.termsText}>Caution: {formatPrice(property.price)} FCFA</Text>
                 )}
-                {(isShop || (!isShop && !isFurnished)) && (
-                  <Text style={styles.termsText}>Nombre de mois : 12 mois · Caution: 1 mois</Text>
+                {(isShop || (!isShop && !isFurnished)) && (bailLabel || cautionAmount) && (
+                  <Text style={styles.termsText}>
+                    {bailLabel ? `Bail minimal : ${bailLabel}` : ''}
+                    {bailLabel && cautionAmount ? ' · ' : ''}
+                    {cautionAmount ? `Caution : ${formatPrice(cautionAmount)} FCFA` : ''}
+                  </Text>
                 )}
               </View>
             </View>
@@ -1862,11 +1946,22 @@ const PropertyProfileScreen = () => {
             </>
           ) : (
             <>
-              <TouchableOpacity style={styles.secondaryButton} onPress={handleVisitRequest}>
-                <Text style={styles.secondaryButtonText}>
-                  {hasVisit ? 'Modifier ma visite' : 'Programmer une visite'}
+              <TouchableOpacity
+                style={[styles.secondaryButton, isScheduling && styles.secondaryButtonDisabled]}
+                onPress={handleVisitRequest}
+                disabled={isScheduling}
+              >
+                <Text style={[styles.secondaryButtonText, isScheduling && styles.secondaryButtonTextDisabled]}>
+                  {isScheduling
+                    ? hasVisit
+                      ? 'Mise à jour en cours...'
+                      : 'Programmation en cours...'
+                    : hasVisit
+                      ? 'Modifier ma visite'
+                      : 'Programmer une visite'}
                 </Text>
               </TouchableOpacity>
+              {schedulingError ? <Text style={styles.visitErrorText}>{schedulingError}</Text> : null}
               <TouchableOpacity style={styles.primaryButton} onPress={handleMessageRequest}>
                 <Text style={styles.primaryButtonText}>Envoyer un message</Text>
               </TouchableOpacity>
@@ -2014,6 +2109,7 @@ const PropertyProfileScreen = () => {
         visible={showVisitScheduleModal}
         onClose={() => setShowVisitScheduleModal(false)}
         onConfirm={handleVisitScheduleConfirm}
+        listingId={property.id}
         initialDate={visitDetails.date}
         initialTime={visitDetails.time}
       />
@@ -3075,14 +3171,40 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
   },
-  availabilityPillCount: {
-    fontSize: 18,
-    fontWeight: '700',
+  secondaryButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.65,
+  },
+  secondaryButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 16,
+    fontWeight: '600',
     color: '#111827',
+  },
+  secondaryButtonTextDisabled: {
+    color: '#6B7280',
+  },
+  visitErrorText: {
+    marginTop: 12,
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: '#DC2626',
   },
   availabilityPillLabel: {
     fontSize: 12,
     color: '#6B7280',
+  },
+  availabilityPillCount: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
   },
   availabilityList: {
     gap: 10,
@@ -3146,7 +3268,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '600',
   },
-  secondaryButton: {
+  bottomBarSecondaryButton: {
     flex: 1,
     borderWidth: 1,
     borderColor: '#2ECC71',
@@ -3154,7 +3276,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
   },
-  secondaryButtonText: {
+  bottomBarSecondaryButtonText: {
     color: '#2ECC71',
     fontWeight: '600',
   },

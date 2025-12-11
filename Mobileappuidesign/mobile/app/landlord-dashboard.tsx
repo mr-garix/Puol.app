@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useNavigation, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 
 import { useProfile } from '@/src/contexts/ProfileContext';
+import { useLandlordVisits } from '@/src/features/rental-visits/hooks';
+import { useLandlordDashboardListings } from '@/src/features/landlord-listings/dashboard-hooks';
 
 const landlordSections = [
   {
@@ -37,6 +39,11 @@ const LandlordDashboardScreen: React.FC = () => {
   const router = useRouter();
   const navigation = useNavigation();
   const { profile, isProfileLoading } = useProfile();
+  const { visitsCount, isLoading: visitsLoading } = useLandlordVisits();
+  const {
+    data: landlordListings,
+    isLoading: listingsLoading,
+  } = useLandlordDashboardListings();
 
   useEffect(() => {
     navigation.setOptions({ headerShown: false });
@@ -65,10 +72,42 @@ const LandlordDashboardScreen: React.FC = () => {
     return profile.username || 'Bailleur PUOL';
   }, [profile]);
 
-  const listingsCount = profile?.stats.listings ?? 0;
+  const listingsCount = landlordListings?.length ?? profile?.stats.listings ?? 0;
   const isVerified = profile?.landlordStatus === 'approved';
   const summaryLabel = isVerified ? 'Bailleur vérifié' : 'Bailleur en attente de vérification';
-  const commentsCount = 0;
+  const visitsCountLabel = visitsLoading ? '· · ·' : `${visitsCount} visite${visitsCount > 1 ? 's' : ''}`;
+
+  const aggregatedMetrics = useMemo(() => {
+    const base = (landlordListings ?? []).reduce(
+      (acc, item) => {
+        acc.views += item.viewCount ?? 0;
+        acc.likes += item.likeCount ?? 0;
+        acc.comments += item.commentCount ?? 0;
+        return acc;
+      },
+      { views: 0, likes: 0, comments: 0 },
+    );
+
+    if (base.views === 0 && base.likes === 0 && base.comments === 0 && (!landlordListings || landlordListings.length === 0)) {
+      return {
+        views: profile?.stats.views ?? 0,
+        likes: profile?.stats.likes ?? 0,
+        comments: profile?.stats.comments ?? 0,
+      };
+    }
+
+    return base;
+  }, [landlordListings, profile?.stats.comments, profile?.stats.likes, profile?.stats.views]);
+
+  const totalViews = aggregatedMetrics.views;
+  const totalLikes = aggregatedMetrics.likes;
+  const commentsCount = aggregatedMetrics.comments;
+
+  const formatMetricValue = useCallback((value: number) => value.toLocaleString('fr-FR'), []);
+
+  const viewsDisplay = listingsLoading ? '· · ·' : formatMetricValue(totalViews);
+  const likesDisplay = listingsLoading ? '· · ·' : formatMetricValue(totalLikes);
+  const commentsDisplay = listingsLoading ? '· · ·' : formatMetricValue(commentsCount);
 
   const handleOpenLikes = () => {
     if (!isVerified) {
@@ -87,8 +126,50 @@ const LandlordDashboardScreen: React.FC = () => {
   const handleSectionPress = (key: (typeof landlordSections)[number]['key']) => {
     if (key === 'properties') {
       router.push('/landlord-listings' as never);
+      return;
+    }
+    if (key === 'visits') {
+      router.push('/landlord-visits' as never);
+      return;
+    }
+    if (key === 'tenants') {
+      router.push('/landlord-tenants' as never);
     }
   };
+
+  const sections = useMemo(
+    () =>
+      landlordSections.map((section) => {
+        if (section.key === 'visits') {
+          return {
+            ...section,
+            hint: visitsLoading ? 'Chargement…' : visitsCount === 0 ? 'Aucune visite planifiée' : visitsCountLabel,
+          };
+        }
+        if (section.key === 'tenants') {
+          return {
+            ...section,
+            hint: 'Suivi des baux signés',
+          };
+        }
+        if (section.key === 'properties') {
+          const label = listingsLoading
+            ? 'Chargement…'
+            : listingsCount === 0
+              ? 'Aucune annonce publiée'
+              : `${listingsCount} annonce${listingsCount > 1 ? 's' : ''}`;
+          return {
+            ...section,
+            hint: label,
+          };
+        }
+        return {
+          ...section,
+          hint: 'Disponible bientôt',
+        };
+      }),
+    [listingsCount, listingsLoading, visitsCount, visitsCountLabel, visitsLoading],
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -141,7 +222,7 @@ const LandlordDashboardScreen: React.FC = () => {
               <Text style={styles.summaryLabel}>Locataires</Text>
             </View>
             <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>0</Text>
+              <Text style={styles.summaryValue}>{visitsLoading ? '· · ·' : visitsCount}</Text>
               <Text style={styles.summaryLabel}>Visites reçues</Text>
             </View>
           </View>
@@ -153,7 +234,7 @@ const LandlordDashboardScreen: React.FC = () => {
               <Feather name="eye" size={20} color="#047857" />
             </View>
             <Text style={styles.metricLabel}>Vues</Text>
-            <Text style={styles.metricValue}>{profile?.stats.views ?? 0}</Text>
+            <Text style={styles.metricValue}>{viewsDisplay}</Text>
           </View>
           <TouchableOpacity
             style={[styles.metricCard, !isVerified && styles.metricCardDisabled]}
@@ -164,7 +245,7 @@ const LandlordDashboardScreen: React.FC = () => {
               <Feather name="heart" size={20} color="#EF4444" />
             </View>
             <Text style={styles.metricLabel}>Likes</Text>
-            <Text style={styles.metricValue}>{profile?.stats.likes ?? 0}</Text>
+            <Text style={styles.metricValue}>{likesDisplay}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.metricCard, !isVerified && styles.metricCardDisabled]}
@@ -175,12 +256,12 @@ const LandlordDashboardScreen: React.FC = () => {
               <Feather name="message-circle" size={20} color="#0EA5E9" />
             </View>
             <Text style={styles.metricLabel}>Commentaires</Text>
-            <Text style={styles.metricValue}>{commentsCount}</Text>
+            <Text style={styles.metricValue}>{commentsDisplay}</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.sectionList}>
-          {landlordSections.map((section) => (
+          {sections.map((section) => (
             <TouchableOpacity
               key={section.key}
               style={styles.sectionCard}
@@ -194,7 +275,7 @@ const LandlordDashboardScreen: React.FC = () => {
                 <Text style={styles.sectionTitle}>{section.title}</Text>
                 <Text style={styles.sectionSubtitle}>{section.subtitle}</Text>
                 <View style={styles.sectionFooter}>
-                  <Text style={styles.sectionHint}>Disponible bientôt</Text>
+                  <Text style={styles.sectionHint}>{section.hint}</Text>
                   <Feather name="arrow-right" size={18} color="#1F2937" />
                 </View>
               </View>

@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
-import { useColorScheme } from 'react-native';
+import { StatusBar as NativeStatusBar, useColorScheme } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 
 import VisitNotificationBridge from '@/src/infrastructure/notifications/VisitNotificationBridge';
 import HostBookingNotificationBridge from '@/src/infrastructure/notifications/HostBookingNotificationBridge';
@@ -69,6 +70,13 @@ function PreloadManager() {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
+  useEffect(() => {
+    NativeStatusBar.setHidden(true, 'fade');
+    return () => {
+      NativeStatusBar.setHidden(false, 'fade');
+    };
+  }, []);
+
   return (
     <PreloadProvider>
       <AuthProvider>
@@ -79,6 +87,7 @@ export default function RootLayout() {
               <ProfileProvider>
                 <NotificationProvider>
                   <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+                    <StatusBar translucent backgroundColor="transparent" style="dark" hidden />
                     <Stack>
                     <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'none' }} />
@@ -95,6 +104,10 @@ export default function RootLayout() {
                     <Stack.Screen name="host-visits" options={{ headerShown: false }} />
                     <Stack.Screen name="host-messages" options={{ headerShown: false }} />
                     <Stack.Screen name="host-reviews" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-visits" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-visit/[id]" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-tenants" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-tenant/[id]" options={{ headerShown: false }} />
                     <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="profile/edit" options={{ headerShown: false }} />
                     <Stack.Screen name="profile/[profileId]" options={{ headerShown: false }} />

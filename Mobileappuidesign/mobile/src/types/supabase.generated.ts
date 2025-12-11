@@ -1,4 +1,4 @@
-export type Json =
+﻿export type Json =
   | string
   | number
   | boolean
@@ -186,10 +186,15 @@ export type Database = {
           created_at: string
           description: string | null
           district: string
+          formatted_address: string | null
           google_address: string | null
           id: string
           is_available: boolean
+          is_furnished: boolean | null
           landlord_profile_id: string
+          latitude: number | null
+          longitude: number | null
+          place_id: string | null
           price_per_month: number
           property_type: string
           title: string
@@ -203,10 +208,15 @@ export type Database = {
           created_at?: string
           description?: string | null
           district: string
+          formatted_address?: string | null
           google_address?: string | null
           id?: string
           is_available?: boolean
+          is_furnished?: boolean | null
           landlord_profile_id: string
+          latitude?: number | null
+          longitude?: number | null
+          place_id?: string | null
           price_per_month: number
           property_type: string
           title: string
@@ -220,10 +230,15 @@ export type Database = {
           created_at?: string
           description?: string | null
           district?: string
+          formatted_address?: string | null
           google_address?: string | null
           id?: string
           is_available?: boolean
+          is_furnished?: boolean | null
           landlord_profile_id?: string
+          latitude?: number | null
+          longitude?: number | null
+          place_id?: string | null
           price_per_month?: number
           property_type?: string
           title?: string
@@ -320,6 +335,58 @@ export type Database = {
           },
         ]
       }
+      listing_conversations: {
+        Row: {
+          created_at: string
+          guest_profile_id: string
+          host_profile_id: string
+          id: string
+          listing_id: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          guest_profile_id: string
+          host_profile_id: string
+          id?: string
+          listing_id: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          guest_profile_id?: string
+          host_profile_id?: string
+          id?: string
+          listing_id?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "listing_conversations_guest_profile_id_fkey"
+            columns: ["guest_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_conversations_host_profile_id_fkey"
+            columns: ["host_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_conversations_listing_id_fkey"
+            columns: ["listing_id"]
+            isOneToOne: false
+            referencedRelation: "listings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       listing_features: {
         Row: {
           accessible: boolean
@@ -334,6 +401,7 @@ export type Database = {
           has_ac: boolean
           has_parking: boolean
           has_wifi: boolean
+          is_roadside: boolean | null
           listing_id: string
           mezzanine: boolean
           near_main_road: string | null
@@ -351,6 +419,7 @@ export type Database = {
           washing_machine: boolean
           water_heater: boolean
           water_well: boolean
+          within_50m: boolean | null
         }
         Insert: {
           accessible?: boolean
@@ -365,6 +434,7 @@ export type Database = {
           has_ac?: boolean
           has_parking?: boolean
           has_wifi?: boolean
+          is_roadside?: boolean | null
           listing_id: string
           mezzanine?: boolean
           near_main_road?: string | null
@@ -382,6 +452,7 @@ export type Database = {
           washing_machine?: boolean
           water_heater?: boolean
           water_well?: boolean
+          within_50m?: boolean | null
         }
         Update: {
           accessible?: boolean
@@ -396,6 +467,7 @@ export type Database = {
           has_ac?: boolean
           has_parking?: boolean
           has_wifi?: boolean
+          is_roadside?: boolean | null
           listing_id?: string
           mezzanine?: boolean
           near_main_road?: string | null
@@ -413,6 +485,7 @@ export type Database = {
           washing_machine?: boolean
           water_heater?: boolean
           water_well?: boolean
+          within_50m?: boolean | null
         }
         Relationships: [
           {
@@ -497,6 +570,83 @@ export type Database = {
             columns: ["listing_id"]
             isOneToOne: false
             referencedRelation: "listings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      listing_messages: {
+        Row: {
+          content: string
+          conversation_id: string
+          created_at: string
+          escalated_to_host: boolean
+          from_ai: boolean
+          id: string
+          in_reply_to_message_id: string | null
+          is_deleted: boolean
+          listing_id: string
+          metadata: Json
+          requires_host_action: boolean
+          sender_profile_id: string | null
+          sender_role: string
+        }
+        Insert: {
+          content: string
+          conversation_id: string
+          created_at?: string
+          escalated_to_host?: boolean
+          from_ai?: boolean
+          id?: string
+          in_reply_to_message_id?: string | null
+          is_deleted?: boolean
+          listing_id: string
+          metadata?: Json
+          requires_host_action?: boolean
+          sender_profile_id?: string | null
+          sender_role: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string
+          created_at?: string
+          escalated_to_host?: boolean
+          from_ai?: boolean
+          id?: string
+          in_reply_to_message_id?: string | null
+          is_deleted?: boolean
+          listing_id?: string
+          metadata?: Json
+          requires_host_action?: boolean
+          sender_profile_id?: string | null
+          sender_role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "listing_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "listing_conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_messages_in_reply_to_message_id_fkey"
+            columns: ["in_reply_to_message_id"]
+            isOneToOne: false
+            referencedRelation: "listing_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_messages_listing_id_fkey"
+            columns: ["listing_id"]
+            isOneToOne: false
+            referencedRelation: "listings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_messages_sender_profile_id_fkey"
+            columns: ["sender_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]
@@ -728,20 +878,25 @@ export type Database = {
           city: string
           cover_photo_url: string
           created_at: string
+          deposit_amount: number | null
           description: string
           district: string
           formatted_address: string | null
           google_address: string | null
           host_id: string
           id: string
+          is_available: boolean
           is_furnished: boolean
           latitude: number | null
           longitude: number | null
+          min_lease_months: number | null
           music_enabled: boolean
           music_id: string | null
           place_id: string | null
+          price_per_month: number | null
           price_per_night: number
           property_type: string
+          rental_kind: string
           status: string
           title: string
           updated_at: string
@@ -752,20 +907,25 @@ export type Database = {
           city: string
           cover_photo_url: string
           created_at?: string
+          deposit_amount?: number | null
           description: string
           district: string
           formatted_address?: string | null
           google_address?: string | null
           host_id: string
           id?: string
+          is_available?: boolean
           is_furnished?: boolean
           latitude?: number | null
           longitude?: number | null
+          min_lease_months?: number | null
           music_enabled?: boolean
           music_id?: string | null
           place_id?: string | null
+          price_per_month?: number | null
           price_per_night: number
           property_type: string
+          rental_kind?: string
           status?: string
           title: string
           updated_at?: string
@@ -776,20 +936,25 @@ export type Database = {
           city?: string
           cover_photo_url?: string
           created_at?: string
+          deposit_amount?: number | null
           description?: string
           district?: string
           formatted_address?: string | null
           google_address?: string | null
           host_id?: string
           id?: string
+          is_available?: boolean
           is_furnished?: boolean
           latitude?: number | null
           longitude?: number | null
+          min_lease_months?: number | null
           music_enabled?: boolean
           music_id?: string | null
           place_id?: string | null
+          price_per_month?: number | null
           price_per_night?: number
           property_type?: string
+          rental_kind?: string
           status?: string
           title?: string
           updated_at?: string
@@ -856,6 +1021,45 @@ export type Database = {
           {
             foreignKeyName: "profile_follows_follower_fk"
             columns: ["follower_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profile_shares: {
+        Row: {
+          channel: string
+          created_at: string
+          id: string
+          profile_id: string
+          shared_by_profile_id: string | null
+        }
+        Insert: {
+          channel?: string
+          created_at?: string
+          id?: string
+          profile_id: string
+          shared_by_profile_id?: string | null
+        }
+        Update: {
+          channel?: string
+          created_at?: string
+          id?: string
+          profile_id?: string
+          shared_by_profile_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profile_shares_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "profile_shares_shared_by_profile_id_fkey"
+            columns: ["shared_by_profile_id"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -930,6 +1134,8 @@ export type Database = {
       }
       rental_visits: {
         Row: {
+          cancelled_at: string | null
+          cancelled_reason: string | null
           created_at: string
           guest_profile_id: string
           id: string
@@ -941,6 +1147,8 @@ export type Database = {
           visit_time: string | null
         }
         Insert: {
+          cancelled_at?: string | null
+          cancelled_reason?: string | null
           created_at?: string
           guest_profile_id: string
           id?: string
@@ -952,6 +1160,8 @@ export type Database = {
           visit_time?: string | null
         }
         Update: {
+          cancelled_at?: string | null
+          cancelled_reason?: string | null
           created_at?: string
           guest_profile_id?: string
           id?: string

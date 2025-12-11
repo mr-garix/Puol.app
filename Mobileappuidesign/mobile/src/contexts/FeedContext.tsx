@@ -7,6 +7,7 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { FavoriteProperty } from '@/src/features/listings/components/FavoritesScreen';
 import { supabase } from '@/src/supabaseClient';
@@ -17,6 +18,7 @@ import { getListingLikeCount, hasUserLikedListing, toggleListingLike } from '@/s
 import { useAuth } from '@/src/contexts/AuthContext';
 import { getListingCommentCounts } from '@/src/features/comments/services';
 import { formatListingLocation } from '@/src/utils/location';
+import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 const FALLBACK_AVATAR = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format';
 const FALLBACK_COVER = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=1080&fit=crop&q=80&auto=format';
@@ -39,7 +41,7 @@ type FeedMediaItem = {
 
 export interface PropertyListing {
   id: string;
-  hostId: string;
+  hostId?: string | null;
   title: string;
   price: string;
   priceValue?: number | null;
@@ -47,7 +49,8 @@ export interface PropertyListing {
   city?: string | null;
   district?: string | null;
   tags: string[];
-  surfaceAreaLabel?: string;
+  surfaceAreaLabel?: string | null;
+  surface?: number | null;
   imageUrl: string;
   coverPhotoUrl?: string | null;
   likes: number;
@@ -76,31 +79,8 @@ interface FeedContextValue {
   updateListingCommentCount: (listingId: string, count: number) => void;
 }
 
-type ListingRow = {
-  id: string;
-  host_id: string;
-  title: string;
-  property_type: string | null;
-  price_per_night: number | null;
-  city: string | null;
-  district: string | null;
-  capacity: number | null;
-  is_furnished: boolean;
-  description: string | null;
-  cover_photo_url: string | null;
-  status: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type ListingMediaRow = {
-  id: string;
-  listing_id: string;
-  media_url: string;
-  media_type: FeedMediaType;
-  position: number | null;
-  media_tag: string | null;
-};
+type ListingRow = Tables<'listings'>;
+type ListingMediaRow = Tables<'listing_media'>;
 
 type ListingPromotionRow = {
   listing_id: string;
@@ -118,15 +98,27 @@ const PROPERTY_TYPE_LABELS: Record<string, string> = {
   house: 'Maison',
   villa: 'Villa',
   boutique: 'Boutique',
+  room: 'Chambre',
+  duplex: 'Duplex',
+  penthouse: 'Penthouse',
 };
+
+const LONG_TERM_RENTAL_KIND = 'long_term';
 
 const FeedContext = createContext<FeedContextValue | undefined>(undefined);
 
-const formatPriceDisplay = (price?: number | null) => {
+const formatNightlyPrice = (price?: number | null) => {
   if (!price) {
     return 'Tarif sur demande';
   }
   return `${price.toLocaleString('fr-FR')} FCFA / NUIT`;
+};
+
+const formatMonthlyPrice = (price?: number | null) => {
+  if (!price) {
+    return 'Loyer sur demande';
+  }
+  return `${price.toLocaleString('fr-FR')} FCFA / MOIS`;
 };
 
 const buildLocationLabel = (listing: ListingRow) =>
@@ -137,7 +129,102 @@ const buildLocationLabel = (listing: ListingRow) =>
     fallback: 'Localisation à venir',
   }) || 'Localisation à venir';
 
-const buildListingTags = (listing: ListingRow): string[] => {
+export const COMMERCIAL_TYPES = new Set(['boutique', 'espace commercial', 'bureau', 'terrain']);
+
+const shuffleArray = <T,>(items: T[]): T[] => {
+  const array = [...items];
+  for (let index = array.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [array[index], array[swapIndex]] = [array[swapIndex], array[index]];
+  }
+  return array;
+};
+
+const parseRentalPreferences = (raw: string | null): string[] => {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((value) => (typeof value === 'string' ? value.toLowerCase() : null))
+      .filter((value): value is string => Boolean(value));
+  } catch (error) {
+    console.warn('[FeedContext] Failed to parse rental preferences', error);
+    return [];
+  }
+};
+
+const matchesPreference = (listing: ListingRow, preference: string) => {
+  const normalizedType = listing.property_type?.toLowerCase() ?? '';
+  const isCommercial = COMMERCIAL_TYPES.has(normalizedType);
+  const isFurnished = Boolean(listing.is_furnished);
+
+  switch (preference) {
+    case 'boutique':
+      return isCommercial;
+    case 'meuble':
+      return !isCommercial && isFurnished;
+    case 'non-meuble':
+      return !isCommercial && !isFurnished;
+    default:
+      return false;
+  }
+};
+
+const orderListingsByPreferences = (listings: ListingRow[], preferences: string[]) => {
+  if (!listings.length) {
+    return listings;
+  }
+
+  const recognizedPreferences = Array.from(
+    new Set(
+      preferences.filter((preference) => preference === 'meuble' || preference === 'non-meuble' || preference === 'boutique'),
+    ),
+  );
+
+  if (!recognizedPreferences.length || recognizedPreferences.length === 3) {
+    return shuffleArray(listings);
+  }
+
+  const matchedBuckets = recognizedPreferences.map(() => [] as ListingRow[]);
+  const remaining: ListingRow[] = [];
+
+  listings.forEach((listing) => {
+    const bucketIndex = recognizedPreferences.findIndex((preference) => matchesPreference(listing, preference));
+    if (bucketIndex === -1) {
+      remaining.push(listing);
+      return;
+    }
+    matchedBuckets[bucketIndex].push(listing);
+  });
+
+  return matchedBuckets
+    .flatMap((bucket) => shuffleArray(bucket))
+    .concat(shuffleArray(remaining));
+};
+
+export const buildSurfaceTag = (listing: ListingRow, mediaRows: ListingMediaRow[]): string | null => {
+  const isCommercial = COMMERCIAL_TYPES.has((listing.property_type ?? '').toLowerCase());
+  if (!isCommercial) {
+    return null;
+  }
+  const surfaceRaw = mediaRows[0]?.thumbnail_url ?? null;
+  if (!surfaceRaw) {
+    return null;
+  }
+  const parsed = Number(surfaceRaw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return `${Math.round(parsed)} m²`;
+};
+
+export const buildListingTags = (listing: ListingRow, surfaceTag: string | null): string[] => {
   const tags: string[] = [];
   const normalizedType = listing.property_type?.toLowerCase() ?? '';
   const typeLabel = PROPERTY_TYPE_LABELS[normalizedType] ?? listing.property_type ?? null;
@@ -145,12 +232,42 @@ const buildListingTags = (listing: ListingRow): string[] => {
     tags.push(typeLabel);
   }
 
-  const furnishingTag = listing.is_furnished ? 'Meublé' : 'Non Meublé';
-  tags.push(furnishingTag);
+  const isCommercial = COMMERCIAL_TYPES.has(normalizedType);
+  const isLongTerm = listing.rental_kind === LONG_TERM_RENTAL_KIND;
+  const furnishingLabel = listing.is_furnished ? 'Meublé' : 'Non meublé';
+  const minLease = listing.min_lease_months ?? null;
+  const bailLabel = minLease && minLease > 0 ? `Bail ${minLease} mois` : 'Bail flexible';
 
-  if (listing.capacity) {
-    const suffix = listing.capacity > 1 ? 'personnes' : 'personne';
-    tags.push(`${listing.capacity} ${suffix}`);
+  if (isCommercial) {
+    if (surfaceTag) {
+      tags.push(surfaceTag);
+    }
+    if (isLongTerm && minLease) {
+      tags.push(bailLabel);
+    }
+    return tags;
+  }
+
+  if (isLongTerm && listing.is_furnished) {
+    if (minLease) {
+      tags.push(bailLabel);
+    }
+    tags.push(furnishingLabel);
+    return tags;
+  }
+
+  tags.push(furnishingLabel);
+  if (isLongTerm && minLease) {
+    tags.push(bailLabel);
+    return tags;
+  }
+
+  const capacityValue = typeof listing.capacity === 'number' ? listing.capacity : null;
+  if (capacityValue && capacityValue > 0) {
+    const suffix = capacityValue > 1 ? 'personnes' : 'personne';
+    tags.push(`${capacityValue} ${suffix}`);
+  } else {
+    tags.push('Capacité non définie');
   }
 
   return tags;
@@ -174,13 +291,13 @@ const mapListingToProperty = (
     .filter((media) => media.media_url?.trim())
     .map((media) => {
       const rawUrl = media.media_url;
-      const isVideo = media.media_type === 'video';
-      const cdnUrl = isVideo ? toCdnUrl(rawUrl) ?? rawUrl : rawUrl;
+      const mediaType: FeedMediaType = media.media_type === 'video' ? 'video' : 'photo';
+      const normalizedUrl = mediaType === 'video' ? toCdnUrl(rawUrl) ?? rawUrl : rawUrl;
 
       return {
         id: media.id,
-        url: cdnUrl,
-        type: media.media_type,
+        url: normalizedUrl,
+        type: mediaType,
         position: media.position ?? 0,
         tag: media.media_tag,
       };
@@ -203,17 +320,23 @@ const mapListingToProperty = (
   const hostAvatar = hostProfile?.avatar_url?.trim() ? hostProfile.avatar_url : FALLBACK_AVATAR;
   const hostName = buildHostDisplayName(hostProfile);
 
+  const isLongTerm = listing.rental_kind === LONG_TERM_RENTAL_KIND;
+  const price = isLongTerm ? formatMonthlyPrice(listing.price_per_month) : formatNightlyPrice(listing.price_per_night);
+  const priceValue = isLongTerm ? listing.price_per_month : listing.price_per_night;
+
+  const surfaceTag = buildSurfaceTag(listing, orderedMedia);
+
   return {
     id: listing.id,
     hostId: listing.host_id,
     title: listing.title,
-    price: formatPriceDisplay(listing.price_per_night),
-    priceValue: listing.price_per_night,
+    price,
+    priceValue,
     location: buildLocationLabel(listing),
     city: listing.city,
     district: listing.district,
-    tags: buildListingTags(listing),
-    surfaceAreaLabel: undefined,
+    tags: buildListingTags(listing, surfaceTag),
+    surfaceAreaLabel: surfaceTag,
     imageUrl,
     coverPhotoUrl: listing.cover_photo_url ?? imageUrl,
     likes: likesCount,
@@ -254,6 +377,9 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const listingRows: ListingRow[] = listingsData ?? [];
+      const rentalPreferencesRaw = await AsyncStorage.getItem(STORAGE_KEYS.RENTAL_PREFERENCES);
+      const rentalPreferences = parseRentalPreferences(rentalPreferencesRaw);
+      const prioritizedListingRows = orderListingsByPreferences(listingRows, rentalPreferences);
       const listingIds = listingRows.map((listing) => listing.id);
 
       let mediaRows: ListingMediaRow[] = [];
@@ -329,7 +455,7 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
         })
       );
 
-      const nextListings = listingRows.map((listing) =>
+      const nextListings = prioritizedListingRows.map((listing) =>
         mapListingToProperty(
           listing,
           mediaByListing[listing.id] ?? [],
@@ -536,7 +662,7 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
           coverPhotoUrl: listing.coverPhotoUrl ?? listing.imageUrl,
           images: gallery,
           type: listing.propertyType ?? undefined,
-          surfaceArea: listing.surfaceAreaLabel,
+          surfaceArea: listing.surfaceAreaLabel ?? undefined,
           tags: listing.tags,
           favoritedAt: favoritedAt ? new Date(favoritedAt) : undefined,
         } satisfies FavoriteProperty;
