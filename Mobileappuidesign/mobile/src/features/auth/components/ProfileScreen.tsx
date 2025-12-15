@@ -56,6 +56,7 @@ export interface ProfileScreenProps {
   onLikesPress?: () => void;
   onFollowersPress?: () => void;
   onFollowingPress?: () => void;
+  onViewsPress?: () => void;
   hostDashboardStatus?: 'approved' | 'pending' | 'rejected';
   hostStatusMessage?: string;
   onHostDashboardPress?: () => void;
@@ -85,6 +86,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onLikesPress,
   onFollowersPress,
   onFollowingPress,
+  onViewsPress,
   hostDashboardStatus,
   hostStatusMessage,
   onHostDashboardPress,
@@ -422,7 +424,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         ) : null}
 
         <View style={styles.statsCards}>
-          <View style={styles.statCard}>
+          <TouchableOpacity
+            style={styles.statCard}
+            onPress={onViewsPress}
+            activeOpacity={onViewsPress ? 0.7 : 1}
+            disabled={!onViewsPress}
+          >
             <View style={styles.statIconContainer}>
               <Feather name="eye" size={24} color="#2ECC71" />
             </View>
@@ -430,7 +437,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <Text style={styles.statCardValue}>
               {stats.views >= 1000 ? `${(stats.views / 1000).toFixed(1)}K` : stats.views}
             </Text>
-          </View>
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.statCard}

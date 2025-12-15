@@ -2,6 +2,7 @@ import React from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View, type ImageSourcePropType } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
 type TabRouteName = 'home' | 'visits' | 'favorites' | 'profile';
 
@@ -30,6 +31,7 @@ const PUOL_GREEN = '#2ECC71';
 
 const BottomTabBar: React.FC<BottomTabBarProps> = ({ state, descriptors, navigation }) => {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const orderedRoutes = ROUTE_ORDER.map((name) =>
     state.routes.find((route) => route.name === name),
@@ -48,7 +50,7 @@ const BottomTabBar: React.FC<BottomTabBarProps> = ({ state, descriptors, navigat
   };
 
   const handleFabPress = () => {
-    navigation.navigate('home' as never);
+    router.push('/publish' as never);
   };
 
   const adjustedPaddingBottom = Math.max(insets.bottom - 20, 6);

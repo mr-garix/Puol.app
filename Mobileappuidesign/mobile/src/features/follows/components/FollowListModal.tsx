@@ -31,6 +31,7 @@ type FollowListModalProps = {
   viewerFollowerIds?: Set<string>;
   viewerId?: string | null;
   onProfilePress?: (profileId: string) => void;
+  ownerView?: boolean;
 };
 
 const buildInitialsAvatar = (firstName?: string | null, lastName?: string | null) => {
@@ -55,6 +56,7 @@ export const FollowListModal: React.FC<FollowListModalProps> = ({
   viewerFollowerIds,
   viewerId,
   onProfilePress,
+  ownerView = false,
 }) => {
   const title = type === 'followers' ? 'Followers' : 'Abonnements';
 
@@ -68,23 +70,12 @@ export const FollowListModal: React.FC<FollowListModalProps> = ({
           year: 'numeric',
         })
       : null;
-    const mutualWithOwner = friendIds?.has(item.id) ?? false;
-    const hasViewerFollowingSet = viewerFollowingIds?.size;
-    const hasViewerFollowerSet = viewerFollowerIds?.size;
-    const baseViewerFollows = hasViewerFollowingSet ? viewerFollowingIds!.has(item.id) : false;
-    const baseViewerIsFollowedBy = hasViewerFollowerSet ? viewerFollowerIds!.has(item.id) : false;
+    const mutualWithOwner = ownerView ? friendIds?.has(item.id) ?? false : false;
+    const hasViewerFollowingSet = Boolean(viewerId && viewerFollowingIds?.size);
+    const hasViewerFollowerSet = Boolean(viewerId && viewerFollowerIds?.size);
+    const viewerFollowsTarget = hasViewerFollowingSet ? viewerFollowingIds!.has(item.id) : false;
+    const targetFollowsViewer = hasViewerFollowerSet ? viewerFollowerIds!.has(item.id) : false;
     const isSelf = viewerId ? viewerId === item.id : false;
-    const viewerFollowsTarget = hasViewerFollowingSet
-      ? baseViewerFollows
-      : viewerMode
-        ? baseViewerFollows
-        : type === 'following' || mutualWithOwner;
-    const targetFollowsViewer = hasViewerFollowerSet
-      ? baseViewerIsFollowedBy
-      : viewerMode
-        ? baseViewerIsFollowedBy
-        : type === 'followers' || mutualWithOwner;
-    const isMutual = viewerFollowsTarget && targetFollowsViewer;
 
     let actionContent: React.ReactNode = null;
 
@@ -93,10 +84,16 @@ export const FollowListModal: React.FC<FollowListModalProps> = ({
       const isUnfollowLoading = unfollowActionLoadingId === item.id;
       const currentAction = viewerFollowsTarget ? 'unfollow' : 'follow';
       const isProcessing = currentAction === 'follow' ? isFollowLoading : isUnfollowLoading;
-      const canInteract = currentAction === 'follow' ? Boolean(onFollowBack) : Boolean(onUnfollow);
+      const canInteract = viewerId
+        ? currentAction === 'follow'
+          ? Boolean(onFollowBack)
+          : Boolean(onUnfollow)
+        : Boolean(onFollowBack);
 
       let actionLabel = 'Suivre';
-      if (isMutual) {
+      if (!viewerId) {
+        actionLabel = 'Suivre';
+      } else if (ownerView && mutualWithOwner) {
         actionLabel = 'Ami(e)';
       } else if (viewerFollowsTarget) {
         actionLabel = 'Suivi(e)';
@@ -108,6 +105,10 @@ export const FollowListModal: React.FC<FollowListModalProps> = ({
         if (isProcessing || !canInteract) {
           return;
         }
+        if (!viewerId) {
+          onFollowBack?.(item.id);
+          return;
+        }
         if (currentAction === 'follow') {
           onFollowBack?.(item.id);
         } else {
@@ -116,18 +117,11 @@ export const FollowListModal: React.FC<FollowListModalProps> = ({
       };
 
       const buttonStyles = viewerFollowsTarget
-        ? [
-            styles.statusPill,
-            isMutual ? styles.friendPill : styles.followingPill,
-            (!canInteract || isProcessing) && styles.statusPillDisabled,
-          ]
-        : [
-            styles.actionButton,
-            (!canInteract || isProcessing) && styles.actionButtonDisabled,
-          ];
+        ? [styles.statusPill, styles.followingPill, (!canInteract || isProcessing) && styles.statusPillDisabled]
+        : [styles.actionButton, (!canInteract || isProcessing) && styles.actionButtonDisabled];
 
       const textStyles = viewerFollowsTarget
-        ? [styles.pillText, isMutual ? styles.friendPillText : styles.followingPillText]
+        ? [styles.pillText, styles.followingPillText]
         : [styles.actionButtonText];
 
       actionContent = (
@@ -349,14 +343,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-  },
-  friendPill: {
-    backgroundColor: '#DCFCE7',
-    borderColor: '#A7F3D0',
-  },
-  friendPillText: {
-    color: '#15803D',
-    fontWeight: '600',
   },
   followingPill: {
     backgroundColor: '#2ECC71',

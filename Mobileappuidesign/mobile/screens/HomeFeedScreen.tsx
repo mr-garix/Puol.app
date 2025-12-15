@@ -42,11 +42,15 @@ import { useComments as useListingComments } from '@/features/comments/hooks';
 import { ShareFeature } from '@/src/components/ui/ShareFeature';
 import { SearchModal } from '@/src/features/search/components/SearchModal';
 import { useFeed, type PropertyListing } from '@/src/contexts/FeedContext';
-import { useListingDetails } from '@/features/listings/hooks/useListingDetails';
-import { prefetchListingData } from '@/features/listings/hooks/useListingDetails';
+import { useListingDetails, prefetchListingData, listingPrefetchCache } from '@/features/listings/hooks/useListingDetails';
 import { VideoWithThumbnail } from '@/src/components/VideoWithThumbnail';
 import { LoadingImageBackground } from '@/src/components/LoadingImageBackground';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { AuthModal } from '@/src/features/auth/components/AuthModal';
+import { LoginWithOTPScreen } from '@/src/features/auth/components/LoginWithOTPScreen';
+import { SignUpScreen } from '@/src/features/auth/components/SignUpScreen';
+import TopFeedTabs from '../components/navigation/TopFeedTabs';
+
 import { trackListingView } from '@/src/features/listings/services/viewService';
 
 import type { SearchCriteria } from '@/src/types/search';
@@ -86,9 +90,15 @@ const PROPERTY_TYPE_SUMMARY: Record<string, string> = {
   house: 'Maison',
   villa: 'Villa',
   boutique: 'Boutique',
+  bureau: 'Bureau',
+  'espace commercial': 'Espace commercial',
+  terrain: 'Terrain',
+  autre: 'Coup de cœur',
 };
 
 const getMediaItems = (listing: PropertyListing) => listing.media ?? [];
+
+type AuthPurpose = 'comment' | 'comment_like' | 'like';
 
 const TagChips = ({ tags }: { tags: (string | undefined)[] }) => {
   const filtered = tags.filter(Boolean) as string[];
@@ -178,7 +188,7 @@ export default function HomeScreen() {
   const lastTapRef = useRef<number>(0);
   const likeButtonScale = useRef(new Animated.Value(1)).current;
   const mediaScrollX = useRef(new Animated.Value(0)).current;
-  const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings } = useFeed();
+  const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings, preserveFeedForAuthFlow } = useFeed();
 
   const [activeListingIdx, setActiveListingIdx] = useState(0);
   const prevListingsLengthRef = useRef<number>(0);
@@ -190,6 +200,14 @@ export default function HomeScreen() {
   const cleanupCacheRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isScrollAcceleratedRef = useRef(false);
   const { supabaseProfile } = useAuth();
+  const supabaseProfileRef = useRef(supabaseProfile);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showLoginScreen, setShowLoginScreen] = useState(false);
+  const [showSignUpScreen, setShowSignUpScreen] = useState(false);
+  const [authPurpose, setAuthPurpose] = useState<AuthPurpose>('comment');
+  const pendingActionRef = useRef<(() => void) | null>(null);
+  const pendingListingIdRef = useRef<string | null>(null);
+
   const viewerForTracking = useMemo(() => {
     if (!supabaseProfile) {
       return null;
@@ -204,8 +222,10 @@ export default function HomeScreen() {
   const searchResultViewEntriesRef = useRef<Record<string, { startedAt: number }>>({});
 
   const activeListing = propertyListings[activeListingIdx] ?? null;
+
   const activeListingId = activeListing?.id ?? '';
   const activeListingHostId = activeListing?.hostId ?? null;
+  supabaseProfileRef.current = supabaseProfile;
 
   useEffect(() => {
     const previousLength = prevListingsLengthRef.current;
@@ -227,6 +247,27 @@ export default function HomeScreen() {
     }
   }, [activeListingIdx, propertyListings.length]);
 
+  useEffect(() => {
+    if (!supabaseProfile?.id) {
+      return;
+    }
+
+    const pendingListingId = pendingListingIdRef.current;
+    if (!pendingListingId) {
+      return;
+    }
+
+    const preservedIndex = propertyListings.findIndex((listing) => listing.id === pendingListingId);
+    if (preservedIndex >= 0) {
+      setActiveListingIdx(preservedIndex);
+      requestAnimationFrame(() => {
+        pagerRef.current?.setPage?.(preservedIndex);
+      });
+    }
+
+    pendingListingIdRef.current = null;
+  }, [propertyListings, supabaseProfile?.id]);
+
   const {
     comments,
     replies,
@@ -246,6 +287,15 @@ export default function HomeScreen() {
     isCommentLiked,
     getCommentLikeCount,
   } = useListingComments(activeListingId, supabaseProfile?.id ?? null, activeListingHostId);
+  const addCommentRef = useRef(addComment);
+  addCommentRef.current = addComment;
+  const toggleCommentLikeRef = useRef(toggleCommentLike);
+  toggleCommentLikeRef.current = toggleCommentLike;
+  const toggleLikeRef = useRef(toggleLike);
+  toggleLikeRef.current = toggleLike;
+
+  const prefetchedCommentsRef = useRef<Set<string>>(new Set());
+  const prefetchedListingsRef = useRef<Set<string>>(new Set());
 
   const hasLoadedComments = loadedListingId === activeListingId;
 
@@ -266,6 +316,41 @@ export default function HomeScreen() {
     }
     await loadComments();
   }, [activeListingId, loadComments, loadedListingId]);
+
+  useEffect(() => {
+    if (!activeListingId) {
+      return;
+    }
+
+    if (!prefetchedCommentsRef.current.has(activeListingId)) {
+      prefetchedCommentsRef.current.add(activeListingId);
+      loadComments()
+        .catch((error) => {
+          console.warn('[HomeFeed] preload comments error', error);
+          prefetchedCommentsRef.current.delete(activeListingId);
+        })
+        .then(() => {
+          prefetchedCommentsRef.current.add(activeListingId);
+        });
+    }
+
+    const listingsToPrefetch = [activeListingId];
+    const nextListing = propertyListings[activeListingIdx + 1];
+    if (nextListing?.id) {
+      listingsToPrefetch.push(nextListing.id);
+    }
+
+    listingsToPrefetch.forEach((listingId) => {
+      if (prefetchedListingsRef.current.has(listingId) || listingPrefetchCache.has(listingId)) {
+        return;
+      }
+      prefetchedListingsRef.current.add(listingId);
+      prefetchListingData(listingId).catch((error) => {
+        console.warn('[HomeFeed] preload listing error', listingId, error);
+        prefetchedListingsRef.current.delete(listingId);
+      });
+    });
+  }, [activeListingId, activeListingIdx, loadComments, propertyListings]);
 
   const handleOpenComments = useCallback(() => {
     if (!activeListingId) {
@@ -370,7 +455,13 @@ export default function HomeScreen() {
   }, [handleOpenSearch, isResultsOverlayMounted, shouldReopenSearch]);
 
   const isBlockingOverlayOpen =
-    isSearchVisible || isResultsOverlayVisible || isResultsOverlayMounted || isCommentsVisible;
+    isSearchVisible ||
+    isResultsOverlayVisible ||
+    isResultsOverlayMounted ||
+    isCommentsVisible ||
+    showAuthModal ||
+    showLoginScreen ||
+    showSignUpScreen;
 
   const allowFeedPlayback = isFeedFocused && isAppActive && !isBlockingOverlayOpen;
 
@@ -563,15 +654,35 @@ export default function HomeScreen() {
     [navigateToListing],
   );
 
-  const handleTopTabChange = (tab: 'explorer' | 'pourToi') => {
-    setActiveTopTab(tab);
-    Animated.spring(topTabAnim, {
-      toValue: tab === 'pourToi' ? 1 : 0,
-      useNativeDriver: true,
-      friction: 4.5,
-      tension: 140,
-    }).start();
-  };
+  const handleTopTabChange = useCallback(
+    (tab: 'explorer' | 'pourToi') => {
+      if (tab === activeTopTab) {
+        return;
+      }
+
+      setActiveTopTab(tab);
+      Animated.spring(topTabAnim, {
+        toValue: tab === 'pourToi' ? 1 : 0,
+        useNativeDriver: true,
+        friction: 4.5,
+        tension: 140,
+      }).start();
+
+      if (tab === 'explorer') {
+        router.push('/(tabs)/explore');
+      }
+    },
+    [activeTopTab, router, topTabAnim],
+  );
+
+  useEffect(() => {
+    if (!isFeedFocused) {
+      return;
+    }
+
+    topTabAnim.setValue(1);
+    setActiveTopTab((prev) => (prev === 'pourToi' ? prev : 'pourToi'));
+  }, [isFeedFocused, topTabAnim]);
 
   const toggleVideoPlayback = useCallback((listingId: string, mediaId: string) => {
     const key = `${listingId}-${mediaId}`;
@@ -657,7 +768,9 @@ export default function HomeScreen() {
       }),
     ]).start();
 
-    toggleLike(listingId);
+    ensureAuthenticated('like', () => {
+      toggleLikeRef.current(listingId);
+    });
   };
 
   const handleCardTap = (listingId: string) => {
@@ -711,8 +824,25 @@ export default function HomeScreen() {
   };
 
   const handlePageSelected = useCallback(({ nativeEvent }: { nativeEvent: { position: number } }) => {
-    setActiveListingIdx(nativeEvent.position);
-  }, []);
+    const nextIndex = nativeEvent.position;
+    const nextListing = propertyListings[nextIndex];
+    const nextListingId = nextListing?.id ?? null;
+
+    setActiveListingIdx(nextIndex);
+    mediaScrollX.setValue(0);
+
+    if (!nextListingId) {
+      return;
+    }
+
+    setMediaIndexById((prev) => {
+      const currentValue = prev[nextListingId];
+      if (currentValue === 0 || currentValue === undefined) {
+        return prev;
+      }
+      return { ...prev, [nextListingId]: 0 };
+    });
+  }, [propertyListings, mediaScrollX]);
 
   const handlePageScrollStateChanged = useCallback(({ nativeEvent }: { nativeEvent: { pageScrollState: string } }) => {
     isScrollAcceleratedRef.current = nativeEvent.pageScrollState === 'dragging';
@@ -1042,13 +1172,7 @@ export default function HomeScreen() {
           source={{ uri: item.image }}
           style={styles.searchResultImage}
           imageStyle={styles.searchResultImageRadius}
-        >
-          <View style={styles.searchResultImageOverlay}>
-            <View style={styles.matchBadge}>
-              <Text style={styles.matchBadgeText}>{`${item.matchScore}% match`}</Text>
-            </View>
-          </View>
-        </ImageBackground>
+        />
 
         <View style={styles.searchResultBody}>
           <View style={styles.searchResultTitleRow}>
@@ -1225,6 +1349,83 @@ export default function HomeScreen() {
     }
   }, [isResultsOverlayMounted, isResultsOverlayVisible, searchResults, shouldReopenSearch]);
 
+  const authRequirementMessage = useMemo(() => {
+    switch (authPurpose) {
+      case 'like':
+        return 'Connectez-vous pour aimer cette annonce.';
+      case 'comment_like':
+        return 'Connectez-vous pour aimer ce commentaire.';
+      case 'comment':
+      default:
+        return 'Connectez-vous pour publier un commentaire.';
+    }
+  }, [authPurpose]);
+
+  const ensureAuthenticated = useCallback(
+    (purpose: AuthPurpose, action: () => void) => {
+      if (supabaseProfileRef.current?.id) {
+        action();
+        return;
+      }
+
+      pendingActionRef.current = action;
+      setAuthPurpose(purpose);
+
+      if (purpose === 'like' || purpose === 'comment' || purpose === 'comment_like') {
+        pendingListingIdRef.current = activeListingId || null;
+        preserveFeedForAuthFlow();
+      }
+
+      if (purpose !== 'like') {
+        setIsCommentsVisible(false);
+      }
+
+      setShowAuthModal(true);
+    },
+    [activeListingId, preserveFeedForAuthFlow],
+  );
+
+  useEffect(() => {
+    if (!supabaseProfileRef.current?.id || !pendingActionRef.current) {
+      if (!supabaseProfileRef.current?.id) {
+        pendingActionRef.current = null;
+      }
+      return;
+    }
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    action();
+  }, [supabaseProfile?.id]);
+
+  const requestAddComment = useCallback(
+    (text: string, replyToId?: string | null) => {
+      if (supabaseProfileRef.current?.id) {
+        return addCommentRef.current(text, replyToId);
+      }
+      ensureAuthenticated('comment', () => {
+        void addCommentRef.current(text, replyToId).catch((error) => {
+          console.error('[HomeFeed] addComment after auth error', error);
+        });
+      });
+
+      return Promise.resolve();
+    },
+    [addComment, ensureAuthenticated],
+  );
+
+  const requestToggleCommentLike = useCallback(
+    (commentId: string) => {
+      if (supabaseProfileRef.current?.id) {
+        toggleCommentLikeRef.current(commentId);
+        return;
+      }
+      ensureAuthenticated('comment_like', () => {
+        toggleCommentLikeRef.current(commentId);
+      });
+    },
+    [ensureAuthenticated],
+  );
+
   return (
     <View style={styles.screen}>
       <PagerView
@@ -1242,12 +1443,54 @@ export default function HomeScreen() {
         ))}
       </PagerView>
 
+      <AuthModal
+        visible={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onLogin={() => {
+          setShowAuthModal(false);
+          setShowLoginScreen(true);
+        }}
+        onSignUp={() => {
+          setShowAuthModal(false);
+          setShowSignUpScreen(true);
+        }}
+        message={authRequirementMessage}
+      />
+
+      <LoginWithOTPScreen
+        visible={showLoginScreen}
+        onClose={() => {
+          setShowLoginScreen(false);
+          setShowAuthModal(true);
+        }}
+        onAuthenticated={() => {
+          setShowLoginScreen(false);
+          setShowAuthModal(false);
+        }}
+        onRequestSignUp={() => {
+          setShowLoginScreen(false);
+          setShowSignUpScreen(true);
+        }}
+      />
+
+      <SignUpScreen
+        visible={showSignUpScreen}
+        onClose={() => {
+          setShowSignUpScreen(false);
+          setShowAuthModal(true);
+        }}
+        onSuccess={() => {
+          setShowSignUpScreen(false);
+          setShowAuthModal(false);
+        }}
+      />
+
       <CommentBottomSheet
         visible={isCommentsVisible}
         onClose={handleCloseComments}
         comments={comments}
         replies={replies}
-        onAddComment={(text, replyToId) => addComment(text, replyToId)}
+        onAddComment={(text, replyToId) => requestAddComment(text, replyToId)}
         onDeleteComment={(commentId) => deleteComment(commentId)}
         onLoadReplies={loadReplies}
         getRepliesForComment={getRepliesForComment}
@@ -1260,7 +1503,7 @@ export default function HomeScreen() {
         getReplyCount={getReplyCount}
         totalCommentsCount={totalCommentsCount}
         getFirstReply={getFirstReply}
-        onToggleCommentLike={toggleCommentLike}
+        onToggleCommentLike={requestToggleCommentLike}
         isCommentLiked={isCommentLiked}
         getCommentLikeCount={getCommentLikeCount}
         listingHostId={activeListingHostId}
@@ -1328,45 +1571,19 @@ export default function HomeScreen() {
               )}
             </View>
             <View pointerEvents="box-none" style={styles.headerTabsWrapper}>
-              <View style={styles.headerTabsRow} {...tabSwipeResponder.panHandlers}>
-                <View style={styles.headerTabs}>
-                  {(
-                    ['explorer', 'pourToi'] as const
-                  ).map((tab) => (
-                    <TouchableOpacity
-                      key={tab}
-                      onPress={() => handleTopTabChange(tab)}
-                      style={styles.headerTabButton}
-                      activeOpacity={0.7}
-                    >
-                      <Animated.Text
-                        style={[
-                          styles.headerTabText,
-                          tab === 'pourToi' && tab === activeTopTab
-                            ? styles.headerTabTextActiveGreen
-                            : tab === activeTopTab
-                              ? styles.headerTabTextActiveNeutral
-                              : styles.headerTabTextInactive,
-                          tab === 'explorer'
-                            ? { opacity: explorerOpacity, transform: [{ scale: explorerScale }] }
-                            : { opacity: pourToiOpacity, transform: [{ scale: pourToiScale }] },
-                        ]}
-                      >
-                        {tab === 'pourToi' ? 'Pour toi' : 'Explorer'}
-                      </Animated.Text>
-                    </TouchableOpacity>
-                  ))}
-                  <Animated.View
-                    style={[
-                      styles.headerTabUnderline,
-                      {
-                        transform: [{ translateX: underlineTranslateX }],
-                        backgroundColor: underlineColor,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
+              <TopFeedTabs
+                activeTab={activeTopTab}
+                onTabChange={handleTopTabChange}
+                underlineTranslateX={underlineTranslateX}
+                underlineColor={underlineColor}
+                explorerStyle={{ opacity: explorerOpacity, transform: [{ scale: explorerScale }] }}
+                pourToiStyle={{ opacity: pourToiOpacity, transform: [{ scale: pourToiScale }] }}
+                inactiveTextStyle={styles.headerTabTextInactive}
+                activeTextStyles={{ explorer: styles.headerTabTextActiveNeutral, pourToi: styles.headerTabTextActiveGreen }}
+                underlineStyle={styles.headerTabUnderline}
+                containerStyle={styles.headerTabsCenter}
+                panHandlers={tabSwipeResponder.panHandlers}
+              />
               <TouchableOpacity style={styles.searchButton} onPress={handleOpenSearch} activeOpacity={0.8}>
                 <View style={styles.searchCircle}>
                   <Image

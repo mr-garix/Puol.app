@@ -58,6 +58,8 @@ import { hasUserLikedListing, toggleListingLike } from '@/src/features/likes/ser
 import { useFollowState } from '@/src/features/follows/hooks/useFollowState';
 import { recordListingShare, resolveShareChannel } from '@/src/features/listings/services/shareService';
 import { useListingReviews } from '@/src/features/reviews/hooks/useListingReviews';
+import { ensureListingConversation } from '@/src/features/messaging/services';
+import { addViewedListing } from '@/src/features/listings/viewHistoryStorage';
 import { firebaseAuth } from '@/src/firebaseClient';
 import { syncSupabaseSession } from '@/src/features/auth/supabaseSession';
 import { supabase } from '@/src/supabaseClient';
@@ -70,7 +72,7 @@ const VERIFIED_BADGE_ICON = require('@/assets/icons/feed-icon-verified.png');
 const VISIT_PRICE_FCFA = 5000;
 const PROFILE_TAB_ROUTE: Href = '/';
 const VISITS_ROUTE: Href = '/visits';
-type AuthPurpose = 'visit' | 'reservation' | 'chat' | 'follow' | 'like' | 'review';
+type AuthPurpose = 'visit' | 'reservation' | 'chat' | 'follow' | 'like' | 'review' | 'comment';
 const FEATURE_PREVIEW_COUNT = 9;
 const REVIEW_FORM_RADIUS = 28;
 const REVIEW_FORM_IDLE_OFFSET = 40;
@@ -509,6 +511,7 @@ const PropertyProfileScreen = () => {
   const isAuthenticated = isLoggedIn;
   const wasLoggedInRef = useRef(isLoggedIn);
   const supabaseProfileRef = useRef(supabaseProfile);
+  const lastViewedListingIdRef = useRef<string | null>(null);
 
   const {
     data: listingData,
@@ -965,6 +968,50 @@ const PropertyProfileScreen = () => {
     }
   }, [propertyId, supabaseProfile?.id]);
 
+  useEffect(() => {
+    if (!propertyId || !property) {
+      return;
+    }
+
+    if (lastViewedListingIdRef.current === propertyId) {
+      return;
+    }
+    lastViewedListingIdRef.current = propertyId;
+
+    const locationParts = [property.location?.neighborhood, property.location?.city]
+      .map((part) => part?.trim())
+      .filter(Boolean) as string[];
+    const locationLabel =
+      locationParts.length > 0
+        ? locationParts.join(', ')
+        : property.location?.address?.trim() || 'Localisation PUOL';
+
+    const resolveCoverUrl = (...urls: Array<string | null | undefined>) => {
+      for (const url of urls) {
+        if (typeof url === 'string') {
+          const trimmed = url.trim();
+          if (trimmed.length > 0) {
+            return trimmed;
+          }
+        }
+      }
+      return null;
+    };
+
+    const coverPhotoUrl = resolveCoverUrl(
+      listingData?.listing?.cover_photo_url,
+      property.images?.[0],
+      listingData?.mainMediaUrl,
+    );
+
+    void addViewedListing({
+      listingId: propertyId,
+      title: property.title,
+      location: locationLabel,
+      coverPhotoUrl,
+    });
+  }, [listingData, property, propertyId]);
+
   // Hooks qui doivent être avant tout retour anticipé
   const applyStatDelta = useCallback(
     (field: 'views' | 'likes', delta: number) => {
@@ -1202,15 +1249,39 @@ const PropertyProfileScreen = () => {
     }
   }, []);
 
-  const ensureAuthenticated = (purpose: AuthPurpose, action: () => void) => {
-    if (isAuthenticated) {
-      action();
-    } else {
+  const authRequirementMessage = useMemo(() => {
+    switch (authPurpose) {
+      case 'follow':
+        return `Connectez-vous pour suivre ${isFurnished ? 'cet hôte' : 'ce bailleur'}.`;
+      case 'reservation':
+        return 'Connectez-vous pour réserver ce logement.';
+      case 'visit':
+        return 'Connectez-vous pour programmer une visite.';
+      case 'chat':
+        return 'Connectez-vous pour envoyer un message.';
+      case 'like':
+        return 'Connectez-vous pour aimer cette annonce.';
+      case 'review':
+        return 'Connectez-vous pour laisser un avis.';
+      case 'comment':
+      default:
+        return 'Connectez-vous pour commenter.';
+    }
+  }, [authPurpose, isFurnished]);
+
+  const ensureAuthenticated = useCallback(
+    (purpose: AuthPurpose, action: () => void) => {
+      if (supabaseProfileRef.current?.id) {
+        action();
+        return;
+      }
+
       pendingActionRef.current = action;
       setAuthPurpose(purpose);
       setShowAuthModal(true);
-    }
-  };
+    },
+    [],
+  );
 
   const openReservationModal = () => setShowReservationModal(true);
   const startVisitFlow = () => {
@@ -1218,7 +1289,7 @@ const PropertyProfileScreen = () => {
       setShowVisitScheduleModal(true);
       return;
     }
-    setVisitDetails((prev) => ({
+    setVisitDetails((prev: { date: Date | null; time: string }) => ({
       date: prev.date ?? new Date(),
       time: prev.time || '',
     }));
@@ -1234,8 +1305,37 @@ const PropertyProfileScreen = () => {
   const handleReservationRequest = () => {
     ensureAuthenticated('reservation', openReservationModal);
   };
-  const startChatFlow = () => setShowChatbot(true);
-  const handleMessageRequest = () => ensureAuthenticated('chat', startChatFlow);
+  const startChatFlow = useCallback(async () => {
+    const currentUserId = supabaseProfileRef.current?.id ?? null;
+    const propertyIdSafe = property?.id ?? null;
+
+    if (!currentUserId) {
+      setAuthPurpose('chat');
+      setShowAuthModal(true);
+      return;
+    }
+
+    if (!propertyIdSafe || !listingOwnerId || currentUserId === listingOwnerId) {
+      return;
+    }
+
+    try {
+      const conversation = await ensureListingConversation({
+        listingId: propertyIdSafe,
+        guestProfileId: currentUserId,
+        hostProfileId: listingOwnerId,
+      });
+      router.push(`/messages/${conversation.id}` as never);
+    } catch (error) {
+      console.error('[PropertyScreen] Unable to open conversation', error);
+      Alert.alert(
+        'Messagerie indisponible',
+        "Impossible d'ouvrir la discussion pour le moment. Veuillez réessayer ultérieurement.",
+      );
+    }
+  }, [listingOwnerId, property, router]);
+
+  const handleMessageRequest = () => ensureAuthenticated('chat', () => void startChatFlow());
 
   const handleFollowToggle = () =>
     ensureAuthenticated('follow', () => {
@@ -1788,7 +1888,9 @@ const PropertyProfileScreen = () => {
               <TouchableOpacity
                 style={[styles.followButton, followState.isFollowing && styles.followButtonActive]}
                 onPress={handleFollowToggle}
-                disabled={followState.isProcessing || !followState.isReady}
+                disabled={
+                  followState.isProcessing || (!followState.isReady && Boolean(supabaseProfile?.id))
+                }
               >
                 <Text style={[styles.followButtonText, followState.isFollowing && styles.followButtonTextActive]}>
                   {followState.isProcessing ? '...' : followState.isFollowing ? 'Suivi(e)' : 'Suivre'}
@@ -2065,6 +2167,20 @@ const PropertyProfileScreen = () => {
         onSuccess={handleSignUpSuccess}
       />
 
+      <AuthModal
+        visible={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onLogin={() => {
+          setShowAuthModal(false);
+          setShowLoginScreen(true);
+        }}
+        onSignUp={() => {
+          setShowAuthModal(false);
+          setShowSignUpScreen(true);
+        }}
+        message={authRequirementMessage}
+      />
+
       <ReservationModal
         visible={showReservationModal}
         onClose={() => setShowReservationModal(false)}
@@ -2138,11 +2254,7 @@ const PropertyProfileScreen = () => {
         message={visitSuccessCopy.message}
       />
 
-      <ChatbotPopup
-        visible={showChatbot}
-        onClose={() => setShowChatbot(false)}
-        propertyTitle={property.title}
-      />
+      <ChatbotPopup visible={false} onClose={() => null} propertyTitle={property.title} />
 
       <Modal visible={isHostAvatarVisible} transparent animationType="fade" onRequestClose={handleCloseHostAvatar}>
         <TouchableOpacity style={styles.avatarOverlay} activeOpacity={1} onPress={handleCloseHostAvatar}>
@@ -3172,9 +3284,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   secondaryButton: {
+    flex: 1,
     backgroundColor: '#FFFFFF',
-    borderRadius: 999,
-    paddingVertical: 16,
+    borderRadius: 24,
+    paddingVertical: 14,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#D1D5DB',
@@ -3184,8 +3297,9 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     fontFamily: 'Manrope',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.15,
     color: '#111827',
   },
   secondaryButtonTextDisabled: {
@@ -3260,13 +3374,16 @@ const styles = StyleSheet.create({
   primaryButton: {
     flex: 1,
     backgroundColor: '#2ECC71',
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderRadius: 24,
     alignItems: 'center',
   },
   primaryButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.15,
     color: '#FFFFFF',
-    fontWeight: '600',
   },
   bottomBarSecondaryButton: {
     flex: 1,

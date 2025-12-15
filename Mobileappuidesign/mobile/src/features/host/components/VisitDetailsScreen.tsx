@@ -29,10 +29,17 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [isAvatarVisible, setIsAvatarVisible] = useState(false);
-  const guestProfile = useMemo(() => visit.guest, [visit.guest]);
-  const buyerAvatar = guestProfile?.avatarUrl ?? 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80';
-  const buyerName = guestProfile?.name ?? guestProfile?.username ?? 'Visiteur inconnu';
-  const buyerPhone = guestProfile?.phone ?? 'Téléphone indisponible';
+  const hostProfile = useMemo(() => visit.host ?? null, [visit.host]);
+  const guestProfile = useMemo(() => visit.guest ?? null, [visit.guest]);
+  const primaryProfile = useMemo(() => hostProfile ?? guestProfile, [hostProfile, guestProfile]);
+  const isHostProfile = Boolean(hostProfile);
+  const profileLabel = isHostProfile ? 'Hôte' : 'Visiteur';
+  const profileAvatar = primaryProfile?.avatarUrl ?? 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80';
+  const profileName =
+    primaryProfile?.name ??
+    primaryProfile?.username ??
+    (isHostProfile ? 'Hôte PUOL' : 'Visiteur inconnu');
+  const profilePhone = primaryProfile?.phone ?? 'Téléphone indisponible';
 
   const visitDate = useMemo(() => new Date(visit.visitDate), [visit.visitDate]);
   const isCancelled = visit.status === 'cancelled';
@@ -63,18 +70,18 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${address}`);
   };
 
-  const handleCallBuyer = () => {
-    if (!guestProfile?.phone) {
+  const handleCallProfile = () => {
+    if (!primaryProfile?.phone) {
       return;
     }
-    Linking.openURL(`tel:${guestProfile.phone.replace(/\s+/g, '')}`);
+    Linking.openURL(`tel:${primaryProfile.phone.replace(/\s+/g, '')}`);
   };
 
-  const handleViewGuestProfile = () => {
-    if (!guestProfile?.id) {
+  const handleViewProfile = () => {
+    if (!primaryProfile?.id) {
       return;
     }
-    router.push({ pathname: '/profile/[profileId]', params: { profileId: guestProfile.id } });
+    router.push({ pathname: '/profile/[profileId]', params: { profileId: primaryProfile.id } });
   };
 
    const handleViewListing = () => {
@@ -134,13 +141,13 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
 
           <View style={styles.buyerCard}>
             <TouchableOpacity onPress={() => setIsAvatarVisible(true)} activeOpacity={0.9}>
-              <Image source={{ uri: buyerAvatar }} style={styles.buyerAvatar} />
+              <Image source={{ uri: profileAvatar }} style={styles.buyerAvatar} />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.buyerLabel}>Visiteur</Text>
+              <Text style={styles.buyerLabel}>{profileLabel}</Text>
               <View style={styles.buyerNameRow}>
-                <TouchableOpacity onPress={handleViewGuestProfile} activeOpacity={0.85} disabled={!guestProfile?.id}>
-                  <Text style={styles.buyerName}>{buyerName}</Text>
+                <TouchableOpacity onPress={handleViewProfile} activeOpacity={0.85} disabled={!primaryProfile?.id}>
+                  <Text style={styles.buyerName}>{profileName}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.buyerAnnouncementButton}
@@ -152,13 +159,13 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
-                style={[styles.buyerPhoneRow, !guestProfile?.phone && styles.disabledPhoneRow]}
-                onPress={handleCallBuyer}
-                activeOpacity={guestProfile?.phone ? 0.85 : 1}
-                disabled={!guestProfile?.phone}
+                style={[styles.buyerPhoneRow, !primaryProfile?.phone && styles.disabledPhoneRow]}
+                onPress={handleCallProfile}
+                activeOpacity={primaryProfile?.phone ? 0.85 : 1}
+                disabled={!primaryProfile?.phone}
               >
-                <Feather name="phone" size={16} color={guestProfile?.phone ? '#2ECC71' : '#9CA3AF'} />
-                <Text style={[styles.buyerPhone, !guestProfile?.phone && styles.disabledPhoneText]}>{buyerPhone}</Text>
+                <Feather name="phone" size={16} color={primaryProfile?.phone ? '#2ECC71' : '#9CA3AF'} />
+                <Text style={[styles.buyerPhone, !primaryProfile?.phone && styles.disabledPhoneText]}>{profilePhone}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -258,7 +265,7 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
           <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsAvatarVisible(false)} activeOpacity={0.8}>
             <Feather name="x" size={20} color="#FFFFFF" />
           </TouchableOpacity>
-          <Image source={{ uri: buyerAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
+          <Image source={{ uri: profileAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
         </View>
       </Modal>
     </View>

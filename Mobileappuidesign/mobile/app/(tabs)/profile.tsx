@@ -1,7 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Image, InteractionManager } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Modal,
+  Image,
+  InteractionManager,
+  FlatList,
+  Dimensions,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Feather } from '@expo/vector-icons';
 
 import { ProfileScreen } from '@/src/features/auth/components/ProfileScreen';
 import { AuthModal } from '@/src/features/auth/components/AuthModal';
@@ -22,6 +34,29 @@ import {
   type ProfileFollowListItem,
 } from '@/src/features/follows/services';
 import { supabase } from '@/src/supabaseClient';
+import { getViewedListings, type ViewedListing } from '@/src/features/listings/viewHistoryStorage';
+
+type LikedListing = {
+  id: string;
+  listingId: string;
+  title: string | null;
+  city: string | null;
+  district: string | null;
+  coverPhotoUrl: string | null;
+  likedAt: string | null;
+};
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CARD_GAP = 10;
+const MODAL_MAX_WIDTH = 420;
+const MODAL_CONTENT_PADDING = 20;
+const MODAL_SIDE_PADDING = 24;
+const effectiveHistoryWidth = Math.max(
+  Math.min(SCREEN_WIDTH, MODAL_MAX_WIDTH) - 2 * (MODAL_CONTENT_PADDING + MODAL_SIDE_PADDING),
+  220,
+);
+const CARD_WIDTH = (effectiveHistoryWidth - CARD_GAP) / 2;
+const HISTORY_CARD_ASPECT_RATIO = 4 / 3;
 
 const buildFallbackAvatar = (firstName: string, lastName: string) => {
   const fullName = `${firstName} ${lastName}`.trim() || 'PUOL User';
@@ -50,9 +85,16 @@ export default function ProfileTabScreen() {
   const [followList, setFollowList] = useState<ProfileFollowListItem[]>([]);
   const [isFollowListLoading, setIsFollowListLoading] = useState(false);
   const [friendIds, setFriendIds] = useState<Set<string>>(new Set());
+  const [viewerFollowerIds, setViewerFollowerIds] = useState<Set<string>>(new Set());
+  const [viewerFollowingIds, setViewerFollowingIds] = useState<Set<string>>(new Set());
   const [followActionLoadingId, setFollowActionLoadingId] = useState<string | null>(null);
   const [unfollowActionLoadingId, setUnfollowActionLoadingId] = useState<string | null>(null);
   const { totalCount: userReviewsCount } = useUserReviews(supabaseProfile?.id ?? null);
+  const [viewedListings, setViewedListings] = useState<ViewedListing[]>([]);
+  const [likedListings, setLikedListings] = useState<LikedListing[]>([]);
+  const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
+  const [isLikesModalVisible, setIsLikesModalVisible] = useState(false);
+  const [isLikesLoading, setIsLikesLoading] = useState(false);
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -157,16 +199,18 @@ export default function ProfileTabScreen() {
     const stats = profile?.stats;
     const baseFollowers = stats?.followers ?? 0;
     const baseFollowing = stats?.following ?? 0;
+    const viewedListingsCount = viewedListings.length;
+    const likedListingsCount = likedListings.length;
 
     return {
       listings: stats?.listings ?? 0,
       followers: dynamicFollowersCount ?? baseFollowers,
       following: dynamicFollowingCount ?? baseFollowing,
-      views: stats?.views ?? 0,
-      likes: stats?.likes ?? 0,
+      views: viewedListingsCount,
+      likes: likedListingsCount,
       comments: commentsCount,
     };
-  }, [commentsCount, dynamicFollowersCount, dynamicFollowingCount, profile?.stats]);
+  }, [commentsCount, dynamicFollowersCount, dynamicFollowingCount, likedListings.length, profile?.stats, viewedListings.length]);
 
   const friendStorageKey = useMemo(
     () => (currentProfileId ? `puol:friends:${currentProfileId}` : null),
@@ -256,21 +300,46 @@ export default function ProfileTabScreen() {
       followingSnapshot?: ProfileFollowListItem[];
     } = {}) => {
       if (!currentProfileId) {
-        setFriendIds(new Set());
+        setViewerFollowerIds(new Set());
+        setViewerFollowingIds(new Set());
+        setFriendIds(() => {
+          const next = new Set<string>();
+          void persistFriendIds(next);
+          return next;
+        });
         return;
       }
-
       try {
-        const followersList = followersSnapshot ?? (await getFollowersList(currentProfileId));
-        const followingList = followingSnapshot ?? (await getFollowingList(currentProfileId));
+        const [followers, following] = await Promise.all([
+          followersSnapshot ? Promise.resolve(followersSnapshot) : getFollowersList(currentProfileId),
+          followingSnapshot ? Promise.resolve(followingSnapshot) : getFollowingList(currentProfileId),
+        ]);
 
-        const followerIdSet = new Set(followersList.map((item) => item.id));
-        const mutualIds = followingList.filter((item) => followerIdSet.has(item.id)).map((item) => item.id);
-        const next = new Set(mutualIds);
-        setFriendIds(next);
-        await persistFriendIds(next);
+        const followerSet = new Set(followers.map((item) => item.id));
+        const followingSet = new Set(following.map((item) => item.id));
+
+        setViewerFollowerIds(followerSet);
+        setViewerFollowingIds(followingSet);
+
+        setFriendIds(() => {
+          const next = new Set<string>();
+          followerSet.forEach((id) => {
+            if (followingSet.has(id)) {
+              next.add(id);
+            }
+          });
+          void persistFriendIds(next);
+          return next;
+        });
       } catch (error) {
         console.error('[ProfileTab] Unable to recompute friendships', error);
+        setViewerFollowerIds(new Set());
+        setViewerFollowingIds(new Set());
+        setFriendIds(() => {
+          const next = new Set<string>();
+          void persistFriendIds(next);
+          return next;
+        });
       }
     },
     [currentProfileId, persistFriendIds],
@@ -316,6 +385,81 @@ export default function ProfileTabScreen() {
     setFollowModalType(null);
     setFollowList([]);
   }, []);
+
+  const loadViewedListings = useCallback(async () => {
+    const items = await getViewedListings();
+    setViewedListings(items);
+  }, []);
+
+  const loadLikedListings = useCallback(async () => {
+    if (!currentProfileId) {
+      setLikedListings([]);
+      return;
+    }
+    setIsLikesLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('listing_likes')
+        .select(
+          `
+            id,
+            created_at,
+            listing_id,
+            listing:listings!inner(
+              id,
+              title,
+              city,
+              district,
+              cover_photo_url
+            )
+          `,
+        )
+        .eq('profile_id', currentProfileId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        throw error;
+      }
+
+      const mapped = (data ?? []).map((row: any) => {
+        const listingRecord = Array.isArray(row.listing) ? row.listing[0] : row.listing;
+        const listingId = listingRecord?.id ?? row.listing_id ?? '';
+        return {
+          id: row.id?.toString() ?? `${listingId}-${row.created_at}`,
+          listingId: listingId?.toString?.() ?? `${listingId}`,
+          title: listingRecord?.title ?? 'Annonce PUOL',
+          city: listingRecord?.city ?? null,
+          district: listingRecord?.district ?? null,
+          coverPhotoUrl: listingRecord?.cover_photo_url ?? null,
+          likedAt: row.created_at ?? null,
+        } satisfies LikedListing;
+      });
+
+      setLikedListings(mapped);
+    } catch (error) {
+      console.error('[ProfileTab] Unable to load liked listings', error);
+      setLikedListings([]);
+    } finally {
+      setIsLikesLoading(false);
+    }
+  }, [currentProfileId]);
+
+  const handleOpenHistory = useCallback(() => {
+    void loadViewedListings();
+    setIsHistoryModalVisible(true);
+  }, [loadViewedListings]);
+
+  const handleOpenLikes = useCallback(() => {
+    void loadLikedListings();
+    setIsLikesModalVisible(true);
+  }, [loadLikedListings]);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      void loadViewedListings();
+      void loadLikedListings();
+    }
+  }, [isLoggedIn, loadLikedListings, loadViewedListings]);
 
   const handleFollowListProfilePress = useCallback(
     (targetProfileId: string) => {
@@ -507,9 +651,10 @@ export default function ProfileTabScreen() {
         onLogout={handleLogout}
         onProfileImagePress={() => setIsAvatarVisible(true)}
         onCommentsPress={() => router.push('/comments' as never)}
-        onLikesPress={() => router.push('/likes' as never)}
+        onLikesPress={handleOpenLikes}
         onFollowersPress={() => handleOpenFollowModal('followers')}
         onFollowingPress={() => handleOpenFollowModal('following')}
+        onViewsPress={handleOpenHistory}
         hostDashboardStatus={hostDashboardStatus}
         hostStatusMessage={hostStatusMessage}
         onHostDashboardPress={() => router.push('/host-dashboard' as never)}
@@ -554,8 +699,139 @@ export default function ProfileTabScreen() {
           unfollowActionLoadingId={unfollowActionLoadingId}
           viewerId={currentProfileId}
           onProfilePress={handleFollowListProfilePress}
+          viewerFollowerIds={viewerFollowerIds}
+          viewerFollowingIds={viewerFollowingIds}
+          ownerView
         />
       )}
+
+      <Modal
+        visible={isHistoryModalVisible}
+        onRequestClose={() => setIsHistoryModalVisible(false)}
+        animationType="slide"
+        transparent
+      >
+        <View style={styles.historyModalBackdrop}>
+          <View style={styles.historyModalContent}>
+            <View style={styles.historyModalHeader}>
+              <Text style={styles.historyModalTitle}>Annonces consultées</Text>
+              <TouchableOpacity onPress={() => setIsHistoryModalVisible(false)} activeOpacity={0.75}>
+                <Feather name="x" size={20} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            {viewedListings.length === 0 ? (
+              <View style={styles.historyEmptyState}>
+                <Feather name="eye-off" size={24} color="#9CA3AF" />
+                <Text style={styles.historyEmptyTitle}>Aucune annonce consultée pour le moment</Text>
+                <Text style={styles.historyEmptySubtitle}>Visitez quelques biens pour les retrouver ici.</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={viewedListings}
+                keyExtractor={(item) => item.listingId}
+                numColumns={2}
+                columnWrapperStyle={{ gap: CARD_GAP, justifyContent: 'center' }}
+                contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16, gap: CARD_GAP, alignItems: 'center' }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.historyCard}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setIsHistoryModalVisible(false);
+                      router.push(`/property/${item.listingId}` as never);
+                    }}
+                  >
+                    <View style={styles.historyCardImageWrapper}>
+                      {item.coverPhotoUrl ? (
+                        <Image source={{ uri: item.coverPhotoUrl }} style={styles.historyCardImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.historyCardPlaceholder}>
+                          <Feather name="image" size={20} color="#9CA3AF" />
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.historyCardBody}>
+                      <Text style={styles.historyCardTitle} numberOfLines={2}>
+                        {item.title}
+                      </Text>
+                      <Text style={styles.historyCardSubtitle} numberOfLines={1}>
+                        {item.location}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={isLikesModalVisible}
+        onRequestClose={() => setIsLikesModalVisible(false)}
+        animationType="slide"
+        transparent
+      >
+        <View style={styles.historyModalBackdrop}>
+          <View style={styles.historyModalContent}>
+            <View style={styles.historyModalHeader}>
+              <Text style={styles.historyModalTitle}>Annonces likées</Text>
+              <TouchableOpacity onPress={() => setIsLikesModalVisible(false)} activeOpacity={0.75}>
+                <Feather name="x" size={20} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            {isLikesLoading ? (
+              <View style={styles.historyEmptyState}>
+                <ActivityIndicator size="small" color="#2ECC71" />
+                <Text style={styles.historyEmptyTitle}>Chargement des favoris…</Text>
+              </View>
+            ) : likedListings.length === 0 ? (
+              <View style={styles.historyEmptyState}>
+                <Feather name="heart" size={24} color="#9CA3AF" />
+                <Text style={styles.historyEmptyTitle}>Aucun favori enregistré</Text>
+                <Text style={styles.historyEmptySubtitle}>Likez des annonces pour les retrouver ici.</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={likedListings}
+                keyExtractor={(item) => item.id}
+                numColumns={2}
+                columnWrapperStyle={{ gap: CARD_GAP, justifyContent: 'center' }}
+                contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16, gap: CARD_GAP, alignItems: 'center' }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.historyCard}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setIsLikesModalVisible(false);
+                      router.push(`/property/${item.listingId}` as never);
+                    }}
+                  >
+                    <View style={styles.historyCardImageWrapper}>
+                      {item.coverPhotoUrl ? (
+                        <Image source={{ uri: item.coverPhotoUrl }} style={styles.historyCardImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.historyCardPlaceholder}>
+                          <Feather name="image" size={20} color="#9CA3AF" />
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.historyCardBody}>
+                      <Text style={styles.historyCardTitle} numberOfLines={2}>
+                        {item.title ?? 'Annonce PUOL'}
+                      </Text>
+                      <Text style={styles.historyCardSubtitle} numberOfLines={1}>
+                        {[item.district, item.city].filter(Boolean).join(', ') || 'Localisation PUOL'}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
+
     </>
   );
 }
@@ -643,5 +919,90 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  historyModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  historyModalContent: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '80%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: 20,
+    gap: 18,
+  },
+  historyModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  historyModalTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  historyEmptyState: {
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 40,
+  },
+  historyEmptyTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    textAlign: 'center',
+  },
+  historyEmptySubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  historyCard: {
+    width: CARD_WIDTH,
+    borderRadius: 18,
+    backgroundColor: '#F9FAFB',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  historyCardImageWrapper: {
+    width: '100%',
+    aspectRatio: HISTORY_CARD_ASPECT_RATIO,
+    backgroundColor: 'transparent',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    overflow: 'hidden',
+  },
+  historyCardImage: {
+    width: '100%',
+    height: '100%',
+  },
+  historyCardPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  historyCardBody: {
+    padding: 10,
+    gap: 4,
+  },
+  historyCardTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  historyCardSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: '#6B7280',
   },
 });

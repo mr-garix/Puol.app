@@ -385,13 +385,13 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   confirmButton: {
-    backgroundColor: '#111827',
+    backgroundColor: '#2ECC71',
     borderRadius: 28,
     paddingVertical: 16,
     alignItems: 'center',
   },
   confirmButtonDisabled: {
-    backgroundColor: '#9CA3AF',
+    backgroundColor: '#A7F3D0',
   },
   confirmButtonText: {
     fontFamily: 'Manrope',

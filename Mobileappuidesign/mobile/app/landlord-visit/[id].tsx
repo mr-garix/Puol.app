@@ -15,7 +15,7 @@ import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useLandlordVisits } from '@/src/features/rental-visits/hooks';
+import { useHostVisits } from '@/src/features/host/hooks/useHostVisits';
 import { PUOL_COLORS } from '@/src/constants/theme';
 
 const COLORS = {
@@ -73,7 +73,7 @@ export default function LandlordVisitDetailsScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const insets = useSafeAreaInsets();
-  const { getVisitById, fetchVisit, isLoading } = useLandlordVisits();
+  const { getVisitById, fetchVisit, isLoading } = useHostVisits();
   const [isFetching, setIsFetching] = useState(false);
 
   const visit = id ? getVisitById(id) : undefined;

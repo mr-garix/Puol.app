@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -77,6 +78,7 @@ interface FeedContextValue {
   listingsError: string | null;
   refreshListings: () => Promise<void>;
   updateListingCommentCount: (listingId: string, count: number) => void;
+  preserveFeedForAuthFlow: () => void;
 }
 
 type ListingRow = Tables<'listings'>;
@@ -361,8 +363,23 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
   const [listingsError, setListingsError] = useState<string | null>(null);
 
   const { supabaseProfile } = useAuth();
+  const propertyListingsRef = React.useRef<PropertyListing[]>([]);
+  const skipNextRefreshRef = React.useRef(false);
+
+  useEffect(() => {
+    propertyListingsRef.current = propertyListings;
+  }, [propertyListings]);
+
+  const preserveFeedForAuthFlow = useCallback(() => {
+    skipNextRefreshRef.current = true;
+  }, []);
 
   const fetchListings = useCallback(async () => {
+    if (skipNextRefreshRef.current && propertyListingsRef.current.length > 0) {
+      skipNextRefreshRef.current = false;
+      return;
+    }
+
     setIsLoadingListings(true);
     setListingsError(null);
     try {
@@ -682,8 +699,9 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       listingsError,
       refreshListings: fetchListings,
       updateListingCommentCount,
+      preserveFeedForAuthFlow,
     }),
-    [favoriteProperties, fetchListings, isLoadingListings, likedPropertyIds, likesById, listingsError, propertyListings, toggleLike, updateListingCommentCount],
+    [favoriteProperties, fetchListings, isLoadingListings, likedPropertyIds, likesById, listingsError, propertyListings, toggleLike, updateListingCommentCount, preserveFeedForAuthFlow],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;

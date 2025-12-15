@@ -23,10 +23,70 @@ const PROPERTY_TYPE_LABELS = {
 type PropertyType = keyof typeof PROPERTY_TYPE_LABELS;
 
 const normalizePropertyType = (value?: string | null): PropertyType => {
-  const key = (value ?? '').trim().toLowerCase() as PropertyType;
-  if (key && key in PROPERTY_TYPE_LABELS) {
-    return key;
+  const sanitize = (input?: string | null) =>
+    (input ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9]/g, '');
+
+  const normalized = sanitize(value);
+  if (!normalized) {
+    return 'apartment';
   }
+
+  const TYPE_VARIANTS: Record<string, PropertyType> = {
+    apartment: 'apartment',
+    appart: 'apartment',
+    appartement: 'apartment',
+    appartements: 'apartment',
+    appartmeuble: 'apartment',
+    appartnonmeuble: 'apartment',
+
+    studio: 'studio',
+    studios: 'studio',
+
+    chambre: 'chambre',
+    chambres: 'chambre',
+    room: 'chambre',
+    rooms: 'chambre',
+
+    house: 'house',
+    houses: 'house',
+    maison: 'house',
+    maisons: 'house',
+    duplex: 'house',
+    triplex: 'house',
+
+    villa: 'villa',
+    villas: 'villa',
+
+    boutique: 'boutique',
+    boutiques: 'boutique',
+    magasin: 'boutique',
+    magasins: 'boutique',
+
+    bureau: 'bureau',
+    bureaux: 'bureau',
+    office: 'bureau',
+    offices: 'bureau',
+
+    terrain: 'terrain',
+    terrains: 'terrain',
+    lot: 'terrain',
+    lots: 'terrain',
+
+    espacecommercial: 'espace commercial',
+    localcommercial: 'espace commercial',
+    locauxcommerciaux: 'espace commercial',
+    commercial: 'espace commercial',
+  };
+
+  if (TYPE_VARIANTS[normalized]) {
+    return TYPE_VARIANTS[normalized];
+  }
+
   return 'apartment';
 };
 
@@ -485,6 +545,8 @@ type ListingEvaluation = {
   locationQuality: LocationMatchQuality;
   prioritizedDistrictMatch: boolean;
   hasLocationFilter: boolean;
+  matchesType: boolean;
+  matchesFurnishing: boolean;
 };
 
 const computeMatchScore = (
@@ -663,6 +725,8 @@ const evaluateListing = (
     locationQuality,
     prioritizedDistrictMatch,
     hasLocationFilter,
+    matchesType,
+    matchesFurnishing,
   };
 };
 
@@ -831,7 +895,43 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
     : { ordered: [], usedFallback: false };
 
   const combined = [...prioritizedRank.ordered, ...secondaryRank.ordered];
-  const orderedCombined = [...combined].sort(sortByScoreDesc);
+  const hasTypeFilter = Boolean(normalize(criteria.type ?? ''));
+  const hasFurnishingFilter = Boolean(criteria.furnishingType);
+  const hasLocationFilter = Boolean(normalize(criteria.location ?? ''));
+
+  const rankingComparator = (a: ListingEvaluation, b: ListingEvaluation) => {
+    const computeBucket = (evaluation: ListingEvaluation) => {
+      const typeMatch = !hasTypeFilter || evaluation.matchesType;
+      const furnishingMatch = !hasFurnishingFilter || evaluation.matchesFurnishing;
+      const locationMatch = !hasLocationFilter || evaluation.locationQuality !== 'none';
+
+      if (typeMatch && furnishingMatch && locationMatch) {
+        return 0;
+      }
+      if (typeMatch && furnishingMatch) {
+        return 1;
+      }
+      if (typeMatch && locationMatch) {
+        return 2;
+      }
+      if (typeMatch) {
+        return 3;
+      }
+      if (locationMatch) {
+        return 4;
+      }
+      return 5;
+    };
+
+    const bucketDiff = computeBucket(a) - computeBucket(b);
+    if (bucketDiff !== 0) {
+      return bucketDiff;
+    }
+
+    return sortByScoreDesc(a, b);
+  };
+
+  const orderedCombined = [...combined].sort(rankingComparator);
 
   return {
     results: orderedCombined.map(toResult),

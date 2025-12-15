@@ -18,10 +18,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNotifications } from '@/src/contexts/NotificationContext';
 import {
   type SupportThread,
+  createSupportThread,
   getSupportThreads,
   getSupportUnreadFlag,
   markSupportRepliesRead,
-  scheduleSimulatedSupportReply,
   subscribeToNewSupportReplies,
   subscribeToSupportThreads,
   subscribeToSupportUnreadFlag,
@@ -33,8 +33,6 @@ const MUTED = '#6B7280';
 const BORDER = '#E5E7EB';
 const SURFACE = '#F9FAFB';
 const ALERT = '#EF4444';
-const SIMULATED_REPLY_DELAY_MS = 10 * 1000;
-
 const SUPPORT_TOPICS = ['Devenir hôte', 'Paiement', 'Devenir bailleur', 'Problème technique', 'Autre'];
 const RESPONSE_TAGS = ['Moins de 24h', 'Support humain', 'Multicanal'];
 
@@ -55,12 +53,13 @@ export default function ContactSupportScreen() {
   const canSend = subject.trim().length > 0 && message.trim().length > 0 && !isSending;
 
   const responseSummary = useMemo(
-    () => RESPONSE_TAGS.map((tag) => (
-      <View key={tag} style={styles.responseTag}>
-        <Feather name="check" size={12} color={PRIMARY} />
-        <Text style={styles.responseTagLabel}>{tag}</Text>
-      </View>
-    )),
+    () =>
+      RESPONSE_TAGS.map((tag) => (
+        <View key={tag} style={styles.responseTag}>
+          <Feather name="check" size={12} color={PRIMARY} />
+          <Text style={styles.responseTagLabel}>{tag}</Text>
+        </View>
+      )),
     [],
   );
 
@@ -117,13 +116,23 @@ export default function ContactSupportScreen() {
     }
 
     setIsSending(true);
-    setTimeout(() => {
-      setIsSending(false);
+    try {
+      const thread = createSupportThread({ subject, message, topic: selectedTopic });
+      setThreads((prev) => [...prev, thread]);
       setSubject('');
       setMessage('');
-      Alert.alert('Message envoyé', 'Notre équipe vous répondra directement dans cette page.');
-      scheduleSimulatedSupportReply(SIMULATED_REPLY_DELAY_MS);
-    }, 900);
+      setHasNewSupportReply(false);
+      showNotification({
+        id: `support-thread-${thread.id}`,
+        title: 'Ticket créé',
+        message: 'Votre demande a été transmise au support.',
+      });
+    } catch (error) {
+      console.error('[ContactSupport] create thread failed', error);
+      Alert.alert('Envoi impossible', "Nous n'avons pas pu enregistrer votre demande. Réessayez dans un instant.");
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (

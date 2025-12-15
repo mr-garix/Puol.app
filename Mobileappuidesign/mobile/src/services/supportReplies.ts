@@ -15,62 +15,26 @@ export type SupportMessage = {
   timestamp: string;
 };
 
-const MOCK_SUPPORT_THREADS: SupportThread[] = [
-  {
-    id: 'support-1',
-    title: 'Suivi de réservation #4582',
-    lastResponse: 'Nadine (Support PUOL)',
-    excerpt: 'Nous venons de mettre à jour votre réservation...',
-    status: 'Résolu',
-    timestamp: 'Hier · 18:42',
-  },
-  {
-    id: 'support-2',
-    title: 'Bug lors du paiement',
-    lastResponse: 'Karl (Support PUOL)',
-    excerpt: 'Merci pour le signalement, le correctif est déployé.',
-    status: 'En cours',
-    timestamp: '23 nov. · 10:12',
-  },
-];
+type CreateSupportThreadInput = {
+  subject: string;
+  message: string;
+  topic?: string;
+};
 
-let supportThreads: SupportThread[] = [...MOCK_SUPPORT_THREADS];
+const formatSupportTimestamp = (date: Date): string =>
+  date.toLocaleDateString('fr-FR', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+let supportThreads: SupportThread[] = [];
 let hasUnreadReply = false;
 const threadListeners = new Set<(threads: SupportThread[]) => void>();
 const unreadListeners = new Set<(flag: boolean) => void>();
 const replyListeners = new Set<(thread: SupportThread) => void>();
-let pendingTimeout: ReturnType<typeof setTimeout> | null = null;
-
-const threadMessages: Record<string, SupportMessage[]> = {
-  'support-1': [
-    {
-      id: 'support-1-msg-1',
-      sender: 'user',
-      content: 'Bonjour, je voulais confirmer la visite de demain.',
-      timestamp: 'Hier · 09:52',
-    },
-    {
-      id: 'support-1-msg-2',
-      sender: 'support',
-      content: 'Bonjour ! Oui, la visite reste confirmée pour demain 15h.',
-      timestamp: 'Hier · 10:05',
-    },
-  ],
-  'support-2': [
-    {
-      id: 'support-2-msg-1',
-      sender: 'user',
-      content: 'Bonjour, mon paiement ne passe plus sur l’annonce Golf.',
-      timestamp: '23 nov. · 09:55',
-    },
-    {
-      id: 'support-2-msg-2',
-      sender: 'support',
-      content: 'Merci pour le signalement ! Nous vérifions et revenons vers vous.',
-      timestamp: '23 nov. · 10:12',
-    },
-  ],
-};
+const threadMessages: Record<string, SupportMessage[]> = {};
 
 const emitThreads = () => {
   const snapshot = [...supportThreads];
@@ -83,14 +47,6 @@ const emitUnread = () => {
 
 const emitReply = (thread: SupportThread) => {
   replyListeners.forEach((listener) => listener(thread));
-};
-
-const appendThread = (thread: SupportThread) => {
-  supportThreads = [...supportThreads, thread];
-  hasUnreadReply = true;
-  emitThreads();
-  emitUnread();
-  emitReply(thread);
 };
 
 export const getSupportThreads = () => [...supportThreads];
@@ -134,43 +90,62 @@ export const getSupportThreadMessages = (threadId: string): SupportMessage[] =>
 export const appendSupportThreadMessage = (threadId: string, message: SupportMessage) => {
   const existing = threadMessages[threadId] ?? [];
   threadMessages[threadId] = [...existing, message];
+  supportThreads = supportThreads.map((thread) => {
+    if (thread.id !== threadId) {
+      return thread;
+    }
+
+    const isSupportReply = message.sender === 'support';
+    return {
+      ...thread,
+      lastResponse: isSupportReply ? 'Support PUOL' : 'Vous',
+      excerpt: message.content,
+      timestamp: message.timestamp,
+      isNew: isSupportReply ? true : thread.isNew,
+    };
+  });
+
+  emitThreads();
+
+  if (message.sender === 'support') {
+    hasUnreadReply = true;
+    emitUnread();
+    const updated = supportThreads.find((thread) => thread.id === threadId);
+    if (updated) {
+      emitReply(updated);
+    }
+  }
 };
 
-const generateSimulatedThread = (): SupportThread => ({
-  id: `support-${Date.now()}`,
-  title: `Réponse PUOL • Ticket #${Math.floor(Math.random() * 9000 + 1000)}`,
-  lastResponse: 'Support PUOL',
-  excerpt: "Bonjour, nous avons bien reçu votre demande et venons de la traiter. N’hésitez pas à répondre.",
-  status: 'En cours',
-  timestamp: new Date().toLocaleTimeString('fr-FR', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }),
-  isNew: true,
-});
+export const createSupportThread = ({ subject, message, topic }: CreateSupportThreadInput): SupportThread => {
+  const now = new Date();
+  const timestamp = formatSupportTimestamp(now);
+  const id = `support-${now.getTime()}`;
 
-export const scheduleSimulatedSupportReply = (delayMs: number) => {
-  if (pendingTimeout) {
-    clearTimeout(pendingTimeout);
-  }
+  const normalizedSubject = subject.trim() || 'Demande support';
+  const normalizedMessage = message.trim();
 
-  pendingTimeout = setTimeout(() => {
-    const thread = generateSimulatedThread();
-    appendThread(thread);
-    threadMessages[thread.id] = [
-      {
-        id: `${thread.id}-msg-1`,
-        sender: 'user',
-        content: 'Bonjour, je souhaite obtenir une mise à jour sur mon ticket.',
-        timestamp: thread.timestamp,
-      },
-      {
-        id: `${thread.id}-msg-2`,
-        sender: 'support',
-        content: "Merci pour votre patience, nous venons d'apporter la correction demandée.",
-        timestamp: thread.timestamp,
-      },
-    ];
-    pendingTimeout = null;
-  }, delayMs);
+  const thread: SupportThread = {
+    id,
+    title: normalizedSubject,
+    lastResponse: 'Vous',
+    excerpt: normalizedMessage || 'Nouveau ticket support',
+    status: 'Ouvert',
+    timestamp,
+    isNew: false,
+  };
+
+  supportThreads = [...supportThreads, thread];
+  threadMessages[id] = [
+    {
+      id: `${id}-msg-${now.getTime()}`,
+      sender: 'user',
+      content: normalizedMessage,
+      timestamp,
+    },
+  ];
+
+  emitThreads();
+
+  return thread;
 };

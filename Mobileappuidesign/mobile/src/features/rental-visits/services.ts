@@ -127,15 +127,15 @@ export interface LandlordRentalVisit extends GuestRentalVisit {
   } | null;
 }
 
-const mapGuestName = (guest: ProfileSnippet | null | undefined): string | undefined => {
-  if (!guest) {
+const mapProfileName = (profile: ProfileSnippet | null | undefined): string | undefined => {
+  if (!profile) {
     return undefined;
   }
-  const tokens = [guest.first_name, guest.last_name].filter((token) => token && token.trim());
+  const tokens = [profile.first_name, profile.last_name].filter((token) => token && token.trim());
   if (tokens.length) {
     return tokens.join(' ').trim();
   }
-  return guest.username ? `@${guest.username}` : undefined;
+  return profile.username ? `@${profile.username}` : undefined;
 };
 
 const unwrapSingle = <T>(value: T | T[] | null | undefined): T | null => {
@@ -167,7 +167,7 @@ const mapToGuestVisit = (row: SupabaseRentalVisitRow): GuestRentalVisit => {
     guest: guestProfile
       ? {
           id: guestProfile.id,
-          name: mapGuestName(guestProfile),
+          name: mapProfileName(guestProfile),
           username: guestProfile.username ?? null,
           phone: guestProfile.phone ?? null,
           avatarUrl: guestProfile.avatar_url ?? null,
@@ -184,7 +184,7 @@ const mapToLandlordVisit = (row: SupabaseRentalVisitRow): LandlordRentalVisit =>
     guest: guestProfile
       ? {
           id: guestProfile.id,
-          name: mapGuestName(guestProfile),
+          name: mapProfileName(guestProfile),
           username: guestProfile.username ?? null,
           phone: guestProfile.phone ?? null,
           avatarUrl: guestProfile.avatar_url ?? null,
@@ -299,7 +299,7 @@ export const createRentalVisit = async (input: ScheduleRentalVisitInput): Promis
     guest_profile_id: input.guestProfileId,
     visit_date: visitDateKey,
     visit_time: time,
-    status: 'pending',
+    status: 'confirmed',
     source: input.source ?? 'user',
     notes: input.notes ?? null,
   };

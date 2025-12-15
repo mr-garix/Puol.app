@@ -23,12 +23,22 @@ const extractMentionFromContent = (rawContent: string | null | undefined) => {
   };
 };
 
-export const getHostCommentThreads = async (hostId: string): Promise<HostCommentThread[]> => {
+type CommentThreadOptions = {
+  rentalKind?: string | null;
+};
+
+const fetchCommentThreads = async (
+  hostId: string,
+  options?: CommentThreadOptions,
+): Promise<HostCommentThread[]> => {
   if (!hostId) {
     return [];
   }
 
-  const { data, error } = await supabase
+  const rentalKindFilter = options?.rentalKind ?? null;
+  const normalizedHostId = hostId.toString();
+
+  let query = supabase
     .from('listing_comments')
     .select(`
       id,
@@ -60,6 +70,12 @@ export const getHostCommentThreads = async (hostId: string): Promise<HostComment
     .eq('listing.host_id', hostId)
     .neq('profile_id', hostId)
     .order('created_at', { ascending: false });
+
+  if (rentalKindFilter) {
+    query = query.eq('listing.rental_kind', rentalKindFilter);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error('Error fetching host comment threads (roots):', error);
@@ -160,31 +176,39 @@ export const getHostCommentThreads = async (hostId: string): Promise<HostComment
     }, {});
   }
 
-  const threads: HostCommentThread[] = rows.map((row) => {
-    const authorRecord = Array.isArray(row.author) ? row.author[0] : row.author;
-    const rootComment = mapCommentRowToCommentWithAuthor({ ...row, author: authorRecord ?? {} });
-    const listing = Array.isArray(row.listing) ? row.listing[0] : row.listing;
-    const listingId = listing?.id ?? row.listing_id ?? '';
-    const replies = repliesByParent[row.id.toString()] ?? [];
-    const incomingReplies = replies.filter((reply) => reply.author.id !== hostId);
-    const latestReplyAt = replies.length
-      ? replies[replies.length - 1].createdAt
-      : rootComment.createdAt;
+  const threads: HostCommentThread[] = rows
+    .map((row) => {
+      const authorRecord = Array.isArray(row.author) ? row.author[0] : row.author;
+      const rootComment = mapCommentRowToCommentWithAuthor({ ...row, author: authorRecord ?? {} });
+      const listing = Array.isArray(row.listing) ? row.listing[0] : row.listing;
+      const listingId = listing?.id ?? row.listing_id ?? '';
+      const replies = repliesByParent[row.id.toString()] ?? [];
+      const incomingReplies = replies.filter((reply) => reply.author.id !== hostId);
+      const latestReplyAt = replies.length
+        ? replies[replies.length - 1].createdAt
+        : rootComment.createdAt;
 
-    return {
-      id: row.id.toString(),
-      listingId: listingId.toString(),
-      listingTitle: listing?.title ?? null,
-      listingCity: listing?.city ?? null,
-      listingDistrict: listing?.district ?? null,
-      listingCoverPhotoUrl: listing?.cover_photo_url ?? null,
-      rootComment,
-      replies,
-      replyCount: replies.length,
-      incomingReplyCount: incomingReplies.length,
-      latestReplyAt,
-    } satisfies HostCommentThread;
-  });
+      return {
+        id: row.id.toString(),
+        listingId: listingId.toString(),
+        listingTitle: listing?.title ?? null,
+        listingCity: listing?.city ?? null,
+        listingDistrict: listing?.district ?? null,
+        listingCoverPhotoUrl: listing?.cover_photo_url ?? null,
+        rootComment,
+        replies,
+        replyCount: replies.length,
+        incomingReplyCount: incomingReplies.length,
+        latestReplyAt,
+      } satisfies HostCommentThread;
+    })
+    .filter((thread) => {
+      const ownerId = thread.rootComment.listingHostId ?? null;
+      if (!ownerId) {
+        return false;
+      }
+      return ownerId === normalizedHostId;
+    });
 
   return threads.sort((a, b) => {
     const aTime = new Date(a.latestReplyAt ?? a.rootComment.createdAt).getTime();
@@ -193,8 +217,11 @@ export const getHostCommentThreads = async (hostId: string): Promise<HostComment
   });
 };
 
+export const getHostCommentThreads = async (hostId: string): Promise<HostCommentThread[]> =>
+  fetchCommentThreads(hostId);
+
 export const getLandlordCommentThreads = async (landlordId: string): Promise<HostCommentThread[]> =>
-  getHostCommentThreads(landlordId);
+  fetchCommentThreads(landlordId, { rentalKind: 'long_term' });
 const mapCommentRowToCommentWithAuthor = (comment: any): CommentWithAuthor => {
   const { content, mentionName } = extractMentionFromContent(comment.content);
 

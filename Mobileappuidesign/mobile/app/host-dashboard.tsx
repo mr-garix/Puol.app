@@ -46,6 +46,7 @@ interface DashboardSection {
   iconColor: string;
   countLabel: string;
   route: string;
+  onPress?: () => void;
 }
 
 export default function HostDashboardScreen() {

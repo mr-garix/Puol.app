@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 
 import { useAuth } from '@/src/contexts/AuthContext';
+import { fetchProfileSummaries } from '@/src/features/profiles/services/profileSummaries';
 import {
   cancelRentalVisit,
   checkRentalVisitAvailability,
@@ -45,6 +46,13 @@ export interface VisitRecord {
   source?: string | null;
   notes?: string | null;
   guest?: {
+    id?: string;
+    name?: string;
+    username?: string | null;
+    phone?: string | null;
+    avatarUrl?: string | null;
+  } | null;
+  host?: {
     id?: string;
     name?: string;
     username?: string | null;
@@ -122,6 +130,7 @@ const mapGuestVisitToRecord = (
     source: visit.source ?? previous?.source ?? null,
     notes: visit.notes ?? previous?.notes ?? null,
     guest: visit.guest ?? previous?.guest ?? null,
+    host: extras?.host ?? previous?.host ?? null,
   };
 };
 
@@ -130,6 +139,7 @@ type VisitExtrasInput = (VisitInput | VisitUpdateInput | Partial<VisitRecord>) &
   visitTime?: string;
   amount?: number;
   notes?: string | null;
+  host?: VisitRecord['host'];
 };
 
 const buildExtrasFromInput = (input: VisitExtrasInput): Partial<VisitRecord> => {
@@ -148,7 +158,37 @@ const buildExtrasFromInput = (input: VisitExtrasInput): Partial<VisitRecord> => 
     visitTime: input.visitTime ?? undefined,
     amount: input.amount ?? undefined,
     notes: input.notes ?? undefined,
+    host: input.host ?? undefined,
   };
+};
+
+const buildProfileDisplayName = (firstName?: string | null, lastName?: string | null, username?: string | null) => {
+  const tokens = [firstName, lastName].filter((token) => token && token.trim());
+  if (tokens.length) {
+    return tokens.join(' ');
+  }
+  return username ? `@${username}` : undefined;
+};
+
+const mapHostSummariesToRecord = async (profileIds: (string | undefined)[]) => {
+  const validIds = profileIds.filter((id): id is string => Boolean(id));
+  if (validIds.length === 0) {
+    return {} as Record<string, NonNullable<VisitRecord['host']>>;
+  }
+
+  const summaries = await fetchProfileSummaries(validIds);
+  const entries = Object.values(summaries).map((summary) => [
+    summary.id,
+    {
+      id: summary.id,
+      name: buildProfileDisplayName(summary.firstName, summary.lastName, summary.username),
+      username: summary.username,
+      phone: summary.phone,
+      avatarUrl: summary.avatarUrl,
+    },
+  ] as const);
+
+  return Object.fromEntries(entries) as Record<string, NonNullable<VisitRecord['host']>>;
 };
 
 export const VisitsProvider = ({ children }: { children: ReactNode }) => {
@@ -236,10 +276,14 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
     try {
       const fetched = await fetchGuestRentalVisits(supabaseProfile.id);
       const previousIndex = new Map(visitsRef.current.map((visit) => [visit.id, visit] as const));
+      const hostMap = await mapHostSummariesToRecord(fetched.map((visit) => visit.landlordProfileId));
       const mapped = fetched
         .map((visit) => {
           const previous = previousIndex.get(visit.id);
-          return mapGuestVisitToRecord(visit, undefined, previous ?? undefined);
+          const hostId = visit.landlordProfileId;
+          const hostProfile = hostId ? hostMap[hostId] : undefined;
+          const extras: Partial<VisitRecord> | undefined = hostProfile ? { host: hostProfile } : undefined;
+          return mapGuestVisitToRecord(visit, extras, previous ?? undefined);
         })
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -279,7 +323,13 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
       });
 
       const extras = buildExtrasFromInput(visit);
-      const record = mapGuestVisitToRecord(created, extras);
+      let host: VisitRecord['host'] | undefined;
+      if (created.landlordProfileId) {
+        const hostMap = await mapHostSummariesToRecord([created.landlordProfileId]);
+        host = hostMap[created.landlordProfileId];
+      }
+
+      const record = mapGuestVisitToRecord(created, host ? { ...extras, host } : extras);
 
       setVisits((prev) => {
         const next = [record, ...prev.filter((item) => item.id !== record.id)];
@@ -449,3 +499,5 @@ export const useVisits = () => {
   }
   return context;
 };
+
+export const useOptionalVisits = () => useContext(VisitsContext);

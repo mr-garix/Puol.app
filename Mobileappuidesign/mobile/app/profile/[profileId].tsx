@@ -30,11 +30,7 @@ import {
   unfollowProfile,
   type ProfileFollowListItem,
 } from '@/src/features/follows/services';
-import {
-  fetchProfileShareCount,
-  recordProfileShare,
-  resolveProfileShareChannel,
-} from '@/src/features/profiles/services/shareService';
+import { recordProfileShare, resolveProfileShareChannel } from '@/src/features/profiles/services/shareService';
 import { buildProfileShareUrl } from '@/src/utils/helpers';
 import { supabase } from '@/src/supabaseClient';
 import { AuthModal } from '@/src/features/auth/components/AuthModal';
@@ -46,6 +42,7 @@ import { useHostLikeActivities } from '@/src/features/likes/hooks/useHostLikeAct
 import { useHostReviews } from '@/src/features/reviews/hooks/useHostReviews';
 import { useUserReviews } from '@/src/features/reviews/hooks/useUserReviews';
 import type { UserReview } from '@/src/features/reviews/hooks/useUserReviews';
+import { useLandlordCommentThreads } from '@/src/features/comments/hooks';
 import { getUserCommentConversations } from '@/src/features/comments/services';
 import type { CommentConversation } from '@/src/features/comments/services';
 
@@ -70,6 +67,7 @@ type ListingCard = {
   district: string | null;
   views: number;
   likes: number;
+  comments: number;
   priceLabel: string | null;
 };
 
@@ -106,6 +104,12 @@ type UserCommentEntry = {
   coverPhotoUrl: string | null;
   content: string;
   createdAt: string | null;
+};
+
+type PendingFollowAction = {
+  action: 'follow' | 'unfollow';
+  targetProfileId: string;
+  modalType: 'followers' | 'following' | null;
 };
 
 const { width } = Dimensions.get('window');
@@ -533,8 +537,15 @@ export default function PublicProfileScreen() {
   const [showUserReviewsModal, setShowUserReviewsModal] = useState(false);
   const [showUserLikesModal, setShowUserLikesModal] = useState(false);
   const [showUserCommentsModal, setShowUserCommentsModal] = useState(false);
+  const [showLandlordViewsModal, setShowLandlordViewsModal] = useState(false);
+  const [showLandlordLikesModal, setShowLandlordLikesModal] = useState(false);
+  const [showLandlordCommentsModal, setShowLandlordCommentsModal] = useState(false);
+
+  const pendingFollowActionRef = useRef<PendingFollowAction | null>(null);
 
   const isHostProfile = profile?.role === 'host';
+  const isLandlordProfile = profile?.role === 'landlord';
+  const isRegularUserProfile = !isHostProfile && !isLandlordProfile;
   const hasEnterpriseBranding = Boolean(
     isHostProfile && profile?.enterpriseName?.trim() && profile?.enterpriseLogoUrl?.trim(),
   );
@@ -640,7 +651,7 @@ export default function PublicProfileScreen() {
     enabled: Boolean(profileId && currentUserId && !isOwnProfile),
   });
   const hostStatsProfileId = isHostProfile ? profileId : null;
-  const shouldLoadRegularStats = Boolean(profileId && !isHostProfile);
+  const shouldLoadRegularStats = Boolean(profileId && isRegularUserProfile);
   const { total: hostViewsTotal } = useHostViewStats(hostStatsProfileId);
   const { summary: hostLikeSummary } = useHostLikeActivities(hostStatsProfileId);
   const {
@@ -696,8 +707,13 @@ export default function PublicProfileScreen() {
   const [viewerFollowingIds, setViewerFollowingIds] = useState<Set<string>>(new Set());
   const [viewerFollowerIds, setViewerFollowerIds] = useState<Set<string>>(new Set());
   const [viewerMutualIds, setViewerMutualIds] = useState<Set<string>>(new Set());
-  const [profileShareCount, setProfileShareCount] = useState<number>(0);
   const viewerMode = useMemo(() => Boolean(currentUserId && profileId && currentUserId !== profileId), [currentUserId, profileId]);
+  const {
+    threads: landlordCommentThreads,
+    isLoading: areLandlordCommentsLoading,
+    refresh: refreshLandlordComments,
+    totalCount: landlordCommentsTotal,
+  } = useLandlordCommentThreads(isLandlordProfile ? profileId : null);
   const fetchUserLikes = useCallback(async () => {
     if (!shouldLoadRegularStats || !profileId) {
       setUserLikedListings([]);
@@ -795,25 +811,84 @@ export default function PublicProfileScreen() {
   const userLikesTotal = userLikedListings.length;
   const userCommentsTotal = userComments.length;
 
+  const landlordViewsTotal = useMemo(() => {
+    if (!isLandlordProfile) {
+      return 0;
+    }
+    return listings.reduce((acc, listing) => acc + (listing.views ?? 0), 0);
+  }, [isLandlordProfile, listings]);
+
+  const landlordLikesTotal = useMemo(() => {
+    if (!isLandlordProfile) {
+      return 0;
+    }
+    return listings.reduce((acc, listing) => acc + (listing.likes ?? 0), 0);
+  }, [isLandlordProfile, listings]);
+
+  const landlordCommentEntries = useMemo<UserCommentEntry[]>(() => {
+    if (!isLandlordProfile) {
+      return [];
+    }
+
+    const entries = landlordCommentThreads.flatMap((thread) => {
+      const listingLocation = formatLocationLabel(thread.listingCity ?? null, thread.listingDistrict ?? null);
+      const mapComment = (comment: typeof thread.rootComment) => ({
+        id: comment.id,
+        listingId: thread.listingId,
+        title: thread.listingTitle ?? 'Annonce PUOL',
+        city: thread.listingCity ?? null,
+        district: thread.listingDistrict ?? null,
+        listingLocation,
+        coverPhotoUrl: thread.listingCoverPhotoUrl ?? null,
+        content: comment.content ?? '',
+        createdAt: comment.createdAt ?? null,
+      });
+
+      const rootEntry = mapComment(thread.rootComment);
+      const replyEntries = thread.replies
+        .filter((reply) => reply.author.id !== profileId)
+        .map((reply) => mapComment(reply));
+
+      return [rootEntry, ...replyEntries];
+    });
+
+    return entries.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [isLandlordProfile, landlordCommentThreads, profileId]);
+
   const displayStats = useMemo(() => {
-    const base = defaultStats;
-    const hostOverrides = isHostProfile
-      ? {
-          views: hostViewsTotal ?? base.views,
-          likes: hostLikeSummary.total ?? base.likes,
-          comments: hostReviewsCount ?? base.comments,
-        }
-      : {
-          views: userReviewsTotal,
-          likes: userLikesTotal,
-          comments: userCommentsTotal,
-        };
+    const base = {
+      ...defaultStats,
+      listings: listings.length,
+      followers: followStats.followersCount ?? 0,
+      following: followStats.followingCount ?? 0,
+    };
+
+    if (isHostProfile) {
+      return {
+        ...base,
+        views: hostViewsTotal ?? base.views,
+        likes: hostLikeSummary.total ?? base.likes,
+        comments: hostReviewsCount ?? base.comments,
+      };
+    }
+
+    if (isLandlordProfile) {
+      return {
+        ...base,
+        views: landlordViewsTotal,
+        likes: landlordLikesTotal,
+        comments: landlordCommentsTotal,
+      };
+    }
 
     return {
       ...base,
-      ...hostOverrides,
-      followers: followStats.followersCount ?? 0,
-      following: followStats.followingCount ?? 0,
+      likes: userLikesTotal,
+      comments: userCommentsTotal,
     };
   }, [
     followStats.followersCount,
@@ -822,9 +897,13 @@ export default function PublicProfileScreen() {
     hostReviewsCount,
     hostViewsTotal,
     isHostProfile,
+    isLandlordProfile,
+    landlordCommentsTotal,
+    landlordLikesTotal,
+    landlordViewsTotal,
+    listings.length,
     userCommentsTotal,
     userLikesTotal,
-    userReviewsTotal,
   ]);
 
   const fetchProfile = useCallback(async () => {
@@ -911,22 +990,25 @@ export default function PublicProfileScreen() {
 
       const rows = data ?? [];
       const listingIds = rows.map((listing) => listing.id).filter((id): id is string => Boolean(id));
-
       let viewRows: { listing_id?: string | null }[] = [];
       let likeRows: { listing_id?: string | null }[] = [];
+      let commentRows: { listing_id?: string | null }[] = [];
 
       if (listingIds.length > 0) {
-        const [{ data: viewsData }, { data: likesData }] = await Promise.all([
+        const [{ data: viewsData }, { data: likesData }, { data: commentsData }] = await Promise.all([
           supabase.from('listing_views').select('listing_id').in('listing_id', listingIds),
           supabase.from('listing_likes').select('listing_id').in('listing_id', listingIds),
+          supabase.from('listing_comments').select('listing_id').in('listing_id', listingIds),
         ]);
         viewRows = viewsData ?? [];
         likeRows = likesData ?? [];
+        commentRows = commentsData ?? [];
       }
 
       const mapped: ListingCard[] = rows.map((listing) => {
         const views = viewRows.filter((row) => row.listing_id === listing.id).length;
         const likes = likeRows.filter((row) => row.listing_id === listing.id).length;
+        const comments = commentRows.filter((row) => row.listing_id === listing.id).length;
         return {
           id: listing.id,
           title: listing.title,
@@ -935,6 +1017,7 @@ export default function PublicProfileScreen() {
           district: listing.district ?? null,
           views,
           likes,
+          comments,
           priceLabel: formatPriceLabel(listing.price_per_night),
         };
       });
@@ -991,7 +1074,7 @@ export default function PublicProfileScreen() {
           setViewerFollowingIds(followingSet);
           setViewerFollowerIds(followerSet);
           setViewerMutualIds(mutualSet);
-        } else {
+        } else if (currentUserId && currentUserId === profileId) {
           const [ownerFollowing, ownerFollowers] = await Promise.all([
             type === 'following' ? Promise.resolve(data) : getFollowingList(profileId),
             type === 'followers' ? Promise.resolve(data) : getFollowersList(profileId),
@@ -1009,10 +1092,35 @@ export default function PublicProfileScreen() {
           setViewerFollowingIds(followingSet);
           setViewerFollowerIds(followerSet);
           setViewerMutualIds(mutualSet);
+        } else if (currentUserId && currentUserId === profileId) {
+          const [ownerFollowing, ownerFollowers] = await Promise.all([
+            type === 'following' ? Promise.resolve(data) : getFollowingList(profileId),
+            type === 'followers' ? Promise.resolve(data) : getFollowersList(profileId),
+          ]);
+
+          const followingSet = new Set(ownerFollowing.map((item) => item.id));
+          const followerSet = new Set(ownerFollowers.map((item) => item.id));
+          const mutualSet = new Set<string>();
+          followingSet.forEach((id) => {
+            if (followerSet.has(id)) {
+              mutualSet.add(id);
+            }
+          });
+
+          setViewerFollowingIds(followingSet);
+          setViewerFollowerIds(followerSet);
+          setViewerMutualIds(mutualSet);
+        } else {
+          setViewerFollowingIds(new Set());
+          setViewerFollowerIds(new Set());
+          setViewerMutualIds(new Set());
         }
       } catch (error) {
         console.error('[PublicProfile] load follow list error', error);
         setFollowList([]);
+        setViewerFollowingIds(new Set());
+        setViewerFollowerIds(new Set());
+        setViewerMutualIds(new Set());
       } finally {
         setIsFollowListLoading(false);
       }
@@ -1049,6 +1157,12 @@ export default function PublicProfileScreen() {
   const handleFollowBack = useCallback(
     async (targetProfileId: string) => {
       if (!currentUserId) {
+        pendingFollowActionRef.current = {
+          action: 'follow',
+          targetProfileId,
+          modalType: followModalType,
+        };
+        handleCloseFollowModal();
         openAuthPrompt();
         return;
       }
@@ -1072,7 +1186,7 @@ export default function PublicProfileScreen() {
           return next;
         });
         if (followModalType) {
-          await loadFollowList(followModalType);
+          void loadFollowList(followModalType);
         }
       } catch (error) {
         console.error('[PublicProfile] follow back error', error);
@@ -1086,6 +1200,12 @@ export default function PublicProfileScreen() {
   const handleUnfollow = useCallback(
     async (targetProfileId: string) => {
       if (!currentUserId) {
+        pendingFollowActionRef.current = {
+          action: 'unfollow',
+          targetProfileId,
+          modalType: followModalType,
+        };
+        handleCloseFollowModal();
         openAuthPrompt();
         return;
       }
@@ -1107,7 +1227,7 @@ export default function PublicProfileScreen() {
           return next;
         });
         if (followModalType) {
-          await loadFollowList(followModalType);
+          void loadFollowList(followModalType);
         }
       } catch (error) {
         console.error('[PublicProfile] unfollow error', error);
@@ -1123,6 +1243,11 @@ export default function PublicProfileScreen() {
       return;
     }
     if (!isLoggedIn) {
+      pendingFollowActionRef.current = {
+        action: followState.isFollowing ? 'unfollow' : 'follow',
+        targetProfileId: profileId,
+        modalType: null,
+      };
       openAuthPrompt();
       return;
     }
@@ -1322,24 +1447,6 @@ export default function PublicProfileScreen() {
     </TouchableOpacity>
   );
 
-  const loadProfileShareCount = useCallback(async () => {
-    if (!profileId) {
-      setProfileShareCount(0);
-      return;
-    }
-    try {
-      const count = await fetchProfileShareCount(profileId);
-      setProfileShareCount(count);
-    } catch (error) {
-      console.error('[PublicProfile] failed to load share count', error);
-      setProfileShareCount(0);
-    }
-  }, [profileId]);
-
-  useEffect(() => {
-    void loadProfileShareCount();
-  }, [loadProfileShareCount]);
-
   const handleShareProfile = useCallback(async () => {
     if (!profileId) {
       return;
@@ -1360,7 +1467,6 @@ export default function PublicProfileScreen() {
           sharedByProfileId: currentUserId,
           channel,
         });
-        setProfileShareCount((prev) => prev + 1);
       }
     } catch (error) {
       console.warn('[PublicProfile] Share error', error);
@@ -1526,15 +1632,36 @@ export default function PublicProfileScreen() {
                     >
                       <MetricCard icon="heart" label="Likes" value={formatCount(displayStats.likes)} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.metricCardButton} activeOpacity={0.85} onPress={handleShareProfile}>
-                      <MetricCard icon="share-2" label="Partages" value={formatCount(profileShareCount)} />
-                    </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.metricCardButton}
                       activeOpacity={0.85}
                       onPress={() => setShowReviewsModal(true)}
                     >
                       <MetricCard icon="star" label="Avis" value={formatCount(displayStats.comments)} />
+                    </TouchableOpacity>
+                  </>
+                ) : isLandlordProfile ? (
+                  <>
+                    <TouchableOpacity
+                      style={styles.metricCardButton}
+                      activeOpacity={0.85}
+                      onPress={() => setShowLandlordViewsModal(true)}
+                    >
+                      <MetricCard icon="eye" label="Vues" value={formatCount(displayStats.views)} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.metricCardButton}
+                      activeOpacity={0.85}
+                      onPress={() => setShowLandlordLikesModal(true)}
+                    >
+                      <MetricCard icon="heart" label="Likes" value={formatCount(displayStats.likes)} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.metricCardButton}
+                      activeOpacity={0.85}
+                      onPress={() => setShowLandlordCommentsModal(true)}
+                    >
+                      <MetricCard icon="message-square" label="Commentaires" value={formatCount(displayStats.comments)} />
                     </TouchableOpacity>
                   </>
                 ) : (
@@ -1552,9 +1679,6 @@ export default function PublicProfileScreen() {
                       onPress={() => setShowUserLikesModal(true)}
                     >
                       <MetricCard icon="heart" label="Likes" value={formatCount(displayStats.likes)} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.metricCardButton} activeOpacity={0.85} onPress={handleShareProfile}>
-                      <MetricCard icon="share-2" label="Partages" value={formatCount(profileShareCount)} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.metricCardButton}
@@ -1622,7 +1746,7 @@ export default function PublicProfileScreen() {
         onSuccess={() => setShowSignUpScreen(false)}
       />
 
-      {!isHostProfile && (
+      {isRegularUserProfile && (
         <>
           <ReviewsModal
             visible={showUserReviewsModal}
@@ -1689,6 +1813,35 @@ export default function PublicProfileScreen() {
         </>
       )}
 
+      {isLandlordProfile && (
+        <>
+          <HostStatHighlightModal
+            visible={showLandlordViewsModal}
+            onClose={() => setShowLandlordViewsModal(false)}
+            icon="eye"
+            title="Vues totales"
+            value={landlordViewsTotal.toLocaleString('fr-FR')}
+            subtitle={`${fullName} a enregistré ${landlordViewsTotal.toLocaleString('fr-FR')} vues sur ses annonces.`}
+          />
+          <HostStatHighlightModal
+            visible={showLandlordLikesModal}
+            onClose={() => setShowLandlordLikesModal(false)}
+            icon="heart"
+            title="Likes reçus"
+            value={landlordLikesTotal.toLocaleString('fr-FR')}
+            subtitle={`${fullName} a reçu ${landlordLikesTotal.toLocaleString('fr-FR')} likes sur ses annonces.`}
+          />
+          <UserCommentsModal
+            visible={showLandlordCommentsModal}
+            onClose={() => setShowLandlordCommentsModal(false)}
+            items={landlordCommentEntries}
+            isLoading={areLandlordCommentsLoading}
+            onRefresh={() => refreshLandlordComments()}
+            onListingPress={handleListingPress}
+          />
+        </>
+      )}
+
       {followModalType ? (
         <FollowListModal
           visible
@@ -1707,6 +1860,7 @@ export default function PublicProfileScreen() {
           friendIds={viewerMutualIds}
           viewerId={currentUserId}
           onProfilePress={handleFollowListProfilePress}
+          ownerView={Boolean(currentUserId && currentUserId === profileId)}
         />
       ) : null}
 
@@ -1939,10 +2093,10 @@ const styles = StyleSheet.create({
     color: '#15803D',
   },
   profileBadgeLandlord: {
-    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    backgroundColor: 'rgba(46, 204, 113, 0.15)',
   },
   profileBadgeLandlordText: {
-    color: '#1D4ED8',
+    color: '#15803D',
   },
   profileBadgeUser: {
     backgroundColor: 'rgba(46, 204, 113, 0.15)',
