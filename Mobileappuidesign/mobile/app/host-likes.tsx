@@ -6,10 +6,10 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
   ActivityIndicator,
   Platform,
   StatusBar as RNStatusBar,
+  Image,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
@@ -20,6 +20,7 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import { useHostLikeActivities } from '@/src/features/likes/hooks';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { formatDistrictCity } from '@/src/utils/location';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -237,13 +238,15 @@ export default function HostLikesScreen() {
         onPress={() => handleOpenListing(activity.listingId)}
       >
         <View style={styles.activityLeft}>
-          <Image
-            source={{ uri: activity.liker.avatarUrl ?? FALLBACK_AVATAR }}
-            style={styles.avatar}
+          <Avatar
+            source={activity.liker.avatarUrl ? { uri: activity.liker.avatarUrl } : undefined}
+            name={buildLikerName(activity.liker)}
+            size="large"
           />
           <View style={styles.activityContent}>
             <Text style={styles.activityTitle} numberOfLines={2}>
-              <Text style={styles.activityActor}>{likerName}</Text> aime {activity.listingTitle ?? 'votre annonce'}
+              <Text style={styles.activityActor}>{buildLikerName(activity.liker)}</Text> aime{' '}
+              {activity.listingTitle ?? 'votre annonce'}
             </Text>
             <Text style={styles.activityMeta} numberOfLines={1}>
               {relativeTime} · {listingLabel}

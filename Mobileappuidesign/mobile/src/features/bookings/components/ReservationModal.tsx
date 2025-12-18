@@ -90,10 +90,6 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
   const today = new Date();
 
   const pastDateMarkedDates = useMemo(() => {
-    if (Platform.OS !== 'android') {
-      return {};
-    }
-
     const todayStart = startOfDay(today);
     const startCursor = new Date(todayStart.getTime());
     startCursor.setMonth(startCursor.getMonth() - 6);
@@ -348,7 +344,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 minDate={minDate}
                 markedDates={strikeMarkedDates}
                 markingType="custom"
-                disableAllTouchEventsForDisabledDays={false}
+                disableAllTouchEventsForDisabledDays
                 enableSwipeMonths
                 onDayPress={step === 'check-in' ? handleCheckInSelect : handleCheckOutSelect}
                 theme={{
@@ -356,7 +352,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   selectedDayTextColor: '#FFFFFF',
                   todayTextColor: '#2ECC71',
                   dayTextColor: '#111827',
-                  textDisabledColor: '#111827',
+                  textDisabledColor: '#D1D5DB',
                   monthTextColor: '#111827',
                   textMonthFontFamily: 'Manrope',
                   textMonthFontWeight: '700',

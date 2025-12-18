@@ -10,6 +10,8 @@ import {
   InteractionManager,
   FlatList,
   Dimensions,
+  Share,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -35,6 +37,8 @@ import {
 } from '@/src/features/follows/services';
 import { supabase } from '@/src/supabaseClient';
 import { getViewedListings, type ViewedListing } from '@/src/features/listings/viewHistoryStorage';
+import { buildProfileShareUrl } from '@/src/utils/helpers';
+import { recordProfileShare, resolveProfileShareChannel } from '@/src/features/profiles/services/shareService';
 
 type LikedListing = {
   id: string;
@@ -95,6 +99,8 @@ export default function ProfileTabScreen() {
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
   const [isLikesModalVisible, setIsLikesModalVisible] = useState(false);
   const [isLikesLoading, setIsLikesLoading] = useState(false);
+  const [isQrModalVisible, setIsQrModalVisible] = useState(false);
+  const [isSharingProfile, setIsSharingProfile] = useState(false);
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -187,7 +193,7 @@ export default function ProfileTabScreen() {
   const landlordStatusMessage = useMemo(() => {
     switch (landlordDashboardStatus) {
       case 'pending':
-        return "Ta demande bailleur est en cours de vérification. L'équipe te recontacte très vite pour finaliser.";
+        return "Ta demande pour devenir bailleur est en cours de vérification. Profite pour explorer l’application pendant que l’équipe finalise la validation.";
       case 'rejected':
         return 'Votre demande pour devenir bailleur a été refusée.';
       default:
@@ -483,10 +489,17 @@ export default function ProfileTabScreen() {
       setFollowActionLoadingId(targetProfileId);
       try {
         await followProfile(supabaseProfile.id, targetProfileId);
-        setFriendIds((prev) => {
+        setViewerFollowingIds((prev) => {
           const next = new Set(prev);
           next.add(targetProfileId);
-          void persistFriendIds(next);
+          return next;
+        });
+        setFriendIds((prev) => {
+          const next = new Set(prev);
+          if (viewerFollowerIds.has(targetProfileId)) {
+            next.add(targetProfileId);
+            void persistFriendIds(next);
+          }
           return next;
         });
         await refreshFollowStats();
@@ -508,6 +521,7 @@ export default function ProfileTabScreen() {
       recomputeFriendships,
       refreshFollowStats,
       supabaseProfile?.id,
+      viewerFollowerIds,
     ],
   );
 
@@ -546,6 +560,51 @@ export default function ProfileTabScreen() {
       unfollowActionLoadingId,
     ],
   );
+
+  const publicProfileId = profile?.id ?? currentProfileId;
+  const fullName = `${profile?.firstName ?? ''} ${profile?.lastName ?? ''}`.trim() || 'Profil PUOL';
+  const profileShareUrl = useMemo(
+    () => (publicProfileId ? buildProfileShareUrl(publicProfileId) : 'https://puol.app'),
+    [publicProfileId],
+  );
+  const qrImageUrl = useMemo(
+    () => `https://api.qrserver.com/v1/create-qr-code/?size=360x360&format=png&data=${encodeURIComponent(profileShareUrl)}`,
+    [profileShareUrl],
+  );
+
+  const handleShowQr = useCallback(() => {
+    if (!publicProfileId) return;
+    setIsQrModalVisible(true);
+  }, [publicProfileId]);
+
+  const handleShareProfile = useCallback(async () => {
+    if (!publicProfileId) return;
+    setIsSharingProfile(true);
+    try {
+      const message = `Découvre ce profil public sur Puol 👇\n${profileShareUrl}`;
+      const result = await Share.share({
+        title: fullName,
+        message,
+        url: profileShareUrl,
+      });
+
+      if (result.action === Share.sharedAction) {
+        const channel =
+          Platform.OS === 'ios'
+            ? resolveProfileShareChannel(result.activityType)
+            : ('system_share_sheet' as const);
+        void recordProfileShare({
+          profileId: publicProfileId,
+          sharedByProfileId: supabaseProfile?.id ?? null,
+          channel,
+        });
+      }
+    } catch (error) {
+      console.warn('[ProfileTab] Share profile error', error);
+    } finally {
+      setIsSharingProfile(false);
+    }
+  }, [fullName, profileShareUrl, publicProfileId, supabaseProfile?.id]);
 
   if (!isLoggedIn) {
     return (
@@ -643,11 +702,10 @@ export default function ProfileTabScreen() {
         onEditProfile={() => router.push('/profile/edit' as never)}
         onNavigateToMessages={() => router.push('/messages' as never)}
         onNavigateToReservations={() => router.push('/reservations' as never)}
-        onNavigateToListings={() => router.push('/listings' as never)}
         onNavigateToContents={() => router.push('/contents' as never)}
         onNavigateToReviews={() => router.push('/reviews' as never)}
         onNavigateToSupport={() => router.push('/support' as never)}
-        onShowQRCode={() => {}}
+        onShowQRCode={handleShowQr}
         onLogout={handleLogout}
         onProfileImagePress={() => setIsAvatarVisible(true)}
         onCommentsPress={() => router.push('/comments' as never)}
@@ -661,7 +719,6 @@ export default function ProfileTabScreen() {
         landlordDashboardStatus={landlordDashboardStatus}
         landlordStatusMessage={landlordStatusMessage}
         onLandlordDashboardPress={() => router.push('/landlord-dashboard' as never)}
-        showListingsMenu={profile.role === 'user'}
       />
 
       <Modal
@@ -762,6 +819,47 @@ export default function ProfileTabScreen() {
                 )}
               />
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={isQrModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsQrModalVisible(false)}
+      >
+        <View style={styles.qrOverlay}>
+          <View style={styles.qrCard}>
+            <View style={styles.qrHeader}>
+              <Text style={styles.qrTitle}>Partager mon profil public</Text>
+              <TouchableOpacity onPress={() => setIsQrModalVisible(false)} activeOpacity={0.75}>
+                <Feather name="x" size={20} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.qrImageWrapper}>
+              <Image source={{ uri: qrImageUrl }} style={styles.qrImage} resizeMode="contain" />
+            </View>
+            <Text style={styles.qrLink} numberOfLines={1} ellipsizeMode="middle">
+              {profileShareUrl}
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.shareButton, isSharingProfile && styles.shareButtonDisabled]}
+              activeOpacity={0.85}
+              onPress={handleShareProfile}
+              disabled={isSharingProfile}
+            >
+              {isSharingProfile ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <>
+                  <Feather name="share-2" size={18} color="#FFFFFF" />
+                  <Text style={styles.shareButtonText}>Partager</Text>
+                </>
+              )}
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1004,5 +1102,75 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope',
     fontSize: 12,
     color: '#6B7280',
+  },
+  qrOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  qrCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 20,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  qrHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  qrTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  qrImageWrapper: {
+    width: '100%',
+    aspectRatio: 1,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 20,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  qrImage: {
+    width: '100%',
+    height: '100%',
+  },
+  qrLink: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#111827',
+    textAlign: 'center',
+  },
+  shareButton: {
+    marginTop: 4,
+    backgroundColor: '#2ECC71',
+    borderRadius: 18,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  shareButtonDisabled: {
+    opacity: 0.7,
+  },
+  shareButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });

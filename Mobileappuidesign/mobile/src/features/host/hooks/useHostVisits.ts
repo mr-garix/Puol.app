@@ -34,7 +34,9 @@ export const useHostVisits = (): UseHostVisitsResult => {
     setIsLoading(true);
     try {
       const data = await fetchLandlordRentalVisits(supabaseProfile.id);
-      setVisits(data);
+      // Sécurité côté client : ne garder que les visites liées au host courant.
+      const filtered = data.filter((visit) => visit.landlordProfileId === supabaseProfile.id);
+      setVisits(filtered);
       setError(null);
     } catch (err) {
       console.error('[useHostVisits] Failed to load host visits', err);

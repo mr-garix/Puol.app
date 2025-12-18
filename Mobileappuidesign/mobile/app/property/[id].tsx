@@ -78,6 +78,7 @@ const REVIEW_FORM_RADIUS = 28;
 const REVIEW_FORM_IDLE_OFFSET = 40;
 const REVIEW_FORM_CARD_WIDTH = Math.min(SCREEN_WIDTH - 48, 400);
 const NEAR_MAIN_ROAD_LABELS: Record<string, string> = {
+  within_50m: 'À moins de 50 m',
   within_100m: 'À moins de 100 m',
   beyond_200m: 'À plus de 200 m',
 };
@@ -87,6 +88,19 @@ const translateRoadProximity = (value?: string | null) => {
     return null;
   }
   return NEAR_MAIN_ROAD_LABELS[value] ?? value;
+};
+
+const resolveRoadProximityLabel = (features?: FullListing['features']) => {
+  if (!features) {
+    return null;
+  }
+  if (features.is_roadside) {
+    return 'En bord de route';
+  }
+  if (features.within_50m) {
+    return 'À moins de 50 m';
+  }
+  return translateRoadProximity(features.near_main_road);
 };
 
 function normalizeLabel(value: string) {
@@ -275,7 +289,7 @@ const buildPropertyFromFullListing = (full: FullListing): PropertyData => {
   const landlordId = hostProfile?.id ?? listing.host_id ?? undefined;
 
   const amenities = [...full.featureBadges];
-  const roadProximityBadge = translateRoadProximity(full.features?.near_main_road);
+  const roadProximityBadge = resolveRoadProximityLabel(full.features);
   if (roadProximityBadge) {
     amenities.push(`Proche route (${roadProximityBadge})`);
   }
@@ -1354,14 +1368,14 @@ const PropertyProfileScreen = () => {
         try {
           if (followState.isFollowing) {
             const { error } = await supabase
-              .from('user_follows')
+              .from('profile_follows')
               .delete()
               .eq('follower_id', currentUserId)
               .eq('followed_id', listingOwnerId);
             if (error) throw error;
           } else {
             const { error } = await supabase
-              .from('user_follows')
+              .from('profile_follows')
               .insert({ follower_id: currentUserId, followed_id: listingOwnerId });
             if (error) throw error;
           }
@@ -1475,7 +1489,7 @@ const PropertyProfileScreen = () => {
   const bailMonths = listingData?.listing.min_lease_months ?? null;
   const bailLabel = bailMonths ? `${bailMonths} ${bailMonths > 1 ? 'mois' : 'mois'}` : null;
   const cautionAmount = listingData?.listing.deposit_amount ?? null;
-  const nearMainRoadInfo = translateRoadProximity(listingData?.features?.near_main_road ?? null);
+  const nearMainRoadInfo = resolveRoadProximityLabel(listingData?.features ?? null);
 
   const shortDescription =
     property.description.length > 180 && !showFullDescription

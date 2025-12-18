@@ -22,6 +22,8 @@ const isSameDay = (left?: Date | null, right?: Date | null) => {
     && left.getDate() === right.getDate();
 };
 
+const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
 interface VisitScheduleModalProps {
   visible: boolean;
   onClose: () => void;
@@ -39,24 +41,38 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
   initialDate,
   initialTime,
 }) => {
-  const { getOccupiedTimeslots, checkSlotAvailability } = useVisits();
+  const { getOccupiedTimeslots, checkSlotAvailability, getUnavailableVisitDates } = useVisits();
   const [selectedDate, setSelectedDate] = useState<Date | null>(initialDate ?? null);
   const [selectedTime, setSelectedTime] = useState<string>(initialTime ?? '');
   const [occupiedTimes, setOccupiedTimes] = useState<string[]>([]);
   const [isFetchingSlots, setIsFetchingSlots] = useState(false);
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [slotError, setSlotError] = useState<string | null>(null);
+  const [unavailableDates, setUnavailableDates] = useState<string[]>([]);
+  const [isFetchingUnavailableDates, setIsFetchingUnavailableDates] = useState(false);
 
-  const today = useMemo(() => new Date(), []);
+  const today = useMemo(() => startOfDay(new Date()), []);
+  const earliestVisitDate = useMemo(() => {
+    const tomorrow = new Date(today.getTime());
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow;
+  }, [today]);
+  const fetchRangeEnd = useMemo(() => {
+    const rangeEnd = new Date(earliestVisitDate.getTime());
+    rangeEnd.setDate(rangeEnd.getDate() + 90);
+    return rangeEnd;
+  }, [earliestVisitDate]);
 
   useEffect(() => {
     if (!visible) {
       return;
     }
-    setSelectedDate(initialDate ?? new Date());
+    const safeInitial =
+      initialDate && startOfDay(initialDate) >= earliestVisitDate ? initialDate : earliestVisitDate;
+    setSelectedDate(safeInitial);
     setSelectedTime(initialTime ?? '');
     setSlotError(null);
-  }, [initialDate, initialTime, visible]);
+  }, [earliestVisitDate, initialDate, initialTime, visible]);
 
   const loadOccupiedTimeslots = useCallback(async (date: Date | null) => {
     if (!date) {
@@ -83,16 +99,65 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
     void loadOccupiedTimeslots(selectedDate ?? null);
   }, [loadOccupiedTimeslots, selectedDate, visible]);
 
+  const loadUnavailableDates = useCallback(async () => {
+    setIsFetchingUnavailableDates(true);
+    try {
+      const unavailable = await getUnavailableVisitDates(
+        listingId,
+        formatDateKey(earliestVisitDate),
+        formatDateKey(fetchRangeEnd),
+      );
+      setUnavailableDates(unavailable ?? []);
+    } catch (err) {
+      console.error('[VisitScheduleModal] Failed to fetch unavailable dates', err);
+    } finally {
+      setIsFetchingUnavailableDates(false);
+    }
+  }, [earliestVisitDate, fetchRangeEnd, getUnavailableVisitDates, listingId]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    void loadUnavailableDates();
+  }, [loadUnavailableDates, visible]);
+
+  const unavailableDatesSet = useMemo(() => new Set(unavailableDates), [unavailableDates]);
+
   const markedDates = useMemo(() => {
-    const marks: Record<string, { selected: boolean; selectedColor: string }> = {};
+    const marks: Record<
+      string,
+      { selected?: boolean; selectedColor?: string; disabled?: boolean; disableTouchEvent?: boolean }
+    > = {};
+
+    // Griser toutes les dates strictement avant earliestVisitDate (visite pas le jour même).
+    const cursor = new Date(earliestVisitDate.getTime());
+    cursor.setMonth(cursor.getMonth() - 6); // limite raisonnable
+    const boundary = new Date(earliestVisitDate.getTime());
+    boundary.setDate(boundary.getDate() - 1);
+    while (cursor <= boundary) {
+      const key = formatDateKey(cursor);
+      marks[key] = { disabled: true, disableTouchEvent: true };
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    unavailableDatesSet.forEach((dateKey) => {
+      marks[dateKey] = {
+        ...(marks[dateKey] ?? {}),
+        disabled: true,
+        disableTouchEvent: true,
+      };
+    });
+
     if (selectedDate) {
       marks[formatDateKey(selectedDate)] = {
+        ...(marks[formatDateKey(selectedDate)] ?? {}),
         selected: true,
         selectedColor: '#2ECC71',
       };
     }
     return marks;
-  }, [selectedDate]);
+  }, [earliestVisitDate, selectedDate, unavailableDatesSet]);
 
   const disabledTimes = useMemo(() => {
     if (!selectedDate) {
@@ -107,7 +172,15 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
 
   const handleDateSelect = (day: { dateString: string }) => {
     const picked = new Date(day.dateString);
-    setSelectedDate(picked);
+    const normalized = startOfDay(picked);
+    if (normalized < earliestVisitDate) {
+      return;
+    }
+    if (unavailableDatesSet.has(formatDateKey(normalized))) {
+      setSlotError('Cette date est indisponible car déjà réservée.');
+      return;
+    }
+    setSelectedDate(normalized);
     setSelectedTime('');
     setSlotError(null);
   };
@@ -168,8 +241,8 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
             <View style={styles.calendarContainer}>
               <Calendar
-                current={formatDateKey(selectedDate ?? today)}
-                minDate={formatDateKey(today)}
+                current={formatDateKey(selectedDate ?? earliestVisitDate)}
+                minDate={formatDateKey(earliestVisitDate)}
                 markedDates={markedDates}
                 onDayPress={handleDateSelect}
                 enableSwipeMonths
@@ -192,12 +265,12 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
             </View>
 
             {selectedDate ? (
-              <View style={styles.timeSection}>
-                <View style={styles.timeHeader}>
-                  <Feather name="clock" size={16} color="#2ECC71" />
-                  <Text style={styles.timeHeaderLabel}>Créneaux disponibles</Text>
-                  {isFetchingSlots && <ActivityIndicator size="small" color="#2ECC71" style={{ marginLeft: 8 }} />}
-                </View>
+                <View style={styles.timeSection}>
+                  <View style={styles.timeHeader}>
+                    <Feather name="clock" size={16} color="#2ECC71" />
+                    <Text style={styles.timeHeaderLabel}>Créneaux disponibles</Text>
+                    {isFetchingSlots && <ActivityIndicator size="small" color="#2ECC71" style={{ marginLeft: 8 }} />}
+                  </View>
 
                 <View style={styles.timeGrid}>
                   {RENTAL_VISIT_TIME_SLOTS.map((time) => {
@@ -230,6 +303,9 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
                 </View>
 
                 {slotError && <Text style={styles.slotError}>{slotError}</Text>}
+                {!slotError && isFetchingUnavailableDates && (
+                  <Text style={styles.unavailableHint}>Vérification des dates réservées…</Text>
+                )}
               </View>
             ) : (
               <Text style={styles.dateHint}>Sélectionnez une date pour voir les horaires disponibles.</Text>
@@ -373,6 +449,12 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope',
     fontSize: 13,
     color: '#DC2626',
+  },
+  unavailableHint: {
+    marginTop: 12,
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#6B7280',
   },
   dateHint: {
     marginTop: 16,

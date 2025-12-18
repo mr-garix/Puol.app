@@ -15,7 +15,8 @@ import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useHostVisits } from '@/src/features/host/hooks/useHostVisits';
+import { useLandlordVisits } from '@/src/features/rental-visits/hooks';
+import { Avatar } from '@/src/components/ui/Avatar';
 import { PUOL_COLORS } from '@/src/constants/theme';
 
 const COLORS = {
@@ -30,7 +31,6 @@ const COLORS = {
 };
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1502672260066-6bc36a7cad24?w=800&auto=format&fit=crop&q=80';
-const GUEST_AVATAR_FALLBACK = 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80';
 
 const getStatusDescriptor = (status: string) => {
   switch (status) {
@@ -73,10 +73,17 @@ export default function LandlordVisitDetailsScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const insets = useSafeAreaInsets();
-  const { getVisitById, fetchVisit, isLoading } = useHostVisits();
+  const { getVisitById, fetchVisit, isLoading } = useLandlordVisits();
   const [isFetching, setIsFetching] = useState(false);
 
   const visit = id ? getVisitById(id) : undefined;
+  const guestDisplayName = useMemo(() => {
+    const name = visit?.guest?.name?.trim();
+    if (name) return name;
+    const username = visit?.guest?.username?.trim();
+    if (username) return username;
+    return 'Visiteur PUOL';
+  }, [visit?.guest?.name, visit?.guest?.username]);
 
   useEffect(() => {
     if (!id) {
@@ -175,9 +182,10 @@ export default function LandlordVisitDetailsScreen() {
               </TouchableOpacity>
             </View>
             <TouchableOpacity style={styles.visitorRow} activeOpacity={0.85} onPress={handleOpenGuestProfile}>
-              <Image
-                source={{ uri: visit.guest?.avatarUrl || GUEST_AVATAR_FALLBACK }}
-                style={styles.visitorAvatar}
+              <Avatar
+                source={visit.guest?.avatarUrl ? { uri: visit.guest.avatarUrl } : undefined}
+                name={guestDisplayName}
+                size="xlarge"
               />
               <View style={{ flex: 1 }}>
                 <Text style={styles.visitorName}>{visit.guest?.name ?? visit.guest?.username ?? 'Visiteur PUOL'}</Text>

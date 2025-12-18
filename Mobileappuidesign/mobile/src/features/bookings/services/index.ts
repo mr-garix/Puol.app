@@ -46,6 +46,8 @@ const AVAILABILITY_SOURCE = {
   BOOKING: 'booking',
 } as const;
 
+const HOST_LISTING_FETCH_LIMIT = 200;
+
 const normalizeDateOnly = (input: string | null | undefined): Date | null => {
   if (!input) {
     return null;
@@ -131,6 +133,22 @@ const reserveListingDates = async (listingId: string, dates: string[]) => {
   if (error) {
     throw error;
   }
+};
+
+export const fetchHostListingIds = async (hostProfileId: string): Promise<string[]> => {
+  const { data, error } = await supabase
+    .from('listings')
+    .select('id')
+    .eq('host_id', hostProfileId)
+    .limit(HOST_LISTING_FETCH_LIMIT);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .map((row) => row.id)
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
 };
 
 const releaseListingDates = async (listingId: string, dates: string[]) => {
@@ -229,6 +247,16 @@ export interface GuestBookingRecord {
     phone?: string;
     isVerified?: boolean;
   };
+  guestName?: string | null;
+  guestPhone?: string | null;
+  guest?: {
+    id?: string;
+    first_name?: string | null;
+    last_name?: string | null;
+    username?: string | null;
+    phone?: string | null;
+    avatar_url?: string | null;
+  };
 }
 
 export interface HostBookingRecord {
@@ -311,6 +339,13 @@ const mapToGuestBooking = (record: BookingRow & {
     remainingPaymentStatus = 'requested';
   }
 
+  const guestTokens = [
+    record.guest?.first_name?.trim(),
+    record.guest?.last_name?.trim(),
+  ].filter(Boolean);
+  const guestFullName = guestTokens.length ? guestTokens.join(' ') : undefined;
+  const guestUsername = record.guest?.username ? `@${record.guest.username}` : undefined;
+
   return {
     id: record.id,
     listingId: record.listing_id,
@@ -337,6 +372,8 @@ const mapToGuestBooking = (record: BookingRow & {
     originalTotal,
     discountAmount,
     discountPercent,
+    guestName: guestFullName ?? guestUsername ?? null,
+    guestPhone: record.guest?.phone ?? null,
     host: hostProfile
       ? {
           id: hostProfile.id,
@@ -441,10 +478,15 @@ export const fetchGuestBookingById = async (guestProfileId: string, bookingId: s
 };
 
 export const fetchHostBookings = async (hostProfileId: string) => {
+  const hostListingIds = await fetchHostListingIds(hostProfileId);
+  if (!hostListingIds.length) {
+    return [];
+  }
+
   const { data, error } = await supabase
     .from('bookings')
     .select(BOOKING_SELECT)
-    .eq('listing.host_id', hostProfileId)
+    .in('listing_id', hostListingIds)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -472,6 +514,15 @@ export const fetchHostBookingById = async (hostProfileId: string, bookingId: str
 
     if (!data) {
       console.log(`[fetchHostBookingById] No booking found with ID ${bookingId} for host ${hostProfileId}`);
+      return null;
+    }
+
+    // Vérifier côté client que la réservation appartient bien à ce host
+    const listingHostId =
+      (Array.isArray(data.listing) && data.listing.length > 0 && data.listing[0]?.host_id) ||
+      (data.listing && typeof data.listing === 'object' ? (data.listing as any)?.host_id : null);
+    if (listingHostId && listingHostId !== hostProfileId) {
+      console.warn(`[fetchHostBookingById] Booking ${bookingId} does not belong to host ${hostProfileId}, belongs to ${listingHostId}`);
       return null;
     }
 

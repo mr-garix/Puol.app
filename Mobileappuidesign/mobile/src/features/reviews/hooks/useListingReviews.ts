@@ -159,11 +159,30 @@ const defaultEligibilityForUser = (currentUserId: string | null): EligibilitySta
     ? { status: 'unknown', canReview: false }
     : { status: 'not_authenticated', canReview: false };
 
+const parseDate = (value: string | null | undefined) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const isCompletedOrPastStay = (row: Partial<BookingsRow>) => {
+  const status = (row.status ?? '').toLowerCase();
+  const checkout =
+    parseDate((row as any).checkout_date) ??
+    parseDate((row as any).check_out) ??
+    parseDate((row as any).checkout);
+
+  const isCompletedStatus = status === 'completed' || status === 'finished' || status === 'checked_out';
+  const isPastCheckout = checkout ? checkout.getTime() <= Date.now() : false;
+
+  return isCompletedStatus || isPastCheckout;
+};
+
 const checkUserEligibility = async (listingId: string, currentUserId: string): Promise<EligibilityState> => {
   try {
     const { data, error } = await supabase
       .from('bookings')
-      .select('id,status,payment_status')
+      .select('id,status,payment_status,checkout_date')
       .eq('listing_id', listingId)
       .eq('guest_profile_id', currentUserId)
       .limit(25);
@@ -173,7 +192,7 @@ const checkUserEligibility = async (listingId: string, currentUserId: string): P
     }
 
     const rows = (data ?? []) as Partial<BookingsRow>[];
-    const hasEligibleBooking = rows.some(isValidatedBooking);
+    const hasEligibleBooking = rows.some(isCompletedOrPastStay);
 
     return hasEligibleBooking
       ? { status: 'eligible', canReview: true }

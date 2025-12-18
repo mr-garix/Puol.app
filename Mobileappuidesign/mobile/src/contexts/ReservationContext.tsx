@@ -38,6 +38,8 @@ export interface ReservationRecord {
   hostId?: string;
   hostPhone: string;
   hostEmail: string;
+  guestName?: string | null;
+  guestPhone?: string | null;
   checkInDate: string;
   checkOutDate: string;
   nights: number;
@@ -81,6 +83,8 @@ const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1502672260066-6bc36a7c
 const FALLBACK_HOST_NAME = 'Hôte PUOL';
 const FALLBACK_PHONE = '+237600000000';
 const FALLBACK_EMAIL = 'support@puol.cm';
+const FALLBACK_GUEST_NAME = 'Voyageur PUOL';
+const FALLBACK_GUEST_PHONE = 'Non renseigné';
 
 const mapBookingToReservationRecord = (
   booking: GuestBookingRecord,
@@ -93,6 +97,8 @@ const mapBookingToReservationRecord = (
       : booking.status === 'confirmed'
         ? 'confirmed'
         : 'pending';
+  const fallbackGuest = fallback?.guestName ?? FALLBACK_GUEST_NAME;
+  const fallbackGuestPhone = fallback?.guestPhone ?? FALLBACK_GUEST_PHONE;
 
   return {
     id: booking.id,
@@ -108,6 +114,8 @@ const mapBookingToReservationRecord = (
     hostId: booking.host?.id ?? fallback?.hostId,
     hostPhone: booking.host?.phone || fallback?.hostPhone || FALLBACK_PHONE,
     hostEmail: FALLBACK_EMAIL,
+    guestName: booking.guestName || fallbackGuest,
+    guestPhone: booking.guestPhone || fallbackGuestPhone,
     updatedAt: booking.updated_at || new Date().toISOString(),
     checkInDate: booking.checkInDate,
     checkOutDate: booking.checkOutDate,

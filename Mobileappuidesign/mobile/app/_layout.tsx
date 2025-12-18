@@ -14,6 +14,7 @@ import UserCommentNotificationBridge from '@/src/infrastructure/notifications/Us
 import HostReviewNotificationBridge from '@/src/infrastructure/notifications/HostReviewNotificationBridge';
 import UserReviewReplyNotificationBridge from '@/src/infrastructure/notifications/UserReviewReplyNotificationBridge';
 import NotificationHost from '@/src/infrastructure/notifications/NotificationHost';
+import ApplicationStatusNotificationBridge from '@/src/infrastructure/notifications/ApplicationStatusNotificationBridge';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
 import { ReservationProvider } from '@/src/contexts/ReservationContext';
 import { AuthProvider } from '@/src/contexts/AuthContext';
@@ -122,7 +123,7 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   useEffect(() => {
-    NativeStatusBar.setHidden(true, 'fade');
+    NativeStatusBar.setHidden(false, 'fade');
     return () => {
       NativeStatusBar.setHidden(false, 'fade');
     };
@@ -138,7 +139,7 @@ export default function RootLayout() {
               <ProfileProvider>
                 <NotificationProvider>
                   <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-                    <StatusBar translucent backgroundColor="transparent" style="dark" hidden />
+                    <StatusBar translucent backgroundColor="transparent" style="dark" />
                     <Stack>
                     <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
                     <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'none' }} />
@@ -153,8 +154,11 @@ export default function RootLayout() {
                     <Stack.Screen name="host-reservations/[id]" options={{ headerShown: false }} />
                     <Stack.Screen name="host-listings" options={{ headerShown: false }} />
                     <Stack.Screen name="host-visits" options={{ headerShown: false }} />
+                    <Stack.Screen name="host-visit/[id]" options={{ headerShown: false }} />
                     <Stack.Screen name="host-messages" options={{ headerShown: false }} />
                     <Stack.Screen name="host-reviews" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-likes" options={{ headerShown: false }} />
+                    <Stack.Screen name="landlord-comments" options={{ headerShown: false }} />
                     <Stack.Screen name="landlord-visits" options={{ headerShown: false }} />
                     <Stack.Screen name="landlord-visit/[id]" options={{ headerShown: false }} />
                     <Stack.Screen name="landlord-tenants" options={{ headerShown: false }} />
@@ -175,7 +179,6 @@ export default function RootLayout() {
                     <Stack.Screen name="likes/index" options={{ headerShown: false }} />
                     <Stack.Screen name="comments/index" options={{ headerShown: false }} />
                     <Stack.Screen name="contents/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="listings/index" options={{ headerShown: false }} />
                     <Stack.Screen name="reviews/index" options={{ headerShown: false }} />
                     <Stack.Screen name="support/index" options={{ headerShown: false }} />
                     <Stack.Screen name="support/[id]" options={{ headerShown: false }} />
@@ -186,6 +189,7 @@ export default function RootLayout() {
                     <UserCommentNotificationBridge />
                     <HostReviewNotificationBridge />
                     <UserReviewReplyNotificationBridge />
+                    <ApplicationStatusNotificationBridge />
                     <NotificationHost />
                     <RemainingPaymentHandler />
                   </ThemeProvider>

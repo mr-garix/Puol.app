@@ -19,6 +19,7 @@ import {
   LayoutChangeEvent,
   TextInputProps,
   ViewStyle,
+  Keyboard,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { StatusBar } from 'expo-status-bar';
@@ -27,7 +28,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { supabase } from '@/src/supabaseClient';
 import { PROPERTY_AMENITIES, type AmenityOption } from '@/src/constants/amenities';
+import { mapFeaturesRecordToAmenityIds } from '@/src/features/listings/utils/amenitiesMapping';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 /*
@@ -85,6 +88,26 @@ const createEmptyRoomCounts = (): Record<(typeof ROOM_COUNTERS)[number], number>
   'Salle à manger': 0,
   Toilette: 0,
 });
+type SwiftProcessorResponse = {
+  ok?: boolean;
+  generated_text?: string;
+  description?: string;
+  reply?: string;
+  text?: string;
+  decision?: {
+    reply?: string;
+  } | null;
+  data?: {
+    generated_text?: string;
+    description?: string;
+    reply?: string;
+    text?: string;
+    decision?: {
+      reply?: string;
+    } | null;
+  } | null;
+  error?: string | null;
+};
 const AVAILABILITY_MODES = [
   { key: 'available', label: 'Dates disponibles', accent: COLORS.accent, tint: 'rgba(46,204,113,0.15)' },
   { key: 'blocked', label: 'Dates bloquées', accent: COLORS.danger, tint: 'rgba(220,38,38,0.15)' },
@@ -315,7 +338,7 @@ const createFieldErrors = (): Record<FieldErrorKey, string | null> => ({
   amenities: null,
 });
 
-const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'address', 'city', 'listingType', 'rooms', 'description', 'amenities'];
+const REQUIRED_FIELD_ORDER: FieldErrorKey[] = ['media', 'cover', 'title', 'price', 'address', 'city', 'listingType', 'rooms', 'amenities', 'description'];
 
 const LONG_CLIP_THRESHOLD = 90; // seconds
 const PHOTO_TARGET_RATIO = 9 / 16;
@@ -471,62 +494,8 @@ const ensureCachePath = () => {
 };
 */
 
-const FEATURE_COLUMN_TO_AMENITY: Partial<Record<ListingFeatureFlagKeys, AmenityId>> = {
-  has_ac: 'ac',
-  has_wifi: 'wifi',
-  has_parking: 'parking',
-  generator: 'generator',
-  prepay_meter: 'prepaid-meter',
-  sonnel_meter: 'sonel-meter',
-  water_well: 'borehole',
-  water_heater: 'water-heater',
-  security_guard: 'guard',
-  cctv: 'cctv',
-  fan: 'fan',
-  tv: 'tv',
-  smart_tv: 'smart-tv',
-  netflix: 'netflix',
-  washing_machine: 'washer',
-  balcony: 'balcony',
-  terrace: 'terrace',
-  veranda: 'veranda',
-  mezzanine: 'mezzanine',
-  garden: 'garden',
-  pool: 'pool',
-  gym: 'gym',
-  rooftop: 'rooftop',
-  elevator: 'elevator',
-  accessible: 'accessible',
-};
-
-const mapFeaturesToAmenities = (features: ListingFeaturesRow | null): AmenityId[] => {
-  if (!features) {
-    return [];
-  }
-
-  const amenities: AmenityId[] = [];
-  (Object.entries(features) as [keyof ListingFeaturesRow, boolean | string | null][]).forEach(([key, value]) => {
-    if (!value) {
-      return;
-    }
-
-    if (key === 'near_main_road') {
-      if (value === 'within_100m') {
-        amenities.push('road-100');
-      } else if (value === 'beyond_200m') {
-        amenities.push('road-200');
-      }
-      return;
-    }
-
-    const amenityId = FEATURE_COLUMN_TO_AMENITY[key as ListingFeatureFlagKeys];
-    if (amenityId) {
-      amenities.push(amenityId);
-    }
-  });
-
-  return amenities;
-};
+const mapFeaturesToAmenities = (features: ListingFeaturesRow | null): AmenityId[] =>
+  mapFeaturesRecordToAmenityIds(features) as AmenityId[];
 
 const mapRoomsToCounts = (rooms?: FullListing['rooms']) => {
   const base = createEmptyRoomCounts();
@@ -605,6 +574,7 @@ export default function HostListingEditScreen() {
   const [volumePreset, setVolumePreset] = useState<VolumePresetId>('medium');
   const [coverPhotoUri, setCoverPhotoUri] = useState<string>('');
   const [addressSearch, setAddressSearch] = useState('');
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   const [addressSuggestions, setAddressSuggestions] = useState<PlaceSuggestion[]>([]);
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
   const [isAddressLoading, setIsAddressLoading] = useState(false);
@@ -1183,6 +1153,79 @@ export default function HostListingEditScreen() {
     updateMedia((current) => current.map((item) => (item.id === mediaId ? { ...item, muted } : item)));
   }, [updateMedia]);
 
+  const handleGenerateDescription = useCallback(async () => {
+    if (isGeneratingDescription) {
+      return;
+    }
+    setIsGeneratingDescription(true);
+    const parsedLocation = parseCityDistrict(address);
+    const roomsBreakdown = Object.entries(roomCounts)
+      .filter(([, count]) => (count ?? 0) > 0)
+      .map(([room, count]) => `${room}: ${count}`)
+      .join(', ');
+
+    const draftPayload = {
+      property_type: listingType || '',
+      city: cityInput.trim(),
+      district: resolvedDistrict || parsedLocation.district || '',
+      rooms_breakdown: roomsBreakdown,
+      capacity: Math.max(1, guestCapacity || 1),
+      amenities,
+      features: amenities,
+    };
+
+    try {
+      const {
+        data: sessionData,
+        error: sessionError,
+      } = await supabase.auth.getSession();
+      const sessionUserId = sessionData?.session?.user?.id ?? null;
+      console.log('SESSION user id:', sessionUserId);
+      console.log('SESSION has token:', Boolean(sessionData?.session?.access_token));
+      if (sessionError) {
+        console.warn('[HostListingEdit] supabase session error', sessionError);
+      }
+      console.log('[HostListingEdit] supabase session', {
+        sessionUserId,
+        hasSession: Boolean(sessionData?.session),
+      });
+      if (!sessionUserId) {
+        console.warn('[HostListingEdit] aucun utilisateur authentifié détecté avant invoke');
+      }
+
+      const payload = {
+        action: 'generate_description',
+        draft: draftPayload,
+      };
+      console.log('SWIFT payload:', payload);
+
+      const { data, error } = await supabase.functions.invoke<SwiftProcessorResponse>('swift-processor', {
+        body: payload,
+      });
+      console.log('SWIFT error:', error);
+      console.log('SWIFT data:', data);
+      console.log('SWIFT data json:', JSON.stringify(data, null, 2));
+      if (error) {
+        throw error;
+      }
+      if (data?.ok !== true) {
+        throw new Error(data?.error || 'edge_function_error');
+      }
+      const generated = String(data?.generated_text ?? '').trim();
+      if (!generated) {
+        console.log('SWIFT raw response:', data);
+        throw new Error('No generated text in response');
+      }
+      setDescription(generated);
+    } catch (error) {
+      console.warn('[HostListingEdit] ai description error', error);
+      const message = error instanceof Error ? error.message : "Impossible de générer la description pour le moment";
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  }, [address, amenities, cityInput, guestCapacity, isGeneratingDescription, listingType, resolvedDistrict, roomCounts, setDescription]);
+
   const handleFieldLayout = useCallback(
     (key: FieldErrorKey) => (event: LayoutChangeEvent) => {
       fieldPositionsRef.current[key] = event.nativeEvent.layout.y;
@@ -1197,11 +1240,10 @@ export default function HostListingEditScreen() {
 
   const validateForm = useCallback(() => {
     const errors = createFieldErrors();
-    const hasVideo = media.some((item) => item.type === 'video');
     const roomsTotal = Object.values(roomCounts).reduce((sum, value) => sum + value, 0);
 
-    if (media.length < 4 || !hasVideo) {
-      errors.media = 'Ajoutez au moins 4 médias dont une vidéo.';
+    if (media.length < 1) {
+      errors.media = 'Ajoutez au moins un média.';
     }
     if (!coverPhotoUri.trim()) {
       errors.cover = 'Ajoutez une photo de couverture.';
@@ -1253,7 +1295,6 @@ export default function HostListingEditScreen() {
   useEffect(() => {
     setFieldErrors((prev) => {
       let next: typeof prev | null = null;
-      const hasVideo = media.some((item) => item.type === 'video');
       const roomsTotal = Object.values(roomCounts).reduce((sum, value) => sum + value, 0);
 
       const clearIfValid = (key: FieldErrorKey, condition: boolean) => {
@@ -1265,7 +1306,7 @@ export default function HostListingEditScreen() {
         }
       };
 
-      clearIfValid('media', media.length >= 4 && hasVideo);
+      clearIfValid('media', media.length >= 1);
       clearIfValid('cover', coverPhotoUri.trim().length > 0);
       clearIfValid('title', title.trim().length > 0);
       clearIfValid('price', price.trim().length > 0);
@@ -1927,6 +1968,42 @@ export default function HostListingEditScreen() {
             <Text style={styles.headerTitle}>Modifier l’annonce</Text>
           </View>
         </View>
+
+        <View style={[styles.sectionCard, fieldErrors.description && styles.sectionCardError]} onLayout={handleFieldLayout('description')}>
+          <SectionHeader
+            title="Description détaillée"
+            subtitle="Présentez les points forts de votre logement et ajoutez toutes les informations utiles au client"
+          />
+          {fieldErrors.description && <Text style={styles.fieldErrorText}>{fieldErrors.description}</Text>}
+          <View style={styles.aiActionsRow}>
+            <TouchableOpacity
+              style={[styles.aiButton, isGeneratingDescription && styles.aiButtonDisabled]}
+              onPress={handleGenerateDescription}
+              activeOpacity={0.85}
+              disabled={isGeneratingDescription}
+            >
+              {isGeneratingDescription ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Feather name="zap" size={14} color="#FFFFFF" />
+              )}
+              <Text style={styles.aiButtonText}>
+                {isGeneratingDescription ? 'Génération…' : 'Générer avec l’IA'}
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.aiHint}>Génère automatiquement une description à partir des infos du logement.</Text>
+          </View>
+          <Text style={[styles.supportText, styles.noteText]}>
+            N.B. : Ne communiquez jamais l’adresse exacte ni un numéro de téléphone dans cette description, sous peine de
+            bannissement.
+          </Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            multiline
+            value={description}
+            onChangeText={setDescription}
+          />
+        </View>
         <View style={[styles.sectionCard, { margin: 16, alignItems: 'center', gap: 12 }]} > 
           <Feather name="alert-triangle" size={24} color={COLORS.danger} />
           <Text style={styles.sectionTitle}>Impossible de charger l’annonce</Text>
@@ -1981,13 +2058,14 @@ export default function HostListingEditScreen() {
         </View>
       </View>
 
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="always"
-        ref={scrollViewRef}
-      >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          ref={scrollViewRef}
+        >
         <View
           style={[styles.sectionCard, fieldErrors.media && styles.sectionCardError]}
           onLayout={handleFieldLayout('media')}
@@ -2136,68 +2214,6 @@ export default function HostListingEditScreen() {
                 </View>
             ))}
           </View>
-        </View>
-
-        <View style={[styles.sectionCard, fieldErrors.cover && styles.sectionCardError]} onLayout={handleFieldLayout('cover')}>
-          <SectionHeader
-            title="Ambiance musicale"
-            subtitle="Ajoutez une musique maison qui jouera pendant les swipes"
-          />
-          {fieldErrors.cover && <Text style={styles.fieldErrorText}>{fieldErrors.cover}</Text>}
-          <View style={styles.musicToggleRow}>
-            <Text style={styles.musicToggleText}>Activer la musique</Text>
-            <Switch value={musicEnabled} onValueChange={setMusicEnabled} />
-          </View>
-          {musicEnabled && (
-            <>
-              <View style={styles.volumeRow}>
-                {VOLUME_PRESETS.map((preset) => (
-                  <TouchableOpacity
-                    key={preset.id}
-                    style={[styles.volumeChip, volumePreset === preset.id && styles.volumeChipActive]}
-                    onPress={() => setVolumePreset(preset.id)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.volumeChipText, volumePreset === preset.id && styles.volumeChipTextActive]}>
-                      {preset.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <View style={styles.musicList}>
-                {MUSIC_LIBRARY.map((track) => {
-                  const isSelected = selectedMusicId === track.id;
-                  const isPlaying = currentlyPlayingId === track.id;
-                  return (
-                    <View key={track.id} style={[styles.musicItem, isSelected && styles.musicItemSelected]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.musicTitle}>{track.title}</Text>
-                        <Text style={styles.musicSubtitle}>
-                          {track.artist} • {track.duration}
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        style={[styles.musicActionButton, isSelected && styles.musicActionButtonActive]}
-                        onPress={() => setSelectedMusicId(track.id)}
-                        activeOpacity={0.85}
-                      >
-                        <Text style={[styles.musicActionText, isSelected && styles.musicActionTextActive]}>
-                          {isSelected ? 'Sélectionné' : 'Choisir'}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.previewButton}
-                        onPress={() => handlePreviewMusic(track.id)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name={isPlaying ? 'pause' : 'play'} size={16} color={COLORS.accent} />
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })}
-              </View>
-            </>
-          )}
         </View>
 
         <View style={[styles.sectionCard, fieldErrors.title && styles.sectionCardError]} onLayout={handleFieldLayout('title')}>
@@ -2411,24 +2427,6 @@ export default function HostListingEditScreen() {
           <Text style={styles.supportText}>Ce nombre sera affiché sur la fiche pour informer les clients.</Text>
         </View>
 
-        <View style={[styles.sectionCard, fieldErrors.description && styles.sectionCardError]} onLayout={handleFieldLayout('description')}>
-          <SectionHeader
-            title="Description détaillée"
-            subtitle="Présentez les points forts de votre logement et ajoutez toutes les informations utiles au client"
-          />
-          {fieldErrors.description && <Text style={styles.fieldErrorText}>{fieldErrors.description}</Text>}
-          <Text style={[styles.supportText, styles.noteText]}>
-            N.B. : Ne communiquez jamais l’adresse exacte ni un numéro de téléphone dans cette description, sous peine de
-            bannissement.
-          </Text>
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            multiline
-            value={description}
-            onChangeText={setDescription}
-          />
-        </View>
-
         <View style={[styles.sectionCard, fieldErrors.amenities && styles.sectionCardError]} onLayout={handleFieldLayout('amenities')}>
           <SectionHeader
             title="Équipements & services"
@@ -2464,29 +2462,6 @@ export default function HostListingEditScreen() {
 
         <View style={styles.sectionCard}>
           <SectionHeader
-            title="Disponibilités"
-            subtitle="Choisissez un mode, touchez les jours puis validez pour bloquer ou débloquer. Les dates vertes sont libres par défaut."
-          />
-          <View style={styles.badgeGrid}>
-            {AVAILABILITY_MODES.map((mode) => (
-              <TouchableOpacity
-                key={mode.key}
-                style={[styles.badge, selectedAvailabilityMode === mode.key && styles.badgeActive]}
-                onPress={() => setSelectedAvailabilityMode(mode.key)}
-              >
-                <Text
-                  style={[styles.badgeText, selectedAvailabilityMode === mode.key && styles.badgeTextActive]}
-                >
-                  {mode.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <CalendarCard />
-        </View>
-
-        <View style={styles.sectionCard}>
-          <SectionHeader
             title="Promotion automatique"
             subtitle="Appliquez une remise au-delà d’un certain nombre de nuits"
           />
@@ -2515,6 +2490,65 @@ export default function HostListingEditScreen() {
               />
             </View>
           </View>
+        </View>
+
+        <View style={[styles.sectionCard, fieldErrors.description && styles.sectionCardError]} onLayout={handleFieldLayout('description')}>
+          <SectionHeader
+            title="Description détaillée"
+            subtitle="Présentez les points forts de votre logement et ajoutez toutes les informations utiles au client"
+          />
+          {fieldErrors.description && <Text style={styles.fieldErrorText}>{fieldErrors.description}</Text>}
+          <View style={styles.aiActionsRow}>
+            <TouchableOpacity
+              style={[styles.aiButton, isGeneratingDescription && styles.aiButtonDisabled]}
+              onPress={handleGenerateDescription}
+              activeOpacity={0.85}
+              disabled={isGeneratingDescription}
+            >
+              {isGeneratingDescription ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Feather name="zap" size={14} color="#FFFFFF" />
+              )}
+              <Text style={styles.aiButtonText}>
+                {isGeneratingDescription ? 'Génération…' : 'Générer avec l’IA'}
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.aiHint}>Génère automatiquement une description à partir des infos du logement.</Text>
+          </View>
+          <Text style={[styles.supportText, styles.noteText]}>
+            N.B. : Ne communiquez jamais l’adresse exacte ni un numéro de téléphone dans cette description, sous peine de
+            bannissement.
+          </Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            multiline
+            value={description}
+            onChangeText={setDescription}
+          />
+        </View>
+
+        <View style={styles.sectionCard}>
+          <SectionHeader
+            title="Disponibilités"
+            subtitle="Choisissez un mode, touchez les jours puis validez pour bloquer ou débloquer. Les dates vertes sont libres par défaut."
+          />
+          <View style={styles.badgeGrid}>
+            {AVAILABILITY_MODES.map((mode) => (
+              <TouchableOpacity
+                key={mode.key}
+                style={[styles.badge, selectedAvailabilityMode === mode.key && styles.badgeActive]}
+                onPress={() => setSelectedAvailabilityMode(mode.key)}
+              >
+                <Text
+                  style={[styles.badgeText, selectedAvailabilityMode === mode.key && styles.badgeTextActive]}
+                >
+                  {mode.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <CalendarCard />
         </View>
 
         <View style={[styles.sectionCard, { marginBottom: 48 }]}>
@@ -2590,7 +2624,8 @@ export default function HostListingEditScreen() {
             </>
           )}
         </View>
-      </ScrollView>
+        </ScrollView>
+      </TouchableWithoutFeedback>
 
       <Modal
         visible={!!activePreviewMedia}
@@ -3187,7 +3222,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   amenitiesScroll: {
-    maxHeight: 216,
+    maxHeight: 280,
   },
   amenitiesGrid: {
     flexDirection: 'row',
@@ -3934,7 +3969,35 @@ const styles = StyleSheet.create({
   publishModalPrimaryText: {
     fontFamily: 'Manrope',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#FFFFFF',
+  },
+  aiActionsRow: {
+    marginBottom: 12,
+    gap: 8,
+  },
+  aiButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  aiButtonDisabled: {
+    opacity: 0.6,
+  },
+  aiButtonText: {
+    color: '#FFFFFF',
+    fontFamily: 'Manrope',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  aiHint: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: COLORS.muted,
   },
 });

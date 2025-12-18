@@ -4,6 +4,7 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import {
   fetchHostBookings,
   fetchHostBookingById,
+  fetchHostListingIds,
   type HostBookingRecord,
   type BookingRow,
 } from '@/src/features/bookings/services';
@@ -26,18 +27,24 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
   const [bookings, setBookings] = useState<HostBookingRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hostListingIds, setHostListingIds] = useState<Set<string>>(new Set());
   const changeCallbacksRef = useRef(new Set<(booking: HostBookingRecord) => void>());
 
   const refresh = useCallback(async () => {
     if (!isLoggedIn || !supabaseProfile || !isHostProfile) {
       setBookings([]);
+      setHostListingIds(new Set());
       return;
     }
 
     setIsLoading(true);
     try {
-      const data = await fetchHostBookings(supabaseProfile.id);
+      const [data, listingIds] = await Promise.all([
+        fetchHostBookings(supabaseProfile.id),
+        fetchHostListingIds(supabaseProfile.id),
+      ]);
       setBookings(data);
+      setHostListingIds(new Set(listingIds));
       setError(null);
     } catch (err) {
       console.error('[useHostBookings] failed to load host bookings', err);
@@ -71,13 +78,28 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
       console.log('[useHostBookings] Profile is not a host, skipping realtime subscription');
       return undefined;
     }
+    const listingIdList = Array.from(hostListingIds);
+    if (listingIdList.length === 0) {
+      console.log('[useHostBookings] No host listings loaded, skipping realtime subscription');
+      return undefined;
+    }
 
-    console.log('[useHostBookings] Setting up realtime subscription for host:', supabaseProfile.id);
+    console.log('[useHostBookings] Setting up realtime subscription for host:', {
+      hostId: supabaseProfile.id,
+      listingCount: listingIdList.length,
+      listings: listingIdList,
+      scope: subscriptionScope
+    });
     const channelName = `host-bookings-${subscriptionScope}-${supabaseProfile.id}`;
     console.log(`[useHostBookings] Creating channel: ${channelName}`);
     
     // Afficher l'état actuel des abonnements
     console.log('[useHostBookings] Current Supabase channels:', supabase.getChannels());
+    const listingFilter = listingIdList.join(',');
+    console.log('[useHostBookings] Realtime filter:', {
+      listingFilter,
+      channelName
+    });
     
     const channel = supabase
       .channel(channelName, {
@@ -91,29 +113,40 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
           event: '*',
           schema: 'public',
           table: 'bookings',
-          // Temporairement sans filtre pour voir tout ce qui se passe
-          // filter: `listing.host_id=eq.${supabaseProfile.id}`,
+          filter: `listing_id.in.(${listingFilter})`,
         } as const,
         async (payload: any) => {
           console.log(`[useHostBookings] Received change on channel ${channelName}:`, {
             eventType: payload.eventType,
             table: payload.table,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            payload
           });
-          const newRecord = payload.new as (BookingRow & { listing?: { host_id: string } }) | null;
-          const oldRecord = payload.old as (BookingRow & { listing?: { host_id: string } }) | null;
+          const newRecord = payload.new as (BookingRow & { listing?: { host_id: string; id?: string } }) | null;
+          const oldRecord = payload.old as (BookingRow & { listing?: { host_id: string; id?: string } }) | null;
           
-          console.log('[useHostBookings] RAW REALTIME PAYLOAD:', {
-            eventType: payload.eventType,
-            payload: payload,
-            newId: newRecord?.id,
-            oldId: oldRecord?.id,
-            newHostId: newRecord?.listing?.host_id,
-            oldHostId: oldRecord?.listing?.host_id,
-            currentHostId: supabaseProfile.id
+          // Validation locale : on vérifie que la réservation concerne bien un listing du host
+          const targetListingId = newRecord?.listing_id ?? oldRecord?.listing_id ?? newRecord?.listing?.id ?? oldRecord?.listing?.id;
+          if (!targetListingId) {
+            console.log('[useHostBookings] Event without listing_id, skipping');
+            return;
+          }
+          if (hostListingIds.size > 0 && !hostListingIds.has(targetListingId)) {
+            console.log('[useHostBookings] Event listing not owned by host, skipping', {
+              targetListingId,
+              knownListings: listingIdList,
+              hostId: supabaseProfile.id
+            });
+            return;
+          }
+          
+          console.log('[useHostBookings] Event validated for host', {
+            listingId: targetListingId,
+            hostId: supabaseProfile.id,
+            eventType: payload.eventType
           });
           
-          // Notifier les callbacks immédiatement pour les notifications instantanées
+          // Notifier les callbacks immédiatement pour les notifications
           if (payload.eventType === 'UPDATE') {
             const targetBookingId = newRecord?.id ?? oldRecord?.id;
             if (!targetBookingId) {
@@ -220,7 +253,7 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
       console.log('[useHostBookings] Cleaning up realtime subscription');
       supabase.removeChannel(channel);
     };
-  }, [supabaseProfile, subscriptionScope, isHostProfile]);
+  }, [supabaseProfile, subscriptionScope, isHostProfile, hostListingIds]);
 
   const getBookingById = useCallback(
     (id: string) => bookings.find((booking) => booking.id === id),

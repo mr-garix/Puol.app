@@ -129,6 +129,7 @@ export const createSupabaseProfile = async ({
     first_name: firstName?.trim() || null,
     last_name: lastName?.trim() || null,
     gender: gender ?? null,
+    supply_role: 'none' as const,
     created_at: timestamp,
     updated_at: timestamp,
   };

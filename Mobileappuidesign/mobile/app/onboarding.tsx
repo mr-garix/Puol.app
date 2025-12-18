@@ -172,7 +172,7 @@ export default function OnboardingScreen() {
       {
         id: 'landlord',
         title: 'Je suis bailleur',
-        description: 'Je loue des maisons, appartements, studios, chambres ou boutiques non meublés à louer.',
+        description: 'Je loue des maisons, appartements, studios, boutiques ou chambres non meublés.',
         icon: require('../assets/icons/iconbailleur.png'),
         iconBg: '#4A90E2',
       },

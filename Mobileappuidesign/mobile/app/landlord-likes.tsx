@@ -1,188 +1,532 @@
-import React, { useEffect } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import { useNavigation, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  SafeAreaView,
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+  ActivityIndicator,
+  Platform,
+  StatusBar as NativeStatusBar,
+} from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { useProfile } from '@/src/contexts/ProfileContext';
+import { useLandlordLikeActivities } from '@/src/features/likes/hooks';
+import { formatDistrictCity } from '@/src/utils/location';
 
-const LandlordLikesScreen: React.FC = () => {
+const COLORS = {
+  background: '#F9FAFB',
+  surface: '#FFFFFF',
+  dark: '#0F172A',
+  muted: '#6B7280',
+  border: '#E5E7EB',
+  accent: '#2ECC71',
+  successSoft: 'rgba(46, 204, 113, 0.12)',
+  orangeSoft: 'rgba(251, 191, 36, 0.18)',
+};
+
+const FALLBACK_AVATAR = 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=200&auto=format&fit=crop&q=60';
+const FALLBACK_LISTING = 'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=800&auto=format&fit=crop&q=80';
+
+const STORAGE_KEY_SEEN = '@landlord_like_seen_ids';
+
+const pluralizeLikes = (count: number) => `${count} like${count > 1 ? 's' : ''}`;
+
+const formatGroupLabel = (input: Date) => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(input.getFullYear(), input.getMonth(), input.getDate());
+  const diffDays = Math.round((today.getTime() - target.getTime()) / 86_400_000);
+
+  if (diffDays === 0) {
+    return "Aujourd'hui";
+  }
+  if (diffDays === 1) {
+    return 'Hier';
+  }
+
+  return target.toLocaleDateString('fr-FR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+};
+
+const formatRelativeTime = (input: Date) => {
+  const now = Date.now();
+  const value = input.getTime();
+  if (Number.isNaN(value)) {
+    return '';
+  }
+
+  let diffMs = now - value;
+  if (diffMs <= 0) {
+    return "À l'instant";
+  }
+
+  const diffMinutes = Math.floor(diffMs / 60_000);
+  if (diffMinutes < 1) {
+    return "À l'instant";
+  }
+  if (diffMinutes < 60) {
+    return `Il y a ${diffMinutes} min`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `Il y a ${diffHours} h`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) {
+    return 'Il y a 1 jour';
+  }
+  if (diffDays < 7) {
+    return `Il y a ${diffDays} j`;
+  }
+
+  return input.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    year: input.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
+  });
+};
+
+const buildLikerName = (liker: {
+  firstName: string | null;
+  lastName: string | null;
+  username: string | null;
+  enterpriseName: string | null;
+}) => {
+  const tokens = [liker.firstName, liker.lastName].filter((token) => token && token.trim());
+  if (tokens.length) {
+    return tokens.join(' ');
+  }
+  if (liker.username?.trim()) {
+    return liker.username;
+  }
+  if (liker.enterpriseName?.trim()) {
+    return liker.enterpriseName;
+  }
+  return 'Utilisateur PUOL';
+};
+
+const buildListingLabel = (title?: string | null, city?: string | null, district?: string | null) => {
+  const location = formatDistrictCity(district, city);
+  return location ? `${title ?? 'Annonce PUOL'} • ${location}` : title ?? 'Annonce PUOL';
+};
+
+export default function LandlordLikesScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+  const isAndroid = Platform.OS === 'android';
   const { profile, isProfileLoading } = useProfile();
+  const landlordId = profile?.id ?? null;
+  const isLandlordApproved = profile?.role === 'landlord' && profile.landlordStatus === 'approved';
+  const { activities, summary, isLoading } = useLandlordLikeActivities(landlordId);
+  const [seenLikeIds, setSeenLikeIds] = useState<Set<string>>(new Set());
+  const [seenLoaded, setSeenLoaded] = useState(false);
+  const sessionSeenRef = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    navigation.setOptions({ headerShown: false });
-  }, [navigation]);
+  useFocusEffect(
+    useCallback(() => {
+      NativeStatusBar.setHidden(false, 'fade');
+      return () => {
+        NativeStatusBar.setHidden(false, 'fade');
+      };
+    }, []),
+  );
 
   useEffect(() => {
     if (isProfileLoading) {
       return;
     }
-
-    if (!profile || profile.role !== 'landlord' || profile.landlordStatus !== 'approved') {
+    if (!isLandlordApproved) {
       router.replace('/(tabs)/profile' as never);
     }
-  }, [isProfileLoading, profile, router]);
+  }, [isLandlordApproved, isProfileLoading, router]);
 
-  const listingsCount = profile?.stats.listings ?? 0;
+  useEffect(() => {
+    const loadSeenLikes = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(STORAGE_KEY_SEEN);
+        if (stored) {
+          const parsed = JSON.parse(stored) as string[];
+          setSeenLikeIds(new Set(parsed));
+        }
+      } catch (error) {
+        console.warn('[LandlordLikesScreen] Unable to load seen likes', error);
+      } finally {
+        setSeenLoaded(true);
+      }
+    };
+
+    void loadSeenLikes();
+  }, []);
+
+  // Même positionnement vertical que le header du tableau de bord : padding de 16 (safe area déjà gérée par SafeAreaView)
+  const topPadding = 16;
+  const likedListingCount = useMemo(() => Object.keys(summary.byListing ?? {}).length, [summary.byListing]);
+  const latestActivity = activities[0] ?? null;
+  const latestRelative = latestActivity ? formatRelativeTime(new Date(latestActivity.createdAt)) : 'En attente de likes…';
+
+  const groupedActivities = useMemo(() => {
+    const buckets: { label: string; items: typeof activities }[] = [];
+    const lookup: Record<string, typeof activities> = {};
+
+    activities.forEach((activity) => {
+      const label = formatGroupLabel(new Date(activity.createdAt));
+      if (!lookup[label]) {
+        lookup[label] = [];
+        buckets.push({ label, items: lookup[label] });
+      }
+      lookup[label].push(activity);
+    });
+
+    return buckets;
+  }, [activities]);
+
+  const newLikeIds = useMemo(() => {
+    if (!seenLoaded) {
+      return new Set<string>();
+    }
+    const fresh = new Set<string>();
+    activities.forEach((activity) => {
+      if (!seenLikeIds.has(activity.id)) {
+        fresh.add(activity.id);
+      }
+    });
+    return fresh;
+  }, [activities, seenLikeIds, seenLoaded]);
+
+  useEffect(() => {
+    if (!seenLoaded || newLikeIds.size === 0) {
+      return;
+    }
+    sessionSeenRef.current = new Set([...sessionSeenRef.current, ...Array.from(newLikeIds)]);
+  }, [newLikeIds, seenLoaded]);
+
+  useEffect(() => {
+    return () => {
+      if (!seenLoaded) {
+        return;
+      }
+
+      const stored = new Set(seenLikeIds);
+      activities.forEach((activity) => {
+        stored.add(activity.id);
+      });
+      sessionSeenRef.current.forEach((id) => stored.add(id));
+
+      AsyncStorage.setItem(STORAGE_KEY_SEEN, JSON.stringify(Array.from(stored))).catch((error) => {
+        console.warn('[LandlordLikesScreen] Unable to persist seen likes', error);
+      });
+    };
+  }, [activities, seenLikeIds, seenLoaded]);
+
+  const handleNavigateBack = () => {
+    router.back();
+  };
+
+  const handleOpenListing = (listingId?: string | null) => {
+    if (!listingId) {
+      return;
+    }
+    router.push({ pathname: '/property/[id]', params: { id: listingId } } as never);
+  };
+
+  const renderActivityCard = (activity: (typeof activities)[number]) => {
+    const likerName = buildLikerName(activity.liker);
+    const relativeTime = formatRelativeTime(new Date(activity.createdAt));
+    const listingLabel = buildListingLabel(activity.listingTitle, activity.listingCity, activity.listingDistrict);
+    const shouldShowBadge = newLikeIds.has(activity.id);
+
+    return (
+      <TouchableOpacity
+        key={activity.id}
+        style={styles.activityCard}
+        activeOpacity={0.9}
+        onPress={() => handleOpenListing(activity.listingId)}
+      >
+        <View style={styles.activityLeft}>
+          <Image
+            source={{ uri: activity.liker.avatarUrl ?? FALLBACK_AVATAR }}
+            style={styles.avatar}
+          />
+          <View style={styles.activityContent}>
+            <Text style={styles.activityTitle} numberOfLines={2}>
+              <Text style={styles.activityActor}>{likerName}</Text> aime {activity.listingTitle ?? 'votre annonce'}
+            </Text>
+            <Text style={styles.activityMeta} numberOfLines={1}>
+              {relativeTime} · {listingLabel}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.activityRight}>
+          <Image
+            source={{ uri: activity.listingCoverPhotoUrl ?? FALLBACK_LISTING }}
+            style={styles.thumbnail}
+          />
+          {shouldShowBadge ? (
+            <View style={styles.badge}>
+              <Feather name="heart" size={12} color="#FFFFFF" />
+              <Text style={styles.badgeText} numberOfLines={1}>
+                Nouveau like
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const showEmptyState = !isLoading && activities.length === 0;
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="dark" />
-
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.7}>
-          <Feather name="arrow-left" size={20} color="#111827" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Likes reçus</Text>
-        <View style={styles.headerSpacer} />
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <SafeAreaView style={styles.safeArea}>
+      <View
+        style={[
+          styles.headerWrapper,
+          { paddingTop: topPadding },
+          Platform.OS === 'android' && styles.headerWrapperAndroid,
+        ]}
+      >
+        <View style={[styles.headerRow, Platform.OS === 'android' && styles.headerRowAndroid]}>
+          <TouchableOpacity
+            style={[styles.navButton, Platform.OS === 'android' && styles.navButtonAndroid]}
+            activeOpacity={0.85}
+            onPress={handleNavigateBack}
+          >
+            <Feather name="chevron-left" size={22} color={COLORS.dark} />
+          </TouchableOpacity>
+          <View style={[styles.headerTextGroup, Platform.OS === 'android' && styles.headerTextGroupAndroid]}>
+            <Text style={styles.headerTitle}>Likes reçus</Text>
+            <Text style={styles.headerSubtitle}>Suivez l’engagement sur toutes vos annonces</Text>
+          </View>
+          {Platform.OS === 'android' ? <View style={styles.headerSpacerAndroid} /> : <View style={{ width: 44 }} />}
+        </View>
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.summaryCard}>
-          <View style={styles.summaryHeader}>
-            <Text style={styles.summaryLabel}>Engagement locataires</Text>
-            <View style={styles.summaryBadge}>
-              <Feather name="heart" size={14} color="#DC2626" />
-              <Text style={styles.summaryBadgeText}>0 like</Text>
+          <View>
+            <Text style={styles.summaryLabel}>Total cumulé</Text>
+            <Text style={styles.summaryValue}>{pluralizeLikes(summary.total)}</Text>
+          </View>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryDetails}>
+            <View style={styles.summaryRow}>
+              <Feather name="home" size={16} color="#059669" />
+              <Text style={styles.summaryDetailText}>
+                {likedListingCount > 0
+                  ? `${likedListingCount} annonce${likedListingCount > 1 ? 's' : ''} ayant reçu des likes`
+                  : 'Aucune annonce likée pour le moment'}
+              </Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Feather name="activity" size={16} color="#D97706" />
+              <Text style={styles.summaryDetailText}>{latestRelative}</Text>
             </View>
           </View>
-          <Text style={styles.summaryBody}>
-            Dès que tes annonces bailleur seront publiées, chaque nouveau like s’affichera ici pour que tu suives l’intérêt
-            des locataires en temps réel.
-          </Text>
         </View>
 
-        <View style={styles.emptyCard}>
-          <View style={styles.emptyIcon}>
-            <Feather name="heart" size={26} color="#EF4444" />
+        {isLoading && activities.length === 0 ? (
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="small" color={COLORS.accent} />
+            <Text style={styles.loadingLabel}>Chargement des likes…</Text>
           </View>
-          <Text style={styles.emptyTitle}>Aucun like reçu</Text>
-          <Text style={styles.emptySubtitle}>
-            Publie au moins une annonce bailleur pour commencer à recevoir des likes et mesurer l’intérêt des visiteurs.
-          </Text>
-          <TouchableOpacity style={styles.ctaButton} activeOpacity={0.85} onPress={() => router.push('/landlord-listings' as never)}>
-            <Text style={styles.ctaText}>Publier une annonce</Text>
-            <Feather name="arrow-right" size={16} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
+        ) : null}
 
-        <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>Informations</Text>
-          <Text style={styles.infoText}>• Les likes proviennent uniquement des visiteurs qui consultent tes annonces bailleur.</Text>
-          <Text style={styles.infoText}>• Les statistiques sont mises à jour automatiquement dès qu’un locataire aime un bien.</Text>
-          <Text style={styles.infoText}>• Pas d’annonce publiée = aucun like enregistré pour l’instant.</Text>
-        </View>
+        {showEmptyState ? (
+          <View style={styles.emptyCard}>
+            <View style={styles.emptyIcon}>
+              <Feather name="heart" size={30} color={COLORS.accent} />
+            </View>
+            <Text style={styles.emptyTitle}>Aucun like pour l’instant</Text>
+            <Text style={styles.emptySubtitle}>
+              Dès qu’un locataire aimera l’une de vos annonces, son profil et le logement concerné apparaîtront ici.
+            </Text>
+            <TouchableOpacity
+              style={styles.ctaButton}
+              activeOpacity={0.85}
+              onPress={() => router.push('/landlord-listings' as never)}
+            >
+              <Text style={styles.ctaText}>Publier une annonce bailleur</Text>
+              <Feather name="arrow-up-right" size={16} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {!showEmptyState && groupedActivities.length > 0 && (
+          <View style={styles.activityList}>
+            {groupedActivities.map((group) => (
+              <View key={group.label} style={styles.groupSection}>
+                <Text style={styles.groupLabel}>{group.label}</Text>
+                <View style={{ gap: 12 }}>{group.items.map((activity) => renderActivityCard(activity))}</View>
+              </View>
+            ))}
+          </View>
+        )}
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: COLORS.background,
   },
-  header: {
+  headerWrapper: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: COLORS.background,
+  },
+  headerWrapperAndroid: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: COLORS.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
+    gap: 12,
   },
-  backButton: {
+  headerRowAndroid: {
+    justifyContent: 'space-between',
+    gap: 0,
+  },
+  navButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
     alignItems: 'center',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
+    justifyContent: 'center',
+  },
+  navButtonAndroid: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 0,
+    backgroundColor: '#F3F4F6',
+    marginRight: 12,
+  },
+  headerTextGroup: {
+    flex: 1,
+  },
+  headerTextGroupAndroid: {
+    marginLeft: 4,
   },
   headerTitle: {
-    flex: 1,
-    marginHorizontal: 16,
     fontFamily: 'Manrope',
     fontSize: 20,
     fontWeight: '700',
-    color: '#0F172A',
-    textAlign: 'center',
+    color: COLORS.dark,
   },
-  headerSpacer: {
-    width: 44,
-    height: 44,
+  headerSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: COLORS.muted,
+    marginTop: 2,
   },
-  scrollView: {
-    flex: 1,
+  headerSpacerAndroid: {
+    width: 40,
   },
-  scrollContent: {
-    padding: 20,
-    gap: 20,
+  content: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+    gap: 24,
   },
   summaryCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.surface,
     borderRadius: 24,
-    padding: 24,
-    gap: 16,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.06,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  summaryHeader: {
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 20,
   },
   summaryLabel: {
     fontFamily: 'Manrope',
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6B7280',
-    letterSpacing: 0.3,
+    fontSize: 13,
+    color: COLORS.muted,
   },
-  summaryBadge: {
+  summaryValue: {
+    fontFamily: 'Manrope',
+    fontSize: 28,
+    fontWeight: '700',
+    color: COLORS.dark,
+  },
+  summaryDivider: {
+    width: 1,
+    height: '100%',
+    backgroundColor: COLORS.border,
+  },
+  summaryDetails: {
+    flex: 1,
+    gap: 12,
+  },
+  summaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(248, 113, 113, 0.15)',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    gap: 10,
   },
-  summaryBadgeText: {
+  summaryDetailText: {
+    flex: 1,
     fontFamily: 'Manrope',
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#B91C1C',
+    fontSize: 13,
+    color: COLORS.dark,
   },
-  summaryBody: {
+  loadingCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  loadingLabel: {
     fontFamily: 'Manrope',
     fontSize: 14,
-    lineHeight: 20,
-    color: '#475569',
+    color: COLORS.muted,
   },
   emptyCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.surface,
     borderRadius: 24,
     padding: 24,
-    alignItems: 'center',
-    gap: 14,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    gap: 12,
   },
   emptyIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(248, 113, 113, 0.18)',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: COLORS.successSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -190,50 +534,111 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope',
     fontSize: 18,
     fontWeight: '700',
-    color: '#111827',
-    textAlign: 'center',
+    color: COLORS.dark,
   },
   emptySubtitle: {
     fontFamily: 'Manrope',
     fontSize: 14,
-    lineHeight: 20,
-    color: '#6B7280',
+    color: COLORS.muted,
     textAlign: 'center',
+    lineHeight: 20,
   },
   ctaButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
     borderRadius: 999,
-    backgroundColor: '#059669',
+    backgroundColor: COLORS.accent,
   },
   ctaText: {
     fontFamily: 'Manrope',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#FFFFFF',
   },
-  infoCard: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 20,
+  activityList: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
     padding: 20,
-    gap: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 28,
   },
-  infoTitle: {
+  groupSection: {
+    gap: 14,
+  },
+  groupLabel: {
     fontFamily: 'Manrope',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#0F172A',
+    color: COLORS.muted,
+    textTransform: 'capitalize',
   },
-  infoText: {
+  activityCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 20,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: '#FFFFFF',
+    gap: 12,
+  },
+  activityLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  activityContent: {
+    flex: 1,
+    gap: 4,
+  },
+  activityTitle: {
     fontFamily: 'Manrope',
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#475569',
+    fontSize: 14,
+    color: COLORS.dark,
+  },
+  activityActor: {
+    fontWeight: '700',
+  },
+  activityMeta: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: COLORS.muted,
+  },
+  activityRight: {
+    width: 80,
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  thumbnail: {
+    width: 80,
+    height: 64,
+    borderRadius: 14,
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    minWidth: 108,
+    justifyContent: 'center',
+    backgroundColor: COLORS.accent,
+  },
+  badgeText: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
-
-export default LandlordLikesScreen;

@@ -126,6 +126,35 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     [firebaseUser, supabaseProfile, isBootstrapping, isRefreshingProfile, isLoggedIn, logout, refreshProfile],
   );
 
+  useEffect(() => {
+    const profileId = supabaseProfile?.id;
+
+    if (!profileId) {
+      return;
+    }
+
+    const channel = supabase
+      .channel(`profiles:id=${profileId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${profileId}` },
+        (payload) => {
+          const nextProfile = (payload.new as SupabaseProfile | null) ?? null;
+
+          if (nextProfile) {
+            setSupabaseProfile(nextProfile);
+          } else if (payload.eventType === 'DELETE') {
+            setSupabaseProfile(null);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [supabaseProfile?.id]);
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 

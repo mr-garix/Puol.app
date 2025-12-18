@@ -49,6 +49,8 @@ export interface ProfileData {
   role: ProfileRole;
   hostStatus: ProfileApplicationStatus;
   landlordStatus: ProfileApplicationStatus;
+  previousHostStatus: ProfileApplicationStatus;
+  previousLandlordStatus: ProfileApplicationStatus;
   stats: ProfileStats;
 }
 
@@ -67,6 +69,12 @@ interface ProfileContextValue {
   getUsernameSuggestions: (base?: string) => string[];
   normalizeUsername: (value: string) => string;
   validateUsername: (value: string) => boolean;
+  recentStatusChange: {
+    scope: 'host' | 'landlord';
+    previous: ProfileApplicationStatus;
+    current: ProfileApplicationStatus;
+  } | null;
+  clearRecentStatusChange: () => void;
 }
 
 const defaultStats: ProfileStats = {
@@ -94,6 +102,8 @@ const defaultProfile: ProfileData = {
   role: 'user',
   hostStatus: 'none',
   landlordStatus: 'none',
+  previousHostStatus: 'none',
+  previousLandlordStatus: 'none',
   stats: { ...defaultStats },
 };
 
@@ -131,6 +141,8 @@ const buildProfileFromSupabase = (profile: SupabaseProfile | null): ProfileData 
     role: normalizeRole(profile.role),
     hostStatus: normalizeStatus(profile.host_status),
     landlordStatus: normalizeStatus(profile.landlord_status),
+    previousHostStatus: 'none',
+    previousLandlordStatus: 'none',
     stats: { ...defaultStats },
   };
 };
@@ -145,6 +157,11 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
   const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [isProfileSaving, setIsProfileSaving] = useState(false);
   const [isEnsuringUsername, setIsEnsuringUsername] = useState(false);
+  const [recentStatusChange, setRecentStatusChange] = useState<{
+    scope: 'host' | 'landlord';
+    previous: ProfileApplicationStatus;
+    current: ProfileApplicationStatus;
+  } | null>(null);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -158,7 +175,21 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    setProfile(buildProfileFromSupabase(supabaseProfile));
+    setProfile((current) => {
+      const next = buildProfileFromSupabase(supabaseProfile);
+      if (current) {
+        const hostChanged = current.hostStatus !== next.hostStatus;
+        const landlordChanged = current.landlordStatus !== next.landlordStatus;
+
+        if (hostChanged || landlordChanged) {
+          const payload = hostChanged
+            ? { scope: 'host' as const, previous: current.hostStatus, current: next.hostStatus }
+            : { scope: 'landlord' as const, previous: current.landlordStatus, current: next.landlordStatus };
+          setRecentStatusChange(payload);
+        }
+      }
+      return next;
+    });
     setIsProfileLoading(false);
   }, [isLoggedIn, supabaseProfile]);
 
@@ -290,6 +321,8 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
       getUsernameSuggestions,
       normalizeUsername: normalizeUsernameInput,
       validateUsername: isUsernameValid,
+      recentStatusChange,
+      clearRecentStatusChange: () => setRecentStatusChange(null),
     }),
     [
       checkUsernameAvailability,
@@ -298,6 +331,7 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
       isProfileLoading,
       isProfileSaving,
       profile,
+      recentStatusChange,
       updateProfile,
     ],
   );

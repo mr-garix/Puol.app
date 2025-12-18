@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 
 import { useAuth } from '@/src/contexts/AuthContext';
+import { useProfile } from '@/src/contexts/ProfileContext';
 import { supabase } from '@/src/supabaseClient';
 import type { ListingMediaRow } from '@/src/types/listings';
 import { formatListingLocation } from '@/src/utils/location';
@@ -51,12 +52,26 @@ export default function HostListingsScreen() {
   const isAndroid = Platform.OS === 'android';
   const headerPaddingTop = Math.max(insets.top, 16);
   const { supabaseProfile, isLoggedIn } = useAuth();
+  const { profile } = useProfile();
 
   const [listings, setListings] = useState<HostListingCardData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const listingIdsRef = useRef<Set<string>>(new Set());
   const [isScrolled, setIsScrolled] = useState(false);
+
+  const hostState = useMemo(() => {
+    const hostStatus = supabaseProfile?.host_status ?? profile?.hostStatus ?? 'none';
+    const role = supabaseProfile?.role ?? profile?.role ?? 'user';
+
+    if (hostStatus === 'approved' || role === 'host') {
+      return 'approved';
+    }
+    if (hostStatus === 'pending') {
+      return 'pending';
+    }
+    return 'none';
+  }, [profile?.hostStatus, profile?.role, supabaseProfile?.host_status, supabaseProfile?.role]);
 
   const applyListingDelta = useCallback(
     (listingId: string, field: 'viewCount' | 'likeCount', delta: number) => {
@@ -111,8 +126,13 @@ export default function HostListingsScreen() {
   );
 
   const handleCreateListing = useCallback(() => {
-    router.push('/host-listings/new' as never);
-  }, [router]);
+    if (hostState === 'approved') {
+      router.push('/host-listings/new' as never);
+      return;
+    }
+
+    router.push('/host' as never);
+  }, [hostState, router]);
 
   const fetchHostListings = useCallback(async () => {
     if (!supabaseProfile?.id) {
@@ -317,6 +337,8 @@ export default function HostListingsScreen() {
 
   const isEmpty = useMemo(() => !isLoading && listings.length === 0 && !error, [isLoading, listings.length, error]);
 
+  const shouldShowPendingNotice = hostState === 'pending';
+
   return (
     <SafeAreaView style={[styles.safeArea, isAndroid && styles.safeAreaAndroid]}>
       <StatusBar style="dark" backgroundColor="transparent" translucent />
@@ -359,6 +381,27 @@ export default function HostListingsScreen() {
           <View style={styles.loaderWrapper}>
             <ActivityIndicator size="large" color={COLORS.accent} />
             <Text style={styles.loaderLabel}>Chargement de vos annonces…</Text>
+          </View>
+        )}
+
+        {shouldShowPendingNotice && !isLoading && !error && (
+          <View style={styles.pendingCard}>
+            <View style={styles.pendingIcon}>
+              <Feather name="clock" size={20} color={COLORS.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pendingTitle}>Activation en cours</Text>
+              <Text style={styles.pendingSubtitle}>
+                Ton accès hôte est en vérification. Dès validation, tu pourras publier tes annonces depuis cet espace.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.pendingButton}
+              activeOpacity={0.88}
+              onPress={() => router.push('/host' as never)}
+            >
+              <Text style={styles.pendingButtonText}>Voir ma demande</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -576,6 +619,54 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope',
     fontSize: 14,
     color: COLORS.muted,
+  },
+  pendingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    padding: 20,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: '#FFFFFF',
+  },
+  pendingIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
+    backgroundColor: 'rgba(46,204,113,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pendingTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.dark,
+    marginBottom: 4,
+  },
+  pendingSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    lineHeight: 20,
+    color: COLORS.muted,
+  },
+  pendingButton: {
+    alignSelf: 'stretch',
+    backgroundColor: COLORS.accent,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   emptyCard: {
     backgroundColor: COLORS.surface,

@@ -114,6 +114,7 @@ type HostLikeRow = {
         city: string | null;
         district: string | null;
         host_id: string | null;
+        rental_kind?: string | null;
       }
     | Array<{
         id: string | number;
@@ -122,6 +123,7 @@ type HostLikeRow = {
         city: string | null;
         district: string | null;
         host_id: string | null;
+        rental_kind?: string | null;
       }>
     | null;
   liker:
@@ -188,45 +190,51 @@ const buildHostLikeSummary = (activities: HostLikeActivity[]): HostLikeSummary =
   } satisfies HostLikeSummary;
 };
 
-export const getHostLikeActivities = async (
-  hostId: string | null | undefined,
-): Promise<{ activities: HostLikeActivity[]; summary: HostLikeSummary }> => {
-  if (!hostId) {
-    return { activities: [], summary: EMPTY_SUMMARY };
-  }
+interface LikeActivityFilters {
+  hostId: string;
+  rentalKind?: string | null;
+}
 
-  const { data, error } = await supabase
+const LISTING_LIKES_SELECT = `
+  id,
+  listing_id,
+  profile_id,
+  created_at,
+  listing:listings!inner(
+    id,
+    title,
+    cover_photo_url,
+    city,
+    district,
+    host_id,
+    rental_kind
+  ),
+  liker:profiles(
+    id,
+    username,
+    first_name,
+    last_name,
+    avatar_url,
+    enterprise_name
+  )
+` as const;
+
+const fetchLikeActivities = async ({ hostId, rentalKind }: LikeActivityFilters) => {
+  let query = supabase
     .from('listing_likes')
-    .select(
-      `
-        id,
-        listing_id,
-        profile_id,
-        created_at,
-        listing:listings!inner(
-          id,
-          title,
-          cover_photo_url,
-          city,
-          district,
-          host_id
-        ),
-        liker:profiles(
-          id,
-          username,
-          first_name,
-          last_name,
-          avatar_url,
-          enterprise_name
-        )
-      `,
-    )
+    .select(LISTING_LIKES_SELECT)
     .eq('listing.host_id', hostId)
     .neq('profile_id', hostId)
     .order('created_at', { ascending: false });
 
+  if (rentalKind) {
+    query = query.eq('listing.rental_kind', rentalKind);
+  }
+
+  const { data, error } = await query;
+
   if (error) {
-    console.error('[likes] getHostLikeActivities error', error);
+    console.error('[likes] fetchLikeActivities error', error);
     throw error;
   }
 
@@ -246,4 +254,24 @@ export const getHostLikeActivities = async (
     activities,
     summary: buildHostLikeSummary(activities),
   };
+};
+
+export const getHostLikeActivities = async (
+  hostId: string | null | undefined,
+): Promise<{ activities: HostLikeActivity[]; summary: HostLikeSummary }> => {
+  if (!hostId) {
+    return { activities: [], summary: EMPTY_SUMMARY };
+  }
+
+  return fetchLikeActivities({ hostId });
+};
+
+export const getLandlordLikeActivities = async (
+  landlordId: string | null | undefined,
+): Promise<{ activities: HostLikeActivity[]; summary: HostLikeSummary }> => {
+  if (!landlordId) {
+    return { activities: [], summary: EMPTY_SUMMARY };
+  }
+
+  return fetchLikeActivities({ hostId: landlordId, rentalKind: 'long_term' });
 };

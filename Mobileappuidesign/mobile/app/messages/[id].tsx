@@ -408,10 +408,34 @@ export default function ConversationScreen() {
       }, 600 + Math.min(1200, Math.max(0, Math.floor(trimmed.length * 20))));
     }
 
+    const lower = trimmed.toLowerCase();
+    const visitIntents = [
+      'je souhaite visiter',
+      'j’aimerais visiter',
+      "j'aimerais visiter",
+      'je veux visiter',
+      'programmer une visite',
+      'planifier une visite',
+      'réserver une visite',
+      'reserver une visite',
+      'est-ce que c’est possible de programmer une visite',
+      "est-ce que c'est possible de programmer une visite",
+      'prendre un créneau',
+      'prendre rendez-vous pour visite',
+      'rendez-vous visite',
+    ];
+    const hasVisitIntent = visitIntents.some((phrase) => lower.includes(phrase));
+
     await sendMessage({
       senderProfileId,
       senderRole,
       content: trimmed,
+      metadata: hasVisitIntent
+        ? {
+            intent: 'ui:visit_schedule',
+            visitSuggestion: true,
+          }
+        : undefined,
     });
     setDraft('');
     scrollToEnd();
@@ -565,7 +589,7 @@ export default function ConversationScreen() {
               : null
           : null;
     const normalizedIntent = intentCandidate ?? (metadataRecord?.visitSuggestion === true ? 'ui:visit_schedule' : null);
-    const visitSuggestion = normalizedIntent === 'ui:visit_schedule' && viewerRole === 'guest';
+    const visitSuggestion = normalizedIntent === 'ui:visit_schedule' && isAiMessage && viewerRole === 'guest';
 
     const authorDisplayName = impersonatedHost
       ? hostDisplayName

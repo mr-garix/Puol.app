@@ -28,7 +28,7 @@ export const HostDashboardHeader: React.FC<HostDashboardHeaderProps> = ({
     router.back();
   };
 
-  const summaryStatusLabel = verificationStatus === 'verified' ? 'Hôte vérifié' : 'Hôte en attente de vérification';
+  const summaryStatusLabel = 'Bienvenue';
 
   return (
     <>

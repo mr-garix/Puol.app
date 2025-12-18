@@ -11,9 +11,11 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   Image,
   StatusBar as RNStatusBar,
 } from 'react-native';
+import { Asset } from 'expo-asset';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '@/src/supabaseClient';
@@ -22,6 +24,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import { useHostBookings } from '@/src/features/host/hooks';
 import { requestRemainingPayment } from '@/src/features/bookings/services';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -50,6 +53,7 @@ export default function HostReservationDetailsScreen() {
   const { getBookingById, fetchBooking, isLoading } = useHostBookings();
   const [isFetching, setIsFetching] = useState(false);
   const [isRequestingPayment, setIsRequestingPayment] = useState(false);
+  const [isGeneratingReceipt, setIsGeneratingReceipt] = useState(false);
   const [paymentToast, setPaymentToast] = useState<{ title: string; subtitle: string; tone: 'info' | 'success' } | null>(null);
   const [isGuestAvatarVisible, setIsGuestAvatarVisible] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -178,6 +182,7 @@ export default function HostReservationDetailsScreen() {
   const hasDiscount = discountAmountValue > 0;
   const hasOriginalTotal = originalTotalValue > Number(booking.totalPrice ?? 0);
   const isCancelled = booking.status === 'cancelled';
+
   const handleCancelPress = () => {
     if (isCancelled) {
       return;
@@ -308,14 +313,20 @@ export default function HostReservationDetailsScreen() {
               onPress={() => setIsGuestAvatarVisible(true)}
               style={styles.guestAvatarWrapper}
             >
-              <Image
-                source={{
-                  uri:
-                    booking.guest?.avatarUrl ||
-                    (booking.guest?.username ? `https://i.pravatar.cc/160?u=${booking.guest.username}` : 'https://i.pravatar.cc/160'),
-                }}
-                style={styles.guestAvatar}
-              />
+              {booking.guest?.avatarUrl ? (
+                <Image
+                  source={{ uri: booking.guest.avatarUrl }}
+                  style={styles.guestAvatarImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Avatar
+                  source={undefined}
+                  name={booking.guest?.name || booking.guest?.username || 'Voyageur PUOL'}
+                  size="large"
+                  variant="square"
+                />
+              )}
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <View style={styles.nameRow}>
@@ -459,20 +470,26 @@ export default function HostReservationDetailsScreen() {
         animationType="fade"
         onRequestClose={() => setIsGuestAvatarVisible(false)}
       >
-        <TouchableOpacity
-          style={styles.avatarOverlay}
-          activeOpacity={1}
-          onPress={() => setIsGuestAvatarVisible(false)}
-        >
+        <View style={styles.avatarOverlay}>
+          <TouchableWithoutFeedback onPress={() => setIsGuestAvatarVisible(false)}>
+            <View style={styles.avatarBackdrop} />
+          </TouchableWithoutFeedback>
           <View style={styles.avatarContent}>
-            <Image
-              source={{
-                uri:
-                  booking.guest?.avatarUrl ||
-                  (booking.guest?.username ? `https://i.pravatar.cc/240?u=${booking.guest.username}` : 'https://i.pravatar.cc/240'),
-              }}
-              style={styles.avatarFullImage}
-            />
+            {booking.guest?.avatarUrl ? (
+              <Image
+                source={{ uri: booking.guest.avatarUrl }}
+                style={styles.avatarFullImage}
+                resizeMode="cover"
+              />
+            ) : (
+              <Avatar
+                source={undefined}
+                name={booking.guest?.name || booking.guest?.username || 'Voyageur PUOL'}
+                size="xlarge"
+                variant="square"
+                style={styles.avatarFullImage}
+              />
+            )}
             <TouchableOpacity
               style={styles.avatarCloseButton}
               activeOpacity={0.85}
@@ -481,7 +498,7 @@ export default function HostReservationDetailsScreen() {
               <Feather name="x" size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -613,6 +630,11 @@ const styles = StyleSheet.create({
   guestAvatarWrapper: {
     borderRadius: 28,
     overflow: 'hidden',
+  },
+  guestAvatarImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
   },
   guestAvatar: {
     width: 56,
@@ -923,6 +945,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+  },
+  avatarBackdrop: {
+    ...StyleSheet.absoluteFillObject,
   },
   avatarContent: {
     width: '100%',

@@ -183,6 +183,27 @@ export const useUserReviews = (userId?: string | null): UseUserReviewsResult => 
     void fetchReviews({ initial: true });
   }, [fetchReviews]);
 
+  useEffect(() => {
+    if (!userId) {
+      return;
+    }
+
+    const channel = supabase
+      .channel(`user-reviews:${userId}`)
+      .on(
+        'postgres_changes',
+        { schema: 'public', table: 'reviews', event: '*', filter: `author_id=eq.${userId}` },
+        () => {
+          void fetchReviews({ initial: false });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void channel.unsubscribe();
+    };
+  }, [fetchReviews, userId]);
+
   const refresh = useCallback(async () => {
     await fetchReviews({ initial: false });
   }, [fetchReviews]);

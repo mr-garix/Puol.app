@@ -17,6 +17,7 @@ import { useHostCommentThreads } from '@/src/features/comments/hooks';
 import { useHostBookings, useHostViewStats } from '@/src/features/host/hooks';
 import { useHostReviews } from '@/src/features/reviews/hooks/useHostReviews';
 import { useHostLikeActivities } from '@/src/features/likes/hooks';
+import { useHostVisits } from '@/src/features/host/hooks/useHostVisits';
 import { supabase } from '@/src/supabaseClient';
 
 interface HostProfileSnapshot {
@@ -60,6 +61,7 @@ export default function HostDashboardScreen() {
     supabaseProfile?.id ?? null,
   );
   const { totalCount: hostReviewsCount } = useHostReviews(supabaseProfile?.id ?? null);
+  const { visitsCount: hostVisitsCount, isLoading: hostVisitsLoading } = useHostVisits();
 
   const [fallbackHostProfile, setFallbackHostProfile] = useState<HostProfileSnapshot | null>(null);
   const [fallbackVerificationStatus, setFallbackVerificationStatus] = useState<VerificationStatus>('pending');
@@ -192,7 +194,9 @@ export default function HostDashboardScreen() {
         icon: 'map-pin',
         tint: '#FEF3C7',
         iconColor: '#B45309',
-        countLabel: '0 visite planifiée',
+        countLabel: hostVisitsLoading
+          ? '· · ·'
+          : `${hostVisitsCount} visite${hostVisitsCount > 1 ? 's' : ''}`,
         route: '/host-visits',
       },
       {

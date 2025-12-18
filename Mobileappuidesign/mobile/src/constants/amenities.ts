@@ -59,10 +59,6 @@ export const SHOP_AMENITIES = [
 
 export type ShopAmenityId = (typeof SHOP_AMENITIES)[number]['id'];
 
-const LANDLORD_HIDDEN_AMENITIES = new Set(['housekeeping', 'fan', 'tv', 'smart-tv', 'netflix', 'washer', 'ac', 'wifi']);
-
-export const LANDLORD_AMENITIES = PROPERTY_AMENITIES.filter((option) => !LANDLORD_HIDDEN_AMENITIES.has(option.id));
-
 export const ROAD_AMENITY_VALUE_MAP: Record<string, string> = {
   'road-direct': 'roadside',
   'road-50': 'within_50m',

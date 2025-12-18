@@ -427,3 +427,27 @@ export const fetchOccupiedTimeslots = async (params: {
     .map((row) => row.visit_time)
     .filter((time): time is string => Boolean(time));
 };
+
+export const fetchListingUnavailableDates = async (params: {
+  listingId: string;
+  startDate: string;
+  endDate: string;
+}): Promise<string[]> => {
+  const { listingId, startDate, endDate } = params;
+
+  const { data, error } = await supabase
+    .from('listing_availability')
+    .select('date')
+    .eq('listing_id', listingId)
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .in('status', ['blocked', 'reserved']);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .map((row) => row.date)
+    .filter((date): date is string => Boolean(date));
+};

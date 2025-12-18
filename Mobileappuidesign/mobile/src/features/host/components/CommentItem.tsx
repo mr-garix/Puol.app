@@ -3,6 +3,7 @@ import { View, Text, Image, TouchableOpacity, StyleSheet, Animated } from 'react
 import { useRouter } from 'expo-router';
 
 import { Comment } from './types';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 interface CommentItemProps {
   comment: Comment;
@@ -37,16 +38,6 @@ export const CommentItem: React.FC<CommentItemProps> = ({
     if (!label) return undefined;
     return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
   }, [comment.roleLabel]);
-
-  const avatarSource = useMemo(() => {
-    const uri = comment.userAvatar?.trim();
-    if (uri) {
-      return { uri };
-    }
-    return {
-      uri: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&q=80&auto=format',
-    };
-  }, [comment.userAvatar]);
 
   const handleAuthorPress = useCallback(() => {
     if (!comment.userId) {
@@ -138,9 +129,10 @@ export const CommentItem: React.FC<CommentItemProps> = ({
         disabled={!comment.userId}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
-        <Image
-          source={avatarSource}
-          style={[styles.avatar, (isPreview || isReply) && styles.replyAvatar]}
+        <Avatar
+          source={comment.userAvatar ? { uri: comment.userAvatar } : undefined}
+          name={comment.userName || 'Utilisateur'}
+          size={isPreview || isReply ? 'medium' : 'large'}
         />
       </TouchableOpacity>
 

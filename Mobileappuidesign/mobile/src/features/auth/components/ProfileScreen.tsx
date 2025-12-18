@@ -45,7 +45,6 @@ export interface ProfileScreenProps {
   onEditProfile: () => void;
   onNavigateToMessages: () => void;
   onNavigateToReservations: () => void;
-  onNavigateToListings: () => void;
   onNavigateToContents: () => void;
   onNavigateToReviews: () => void;
   onNavigateToSupport: () => void;
@@ -63,7 +62,6 @@ export interface ProfileScreenProps {
   landlordDashboardStatus?: 'approved' | 'pending' | 'rejected';
   landlordStatusMessage?: string;
   onLandlordDashboardPress?: () => void;
-  showListingsMenu?: boolean;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
@@ -75,7 +73,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onEditProfile,
   onNavigateToMessages,
   onNavigateToReservations,
-  onNavigateToListings,
   onNavigateToContents,
   onNavigateToReviews,
   onNavigateToSupport,
@@ -93,7 +90,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   landlordDashboardStatus,
   landlordStatusMessage,
   onLandlordDashboardPress,
-  showListingsMenu = true,
   reservationsLoading = false,
   reservationsError = null,
   onRetryReservations,
@@ -486,23 +482,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </View>
             <Text style={styles.chevronIcon}>›</Text>
           </TouchableOpacity>
-
-          {showListingsMenu && (
-            <TouchableOpacity style={styles.menuItem} onPress={onNavigateToListings} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={styles.menuIconContainer}>
-                  <Feather name="home" size={20} color="#2ECC71" />
-                </View>
-                <View style={styles.menuTextContainer}>
-                  <Text style={styles.menuItemTitle}>Annonces</Text>
-                  <Text style={styles.menuItemSubtitle}>
-                    {stats.listings} annonces
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.chevronIcon}>›</Text>
-            </TouchableOpacity>
-          )}
 
           <TouchableOpacity style={styles.menuItem} onPress={onNavigateToContents} activeOpacity={0.7}>
             <View style={styles.menuItemLeft}>

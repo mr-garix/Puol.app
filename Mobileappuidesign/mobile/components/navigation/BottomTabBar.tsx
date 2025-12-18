@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View, type ImageSourcePropType } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+
+import { useAuth } from '@/src/contexts/AuthContext';
+import { useProfile } from '@/src/contexts/ProfileContext';
 
 type TabRouteName = 'home' | 'visits' | 'favorites' | 'profile';
 
@@ -32,6 +35,21 @@ const PUOL_GREEN = '#2ECC71';
 const BottomTabBar: React.FC<BottomTabBarProps> = ({ state, descriptors, navigation }) => {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { supabaseProfile } = useAuth();
+  const { profile } = useProfile();
+
+  const hostState = useMemo(() => {
+    const hostStatus = supabaseProfile?.host_status ?? profile?.hostStatus ?? 'none';
+    const role = supabaseProfile?.role ?? profile?.role ?? 'user';
+
+    if (hostStatus === 'approved' || role === 'host') {
+      return 'approved';
+    }
+    if (hostStatus === 'pending') {
+      return 'pending';
+    }
+    return 'none';
+  }, [profile?.hostStatus, profile?.role, supabaseProfile?.host_status, supabaseProfile?.role]);
 
   const orderedRoutes = ROUTE_ORDER.map((name) =>
     state.routes.find((route) => route.name === name),
@@ -50,6 +68,11 @@ const BottomTabBar: React.FC<BottomTabBarProps> = ({ state, descriptors, navigat
   };
 
   const handleFabPress = () => {
+    if (hostState === 'pending') {
+      router.push('/host' as never);
+      return;
+    }
+
     router.push('/publish' as never);
   };
 

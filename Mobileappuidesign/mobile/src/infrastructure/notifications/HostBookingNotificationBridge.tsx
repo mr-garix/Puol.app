@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useHostBookings } from '@/src/features/host/hooks';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { fetchHostListingIds } from '@/src/features/bookings/services';
 
 const HostBookingNotificationBridge = () => {
   console.log('[HostBookingNotificationBridge] COMPONENT MOUNTED - This should always appear!');
@@ -19,6 +20,8 @@ const HostBookingNotificationBridge = () => {
   const { showNotification } = useNotifications();
   const previousStatusesRef = useRef<Record<string, string>>({});
   const knownBookingsRef = useRef<Set<string>>(new Set());
+  const hostListingIdsRef = useRef<Set<string>>(new Set());
+  const hasLoadedHostListingsRef = useRef(false);
 
   console.log('[HostBookingNotificationBridge] Bridge initialized:', {
     isLoggedIn,
@@ -34,6 +37,35 @@ const HostBookingNotificationBridge = () => {
       knownBookingsRef.current.add(booking.id);
     });
   }, [bookings]);
+
+  // Charger les IDs des listings du host pour validation
+  useEffect(() => {
+    hostListingIdsRef.current = new Set();
+    hasLoadedHostListingsRef.current = false;
+
+    const loadHostListingIds = async () => {
+      if (!isLoggedIn || !supabaseProfile) {
+        return;
+      }
+
+      try {
+        const listingIds = await fetchHostListingIds(supabaseProfile.id);
+        hostListingIdsRef.current = new Set(listingIds);
+        console.log('[HostBookingNotificationBridge] Loaded host listing IDs:', {
+          hostId: supabaseProfile.id,
+          listingCount: listingIds.length,
+          listingIds
+        });
+      } catch (error) {
+        console.error('[HostBookingNotificationBridge] Failed to load host listing IDs:', error);
+        hostListingIdsRef.current = new Set();
+      } finally {
+        hasLoadedHostListingsRef.current = true;
+      }
+    };
+
+    loadHostListingIds();
+  }, [isLoggedIn, supabaseProfile]);
 
   // Écouter les changements en temps réel
   useEffect(() => {
@@ -57,7 +89,29 @@ const HostBookingNotificationBridge = () => {
         previousStatus: previousStatusesRef.current[booking.id],
         guestName: booking.guest?.name,
         listingTitle: booking.listingTitle,
-        guest: booking.guest ? { id: booking.guest.id, name: booking.guest.name } : 'no guest data'
+        listingId: booking.listingId,
+        guest: booking.guest ? { id: booking.guest.id, name: booking.guest.name } : 'no guest data',
+        currentHostId: supabaseProfile.id
+      });
+
+      // Validation locale : vérifier que le listing appartient au host
+      if (!booking.listingId) {
+        console.log('[HostBookingNotificationBridge] No listingId in booking, skipping notification');
+        return;
+      }
+      const hasLoadedHostListings = hasLoadedHostListingsRef.current && hostListingIdsRef.current.size > 0;
+      if (hasLoadedHostListings && !hostListingIdsRef.current.has(booking.listingId)) {
+        console.log('[HostBookingNotificationBridge] Listing does not belong to current host, skipping notification', {
+          bookingListingId: booking.listingId,
+          currentHostId: supabaseProfile.id,
+          hostListingIds: Array.from(hostListingIdsRef.current)
+        });
+        return;
+      }
+
+      console.log('[HostBookingNotificationBridge] Notification validated for host', {
+        bookingListingId: booking.listingId,
+        hostId: supabaseProfile.id
       });
 
       const previousStatus = previousStatusesRef.current[booking.id];

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -10,14 +10,22 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Platform,
 } from 'react-native';
+import * as Calendar from 'expo-calendar';
+import * as Print from 'expo-print';
+import { shareAsync } from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Asset } from 'expo-asset';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useAuth } from '@/src/contexts/AuthContext';
 
 import type { ReservationRecord } from '@/src/contexts/ReservationContext';
 import { useReservations } from '@/src/contexts/ReservationContext';
 import { supabase } from '@/src/supabaseClient';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 export interface ReservationDetailsScreenProps {
   reservationId: string;
@@ -36,11 +44,12 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
   const { getReservationById, cancelReservation } = useReservations();
   const reservation = getReservationById(reservationId);
   const insets = useSafeAreaInsets();
+  const { supabaseProfile } = useAuth();
   const [scrollY, setScrollY] = useState(0);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [showRulesModal, setShowRulesModal] = useState(false);
-  const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [isHostAvatarVisible, setIsHostAvatarVisible] = useState(false);
+  const [isGeneratingReceipt, setIsGeneratingReceipt] = useState(false);
   const [hostProfile, setHostProfile] = useState<{ name?: string; phone?: string; avatarUrl?: string | null; username?: string | null; isVerified?: boolean } | null>(null);
 
   const router = useRouter();
@@ -138,6 +147,21 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
   const hasDiscount = (reservation.discountAmount ?? 0) > 0;
   const hasOriginalPrice = (reservation.originalTotal ?? reservation.totalPrice) > reservation.totalPrice;
 
+  const authProfileName = useMemo(() => {
+    if (!supabaseProfile) return null;
+    const tokens = [supabaseProfile.first_name, supabaseProfile.last_name].filter((token) => token && token.trim().length > 0);
+    if (tokens.length) {
+      return tokens.join(' ').trim();
+    }
+    if (supabaseProfile.username) {
+      return `@${supabaseProfile.username}`;
+    }
+    return null;
+  }, [supabaseProfile]);
+
+  const guestDisplayName = reservation.guestName || authProfileName || 'Voyageur PUOL';
+  const guestPhone = reservation.guestPhone || supabaseProfile?.phone || 'Non renseigné';
+
   const trimmedAddress = reservation.propertyAddress?.trim();
   const displayLocation = trimmedAddress && trimmedAddress.length > 0
     ? trimmedAddress
@@ -147,6 +171,85 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
   const hostAvatar = hostProfile?.avatarUrl ?? reservation.hostAvatar ?? reservation.propertyImage;
   const hostRole = hostProfile?.username ?? reservation.hostUsername ?? 'Hôte';
   const hostPhone = hostProfile?.phone ?? reservation.hostPhone;
+
+  const handleDownloadReceipt = useCallback(async () => {
+    try {
+      setIsGeneratingReceipt(true);
+      const logoAsset = Asset.fromModule(require('@/assets/icons/logo.png'));
+      await logoAsset.downloadAsync();
+      const logoUri = logoAsset.localUri ?? logoAsset.uri;
+      const logoBase64 = logoUri
+        ? await FileSystem.readAsStringAsync(logoUri, { encoding: 'base64' })
+        : '';
+
+      const html = `
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <style>
+              body { font-family: Arial, sans-serif; padding: 24px; color: #0F172A; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              .card { border: 1px solid #E5E7EB; border-radius: 12px; padding: 20px; }
+              .row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+              .title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+              .subtitle { font-size: 13px; color: #6B7280; margin-bottom: 16px; }
+              .sectionTitle { font-size: 14px; font-weight: 700; margin: 16px 0 8px; }
+              .value { font-weight: 600; }
+              .logo { width: 120px; height: auto; margin-bottom: 12px; }
+              .divider { height: 1px; background: #E5E7EB; margin: 12px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div style="display:flex; justify-content:center; margin-bottom:16px;">
+                <div style="background:#111827; padding:16px; border-radius:16px; width:160px; height:160px; display:flex; align-items:center; justify-content:center;">
+                  <img class="logo" src="data:image/png;base64,${logoBase64}" style="width:120px;height:auto;" />
+                </div>
+              </div>
+              <div class="title" style="text-align:center;">Reçu de réservation</div>
+              <div class="subtitle" style="text-align:center;">PUOL - ${new Date().toLocaleDateString('fr-FR')}</div>
+              <div class="divider"></div>
+              <div class="sectionTitle">Séjour</div>
+              <div class="row"><span>Logement</span><span class="value">${reservation.propertyTitle || 'Logement PUOL'}</span></div>
+              <div class="row"><span>Adresse</span><span class="value">${displayLocation || 'Adresse non renseignée'}</span></div>
+              <div class="row"><span>Arrivée</span><span class="value">${stayRange.checkIn}</span></div>
+              <div class="row"><span>Départ</span><span class="value">${stayRange.checkOut}</span></div>
+              <div class="row"><span>Nombre de nuits</span><span class="value">${reservation.nights}</span></div>
+              <div class="divider"></div>
+              <div class="sectionTitle">Montants</div>
+              <div class="row"><span>Montant total</span><span class="value">${totalAmount.toLocaleString()} FCFA</span></div>
+              <div class="row"><span>Montant payé</span><span class="value">${amountPaid.toLocaleString()} FCFA</span></div>
+              ${hasOutstandingBalance ? `<div class="row"><span>Reste à payer</span><span class="value">${remainingAmount.toLocaleString()} FCFA</span></div>` : ''}
+              <div class="divider"></div>
+              <div class="sectionTitle">Voyageur</div>
+              <div class="row"><span>Nom</span><span class="value">${guestDisplayName}</span></div>
+              <div class="row"><span>Téléphone</span><span class="value">${guestPhone}</span></div>
+            </div>
+          </body>
+        </html>
+      `;
+
+      const file = await Print.printToFileAsync({ html });
+      await shareAsync(file.uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Partager le reçu' });
+    } catch (error) {
+      Alert.alert('Reçu', "Impossible de générer le reçu pour le moment. Réessaie plus tard.");
+      console.error('receipt generation error', error);
+    } finally {
+      setIsGeneratingReceipt(false);
+    }
+  }, [
+    amountPaid,
+    displayLocation,
+    guestDisplayName,
+    guestPhone,
+    hasOutstandingBalance,
+    remainingAmount,
+    reservation?.nights,
+    reservation?.propertyTitle,
+    stayRange.checkIn,
+    stayRange.checkOut,
+    totalAmount,
+  ]);
 
   const handleOpenMaps = () => {
     if (!displayLocation) {
@@ -166,6 +269,66 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
       'Réservation annulée',
       'Votre réservation a bien été annulée. Votre remboursement sera traité selon notre politique de remboursement et apparaîtra sous 24h maximum.',
     );
+  };
+
+  const ensureCalendarId = async () => {
+    const existing = await Calendar.getCalendarPermissionsAsync();
+    if (existing.status !== 'granted') {
+      const granted = await Calendar.requestCalendarPermissionsAsync();
+      if (granted.status !== 'granted') {
+        throw new Error('calendar_permission_denied');
+      }
+    }
+
+    if (Platform.OS === 'ios') {
+      const defaultCal = await Calendar.getDefaultCalendarAsync();
+      if (defaultCal?.id) return defaultCal.id;
+    }
+
+    const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+    const writable = calendars.find((cal: Calendar.Calendar) => cal.allowsModifications === true);
+    const fallback = calendars[0];
+    if (writable?.id) return writable.id;
+    if (fallback?.id) return fallback.id;
+    throw new Error('no_calendar_available');
+  };
+
+  const handleAddToAgenda = async () => {
+    try {
+      const calendarId = await ensureCalendarId();
+      const startDate = new Date(reservation.checkInDate);
+      const endDate = new Date(reservation.checkOutDate);
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const notes = [
+        'Réservation PUOL',
+        `${stayRange.checkIn} → ${stayRange.checkOut}`,
+        displayLocation ? `Lieu : ${displayLocation}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const eventId = await Calendar.createEventAsync(calendarId, {
+        title: reservation.propertyTitle || 'Séjour PUOL',
+        startDate,
+        endDate,
+        timeZone,
+        location: displayLocation || undefined,
+        allDay: true,
+        notes,
+      });
+
+      if (Platform.OS === 'ios') {
+        await Calendar.openEventInCalendar(eventId);
+      }
+
+      Alert.alert('Ajouté à votre agenda', 'Votre séjour a été ajouté dans votre calendrier.');
+    } catch (error) {
+      console.error('[ReservationDetails] addToCalendar error', error);
+      Alert.alert(
+        "Impossible d'ajouter",
+        "Nous n'avons pas pu accéder à votre agenda. Vérifiez les permissions et réessayez.",
+      );
+    }
   };
 
   return (
@@ -250,6 +413,22 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
               />
             )}
 
+            <TouchableOpacity
+              style={[
+                styles.agendaButton,
+                { marginTop: 12, borderColor: '#111827' },
+                isGeneratingReceipt && { opacity: 0.6 },
+              ]}
+              onPress={handleDownloadReceipt}
+              activeOpacity={0.85}
+              disabled={isGeneratingReceipt}
+            >
+              <Feather name="download" size={18} color={isGeneratingReceipt ? '#9CA3AF' : '#111827'} />
+              <Text style={[styles.agendaButtonText, { color: isGeneratingReceipt ? '#9CA3AF' : '#111827' }]}>
+                {isGeneratingReceipt ? 'Génération...' : 'Télécharger le reçu'}
+              </Text>
+            </TouchableOpacity>
+
             {!isCancelled && (
               <TouchableOpacity style={styles.cancelButton} onPress={() => setShowCancelModal(true)} activeOpacity={0.85}>
                 <Text style={styles.cancelButtonText}>Annuler la réservation</Text>
@@ -262,9 +441,9 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
               <View style={styles.hostInfo}>
                 <TouchableOpacity style={styles.hostAvatar} onPress={() => setIsHostAvatarVisible(true)} activeOpacity={0.85}>
                   {hostAvatar ? (
-                    <Image source={{ uri: hostAvatar }} style={{ width: 56, height: 56, borderRadius: 28 }} />
+                    <Image source={{ uri: hostAvatar }} style={styles.hostAvatarImage} resizeMode="cover" />
                   ) : (
-                    <Text style={{ fontSize: 24 }}>👤</Text>
+                    <Avatar source={undefined} name={hostName} size="xlarge" variant="square" />
                   )}
                 </TouchableOpacity>
                 <View>
@@ -298,7 +477,7 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
             <Text style={styles.chevron}>›</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.agendaButton} onPress={() => setShowCalendarModal(true)} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.agendaButton} onPress={handleAddToAgenda} activeOpacity={0.8}>
             <Feather name="calendar" size={18} color="#2ECC71" />
             <Text style={styles.agendaButtonText}>Ajouter à mon agenda</Text>
           </TouchableOpacity>
@@ -339,29 +518,23 @@ export const ReservationDetailsScreen: React.FC<ReservationDetailsScreenProps> =
         <Text style={[styles.modalText, { marginTop: 8 }]}>Merci de respecter ces règles afin de garantir le bon déroulement de votre séjour.</Text>
       </ConfirmationModal>
 
-      <ConfirmationModal
-        visible={showCalendarModal}
-        icon="calendar"
-        iconBackground="rgba(46,204,113,0.15)"
-        title="Ajouter à l'agenda"
-        primaryLabel="Compris"
-        onClose={() => setShowCalendarModal(false)}
-        primaryAction={() => setShowCalendarModal(false)}
-      >
-        <Text style={[styles.modalText, { textAlign: 'center' }]}>Fonctionnalité à venir 🚀</Text>
-      </ConfirmationModal>
-
       <Modal visible={isHostAvatarVisible} transparent animationType="fade" onRequestClose={() => setIsHostAvatarVisible(false)}>
         <TouchableOpacity style={styles.avatarOverlay} activeOpacity={1} onPress={() => setIsHostAvatarVisible(false)}>
           <View style={styles.avatarContent}>
-            {hostAvatar && (
-              <>
-                <Image source={{ uri: hostAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
-                <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsHostAvatarVisible(false)} activeOpacity={0.8}>
-                  <Feather name="x" size={18} color="#FFFFFF" />
-                </TouchableOpacity>
-              </>
+            {hostAvatar ? (
+              <Image source={{ uri: hostAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
+            ) : (
+              <Avatar
+                source={undefined}
+                name={hostName}
+                size="xlarge"
+                variant="square"
+                style={styles.avatarFullImage}
+              />
             )}
+            <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsHostAvatarVisible(false)} activeOpacity={0.8}>
+              <Feather name="x" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -600,10 +773,16 @@ const styles = StyleSheet.create({
   hostAvatar: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 14,
+    overflow: 'hidden',
     backgroundColor: 'rgba(46,204,113,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  hostAvatarImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
   },
   hostName: {
     fontFamily: 'Manrope',

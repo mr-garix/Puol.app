@@ -122,6 +122,18 @@ export default function BecomeHostScreen() {
   const pendingProfileRef = useRef<SupabaseProfile | null>(null);
   const hasRedirectedRef = useRef(false);
   const backNavigationInFlightRef = useRef(false);
+  const [isSubmittingApplication, setIsSubmittingApplication] = useState(false);
+
+  const isAuthenticated = Boolean(user);
+  const hasPrefilledIdentity = Boolean(user?.first_name && user?.last_name && user?.phone);
+  const normalizedPhone = formatE164PhoneNumber(phoneNumber, phoneCountry);
+  const shouldLockIdentity = isAuthenticated && hasPrefilledIdentity;
+  const phoneDisplay = normalizedPhone
+    ? (() => {
+        const { country, nationalNumber } = parseE164PhoneNumber(normalizedPhone);
+        return `${country.dialCode} ${nationalNumber}`.trim();
+      })()
+    : `${phoneCountry.dialCode} ${phoneNumber}`.trim();
 
   const canSubmit =
     firstName.trim().length > 1 &&
@@ -130,9 +142,16 @@ export default function BecomeHostScreen() {
     city.trim().length > 1 &&
     selectedTypes.length > 0 &&
     !!inventory &&
-    phoneNumber.trim().length === phoneCountry.minLength &&
+    !!normalizedPhone &&
     !isSendingCode &&
+    !isSubmittingApplication &&
     !blockInfo;
+
+  useEffect(() => {
+    if (shouldLockIdentity && isCountryPickerOpen) {
+      setIsCountryPickerOpen(false);
+    }
+  }, [isCountryPickerOpen, shouldLockIdentity]);
 
   useEffect(() => {
     if (resendCooldown <= 0 && resendIntervalRef.current) {
@@ -278,10 +297,10 @@ export default function BecomeHostScreen() {
 
     if (!prefillDoneRef.current) {
       if (user.first_name) {
-        setFirstName((prev) => prev || user.first_name || '');
+        setFirstName(user.first_name || '');
       }
       if (user.last_name) {
-        setLastName((prev) => prev || user.last_name || '');
+        setLastName(user.last_name || '');
       }
       if (user.city) {
         setCity((prev) => prev || user.city || '');
@@ -289,13 +308,11 @@ export default function BecomeHostScreen() {
       if (user.phone) {
         const { country, nationalNumber } = parseE164PhoneNumber(user.phone);
         setPhoneCountry(country);
-        if (!phoneNumber) {
-          setPhoneNumber(nationalNumber);
-        }
+        setPhoneNumber(nationalNumber);
       }
       prefillDoneRef.current = true;
     }
-  }, [evaluateBlockInfo, phoneNumber, user]);
+  }, [evaluateBlockInfo, user]);
 
   useEffect(() => {
     if (!user || hasRedirectedRef.current || modalStep === 'success') {
@@ -305,7 +322,7 @@ export default function BecomeHostScreen() {
     const currentStatus = user.host_status ?? 'none';
     if (currentStatus === 'pending' || currentStatus === 'approved' || user.role === 'host') {
       hasRedirectedRef.current = true;
-      router.replace('/(tabs)/profile' as never);
+      router.replace('/(tabs)' as never);
     }
   }, [modalStep, router, user]);
 
@@ -326,14 +343,127 @@ export default function BecomeHostScreen() {
     setIsResendingCode(false);
   }, []);
 
+  const ensureHostApplication = useCallback(async (profileId: string) => {
+    const { data: existingApplication, error: fetchError } = await supabase
+      .from('host_applications')
+      .select('id, status, reviewed_at')
+      .eq('profile_id', profileId)
+      .maybeSingle();
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      throw fetchError;
+    }
+
+    if (existingApplication) {
+      const needsUpdate =
+        existingApplication.status !== 'approved' || existingApplication.reviewed_at === null;
+
+      if (needsUpdate) {
+        const { error: updateError } = await supabase
+          .from('host_applications')
+          .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+          .eq('id', existingApplication.id);
+
+        if (updateError) {
+          throw updateError;
+        }
+      }
+
+      return;
+    }
+
+    const { error: insertError } = await supabase
+      .from('host_applications')
+      .insert({ profile_id: profileId, status: 'approved', reviewed_at: new Date().toISOString() });
+
+    if (insertError) {
+      throw insertError;
+    }
+  }, []);
+
+  const submitHostApplication = useCallback(
+    async (profileId: string, normalizedPhoneNumber: string) => {
+      await ensureHostApplication(profileId);
+
+      const updates = {
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim() || null,
+        city: city.trim() || null,
+        phone: normalizedPhoneNumber,
+        role: 'host',
+        host_status: 'pending',
+        supply_role: 'host',
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: profileError } = await supabase.from('profiles').update(updates).eq('id', profileId);
+      if (profileError) {
+        throw profileError;
+      }
+
+      await refreshProfile().catch((err) => console.warn('[BecomeHost] refreshProfile warning', err));
+
+      const messageLines = [
+        'Nouvelle demande hôte PUOL',
+        '',
+        `Nom: ${firstName.trim()} ${lastName.trim()}`.trim(),
+        `Téléphone: ${normalizedPhoneNumber}`,
+        `Quartier: ${district.trim() || 'Non précisé'}`,
+        `Ville: ${city.trim() || 'Non précisée'}`,
+        `Types de biens: ${selectedTypes.length ? selectedTypes.join(', ') : 'Non précisés'}`,
+        `Nombre de biens: ${inventory ?? 'Non précisé'}`,
+      ];
+
+      const encodedMessage = encodeURIComponent(messageLines.join('\n'));
+      const whatsappDeepLink = `whatsapp://send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
+      const whatsappApiLink = `https://api.whatsapp.com/send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
+
+      try {
+        await Linking.openURL(whatsappDeepLink);
+      } catch (deepLinkError) {
+        console.warn('[BecomeHost] WhatsApp deep link error', deepLinkError);
+        try {
+          await Linking.openURL(whatsappApiLink);
+        } catch (apiLinkError) {
+          console.warn('[BecomeHost] WhatsApp API link error', apiLinkError);
+          try {
+            await Linking.openURL(WHATSAPP_SUPPORT_LINK);
+          } catch (fallbackError) {
+            console.error('[BecomeHost] WhatsApp open error', fallbackError);
+          }
+        }
+      }
+    },
+    [city, district, ensureHostApplication, firstName, inventory, lastName, refreshProfile, selectedTypes],
+  );
+
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) {
       return;
     }
 
-    const e164Phone = formatE164PhoneNumber(phoneNumber, phoneCountry);
+    const e164Phone = normalizedPhone;
     if (!e164Phone) {
       setVerificationError('Numéro de téléphone invalide.');
+      return;
+    }
+
+    if (shouldLockIdentity && user?.id) {
+      setIsSubmittingApplication(true);
+      setVerificationError(null);
+
+      try {
+        await submitHostApplication(user.id, e164Phone);
+        setBlockInfo(null);
+        setModalStep('success');
+        clearVerificationState();
+      } catch (error) {
+        console.error('[BecomeHost] direct submit error', error);
+        setVerificationError("Impossible d'envoyer la demande. Réessaie ou contacte le support.");
+      } finally {
+        setIsSubmittingApplication(false);
+      }
+
       return;
     }
 
@@ -364,45 +494,16 @@ export default function BecomeHostScreen() {
     } finally {
       setIsSendingCode(false);
     }
-  }, [canSubmit, evaluateBlockInfo, phoneCountry, phoneNumber, startResendCountdown, user]);
-
-  const ensureHostApplication = useCallback(async (profileId: string) => {
-    const { data: existingApplication, error: fetchError } = await supabase
-      .from('host_applications')
-      .select('id, status, reviewed_at')
-      .eq('profile_id', profileId)
-      .maybeSingle();
-
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      throw fetchError;
-    }
-
-    if (existingApplication) {
-      const needsUpdate =
-        existingApplication.status !== 'pending' || existingApplication.reviewed_at !== null;
-
-      if (needsUpdate) {
-        const { error: updateError } = await supabase
-          .from('host_applications')
-          .update({ status: 'pending', reviewed_at: null })
-          .eq('id', existingApplication.id);
-
-        if (updateError) {
-          throw updateError;
-        }
-      }
-
-      return;
-    }
-
-    const { error: insertError } = await supabase
-      .from('host_applications')
-      .insert({ profile_id: profileId, status: 'pending', reviewed_at: null });
-
-    if (insertError) {
-      throw insertError;
-    }
-  }, []);
+  }, [
+    canSubmit,
+    clearVerificationState,
+    evaluateBlockInfo,
+    normalizedPhone,
+    shouldLockIdentity,
+    startResendCountdown,
+    submitHostApplication,
+    user,
+  ]);
 
   const handleVerify = useCallback(
     async (code: string) => {
@@ -442,51 +543,7 @@ export default function BecomeHostScreen() {
           pendingProfileRef.current = created;
         }
 
-        await ensureHostApplication(profileId);
-
-        const updates = {
-          first_name: firstName.trim() || null,
-          last_name: lastName.trim() || null,
-          city: city.trim() || null,
-          phone: normalizedPhone,
-          role: 'host',
-          host_status: 'pending',
-          supply_role: 'host',
-          updated_at: new Date().toISOString(),
-        };
-
-        const { error: profileError } = await supabase.from('profiles').update(updates).eq('id', profileId);
-        if (profileError) {
-          throw profileError;
-        }
-
-        await refreshProfile().catch((err) => console.warn('[BecomeHost] refreshProfile warning', err));
-
-        const messageLines = [
-          'Nouvelle demande hôte PUOL',
-          '',
-          `Nom: ${firstName.trim()} ${lastName.trim()}`.trim(),
-          `Téléphone: ${normalizedPhone}`,
-          `Quartier: ${district.trim() || 'Non précisé'}`,
-          `Ville: ${city.trim() || 'Non précisée'}`,
-          `Types de biens: ${selectedTypes.length ? selectedTypes.join(', ') : 'Non précisés'}`,
-          `Nombre de biens: ${inventory ?? 'Non précisé'}`,
-        ];
-
-        const encodedMessage = encodeURIComponent(messageLines.join('\n'));
-        const whatsappDeepLink = `whatsapp://send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-        const whatsappApiLink = `https://api.whatsapp.com/send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-
-        Linking.openURL(whatsappDeepLink)
-          .catch((deepLinkError) => {
-            console.warn('[BecomeHost] WhatsApp deep link error', deepLinkError);
-            return Linking.openURL(whatsappApiLink);
-          })
-          .catch((apiLinkError) => {
-            console.warn('[BecomeHost] WhatsApp API link error', apiLinkError);
-            return Linking.openURL(WHATSAPP_SUPPORT_LINK);
-          })
-          .catch((err) => console.error('[BecomeHost] WhatsApp open error', err));
+        await submitHostApplication(profileId, normalizedPhone);
 
         setBlockInfo(null);
         setModalStep('success');
@@ -508,15 +565,12 @@ export default function BecomeHostScreen() {
       }
     },
     [
-      city,
       clearVerificationState,
-      district,
-      ensureHostApplication,
       firstName,
       inventory,
       lastName,
-      refreshProfile,
       selectedTypes,
+      submitHostApplication,
       user,
     ],
   );
@@ -549,7 +603,7 @@ export default function BecomeHostScreen() {
   const handleCloseSuccess = useCallback(() => {
     clearVerificationState();
     setModalStep(null);
-    router.replace('/(tabs)/profile' as never);
+    router.replace('/(tabs)' as never);
   }, [clearVerificationState, router]);
 
   const handleBack = useCallback(() => {
@@ -572,7 +626,7 @@ export default function BecomeHostScreen() {
     }
 
     if (blockInfo.action === 'profile') {
-      router.replace('/(tabs)/profile' as never);
+      router.replace('/(tabs)' as never);
     } else if (blockInfo.action === 'home') {
       router.replace('/' as never);
     }
@@ -615,73 +669,89 @@ export default function BecomeHostScreen() {
 
       <Animated.View style={[styles.formCard, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}
       >
-        <View style={styles.nameRow}>
-          <View style={styles.nameField}>
-            <Text style={styles.fieldLabel}>Prénom</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: Alex"
-              placeholderTextColor="#9CA3AF"
-              value={firstName}
-              onChangeText={setFirstName}
-              returnKeyType="next"
-            />
+        {shouldLockIdentity ? (
+          <View style={styles.identitySummary}>
+            <Text style={styles.identitySummaryTitle}>Tes informations d'identité</Text>
+            <View style={styles.identitySummaryRow}>
+              <Text style={styles.identitySummaryLabel}>Nom complet</Text>
+              <Text style={styles.identitySummaryValue}>{`${firstName} ${lastName}`.trim()}</Text>
+            </View>
+            <View style={styles.identitySummaryRow}>
+              <Text style={styles.identitySummaryLabel}>Téléphone</Text>
+              <Text style={styles.identitySummaryValue}>{phoneDisplay}</Text>
+            </View>
           </View>
-          <View style={styles.nameField}>
-            <Text style={styles.fieldLabel}>Nom</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: Emmanuel"
-              placeholderTextColor="#9CA3AF"
-              value={lastName}
-              onChangeText={setLastName}
-              returnKeyType="next"
-            />
-          </View>
-        </View>
+        ) : (
+          <>
+            <View style={styles.nameRow}>
+              <View style={styles.nameField}>
+                <Text style={styles.fieldLabel}>Prénom</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: Alex"
+                  placeholderTextColor="#9CA3AF"
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  returnKeyType="next"
+                />
+              </View>
+              <View style={styles.nameField}>
+                <Text style={styles.fieldLabel}>Nom</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: Emmanuel"
+                  placeholderTextColor="#9CA3AF"
+                  value={lastName}
+                  onChangeText={setLastName}
+                  returnKeyType="next"
+                />
+              </View>
+            </View>
 
-        <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
-          <View style={styles.phoneField}>
-            <TouchableOpacity
-              style={styles.countrySelector}
-              activeOpacity={0.8}
-              onPress={() => setIsCountryPickerOpen((prev) => !prev)}
-            >
-              <Text style={styles.flag}>{phoneCountry.flag}</Text>
-              <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
-            </TouchableOpacity>
-            <TextInput
-              style={styles.phoneInput}
-              placeholder={phoneCountry.inputPlaceholder}
-              placeholderTextColor="#9CA3AF"
-              keyboardType="phone-pad"
-              value={phoneNumber}
-              onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
-            />
-          </View>
-        </View>
-        {isCountryPickerOpen && (
-          <View style={styles.countryList}>
-            {PHONE_COUNTRY_OPTIONS.map((country) => (
-              <TouchableOpacity
-                key={country.code}
-                style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
-                activeOpacity={0.85}
-                onPress={() => {
-                  setPhoneCountry(country);
-                  setPhoneNumber('');
-                  setIsCountryPickerOpen(false);
-                }}
-              >
-                <Text style={styles.flag}>{country.flag}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.countryName}>{country.name}</Text>
-                  <Text style={styles.countryDial}>{country.dialCode}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Numéro WhatsApp</Text>
+              <View style={styles.phoneField}>
+                <TouchableOpacity
+                  style={styles.countrySelector}
+                  activeOpacity={0.8}
+                  onPress={() => setIsCountryPickerOpen((prev) => !prev)}
+                >
+                  <Text style={styles.flag}>{phoneCountry.flag}</Text>
+                  <Text style={styles.prefix}>{phoneCountry.dialCode}</Text>
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.phoneInput}
+                  placeholder={phoneCountry.inputPlaceholder}
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="phone-pad"
+                  value={phoneNumber}
+                  onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
+                />
+              </View>
+            </View>
+            {isCountryPickerOpen && (
+              <View style={styles.countryList}>
+                {PHONE_COUNTRY_OPTIONS.map((country) => (
+                  <TouchableOpacity
+                    key={country.code}
+                    style={[styles.countryItem, country.code === phoneCountry.code && styles.countryItemActive]}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setPhoneCountry(country);
+                      setPhoneNumber('');
+                      setIsCountryPickerOpen(false);
+                    }}
+                  >
+                    <Text style={styles.flag}>{country.flag}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.countryName}>{country.name}</Text>
+                      <Text style={styles.countryDial}>{country.dialCode}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </>
         )}
 
         <View style={styles.fieldGroup}>
@@ -920,6 +990,37 @@ const styles = StyleSheet.create({
   backIcon: {
     fontSize: 20,
     color: '#4B5563',
+  },
+  identitySummary: {
+    backgroundColor: PUOL_GREEN_LIGHT,
+    borderRadius: 20,
+    paddingVertical: 18,
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  identitySummaryTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  identitySummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  identitySummaryLabel: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#475467',
+  },
+  identitySummaryValue: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0F172A',
   },
   header: {
     marginBottom: 20,

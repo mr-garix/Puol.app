@@ -18,6 +18,7 @@ import {
   fetchGuestRentalVisits,
   fetchOccupiedTimeslots,
   fetchExistingVisitForListing,
+  fetchListingUnavailableDates,
   updateRentalVisit,
   type GuestRentalVisit,
   type RentalVisitStatus,
@@ -96,6 +97,7 @@ interface VisitsContextValue {
   getVisitById: (visitId: string) => VisitRecord | undefined;
   checkSlotAvailability: (listingId: string, visitDate: string, visitTime: string) => Promise<boolean>;
   getOccupiedTimeslots: (listingId: string, visitDate: string) => Promise<string[]>;
+  getUnavailableVisitDates: (listingId: string, startDate: string, endDate: string) => Promise<string[]>;
   fetchLatestVisitForListing: (listingId: string) => Promise<VisitRecord | null>;
 }
 
@@ -228,6 +230,18 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
             item.id === visit.id ? { ...item, status: 'confirmed' as VisitStatus, rawStatus: 'confirmed' } : item,
           ),
         );
+
+  const getUnavailableVisitDates = useCallback<VisitsContextValue['getUnavailableVisitDates']>(
+    async (listingId, startDate, endDate) => {
+      try {
+        return await fetchListingUnavailableDates({ listingId, startDate, endDate });
+      } catch (err) {
+        console.error('[VisitsContext] Failed to fetch unavailable dates', err);
+        throw err;
+      }
+    },
+    [],
+  );
         return;
       }
 
@@ -257,6 +271,18 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
       });
     },
     [clearTimer, scheduleAutoConfirm],
+  );
+
+  const getUnavailableVisitDates = useCallback<VisitsContextValue['getUnavailableVisitDates']>(
+    async (listingId, startDate, endDate) => {
+      try {
+        return await fetchListingUnavailableDates({ listingId, startDate, endDate });
+      } catch (err) {
+        console.error('[VisitsContext] Failed to fetch unavailable dates', err);
+        throw err;
+      }
+    },
+    [],
   );
 
   useEffect(() => {
@@ -470,6 +496,7 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
       getVisitById,
       checkSlotAvailability,
       getOccupiedTimeslots,
+      getUnavailableVisitDates,
       fetchLatestVisitForListing,
     }),
     [
@@ -485,6 +512,7 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
       getVisitById,
       checkSlotAvailability,
       getOccupiedTimeslots,
+      getUnavailableVisitDates,
       fetchLatestVisitForListing,
     ],
   );

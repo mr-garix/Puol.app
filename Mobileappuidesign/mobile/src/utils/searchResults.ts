@@ -787,8 +787,11 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
   const listings = rawListings.filter((listing) => {
     const isCommercial = isCommercialPropertyType(listing.property_type);
     if (wantsCommercialOnly) {
-      return isCommercial;
+      // Laisse tous les résultats pour pouvoir afficher les boutiques d’abord,
+      // puis retomber sur le résidentiel (non meublé puis meublé).
+      return true;
     }
+    // Pour les recherches hors boutique, on reste sur le résidentiel.
     return !isCommercial;
   });
   const evaluations = listings.map((listing) =>
@@ -900,7 +903,10 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
   const hasLocationFilter = Boolean(normalize(criteria.location ?? ''));
 
   const rankingComparator = (a: ListingEvaluation, b: ListingEvaluation) => {
-    const computeBucket = (evaluation: ListingEvaluation) => {
+    const furnishingPreference = normalize(criteria.furnishingType ?? '');
+    const requestedType = normalize(criteria.type ?? '');
+
+    const computeBaseBucket = (evaluation: ListingEvaluation) => {
       const typeMatch = !hasTypeFilter || evaluation.matchesType;
       const furnishingMatch = !hasFurnishingFilter || evaluation.matchesFurnishing;
       const locationMatch = !hasLocationFilter || evaluation.locationQuality !== 'none';
@@ -923,9 +929,44 @@ export const searchListings = async (criteria: SearchCriteria): Promise<SearchRe
       return 5;
     };
 
-    const bucketDiff = computeBucket(a) - computeBucket(b);
-    if (bucketDiff !== 0) {
-      return bucketDiff;
+    const computeCustomBucket = (evaluation: ListingEvaluation) => {
+      const isCommercial = isCommercialPropertyType(evaluation.listing.property_type);
+      const isFurnished = Boolean(evaluation.listing.is_furnished);
+
+      // Mode boutique : boutiques d’abord, puis non meublé, puis meublé.
+      if (requestedType === 'boutique') {
+        if (isCommercial) return 0;
+        if (!isFurnished) return 1;
+        return 2;
+      }
+
+      // Préférence meublé : meublé > non meublé > commercial.
+      if (furnishingPreference === 'furnished') {
+        if (!isCommercial && isFurnished) return 0;
+        if (!isCommercial && !isFurnished) return 1;
+        return 2;
+      }
+
+      // Préférence non meublé : non meublé > meublé > commercial.
+      if (furnishingPreference === 'unfurnished') {
+        if (!isCommercial && !isFurnished) return 0;
+        if (!isCommercial && isFurnished) return 1;
+        return 2;
+      }
+
+      // Pas de préférence : conserve l’ordre basé sur le score.
+      return computeBaseBucket(evaluation);
+    };
+
+    const customBucketDiff = computeCustomBucket(a) - computeCustomBucket(b);
+    if (customBucketDiff !== 0) {
+      return customBucketDiff;
+    }
+
+    // En cas d’égalité sur le bucket prioritaire, on retombe sur l’ordre par score + règles de base.
+    const baseBucketDiff = computeBaseBucket(a) - computeBaseBucket(b);
+    if (baseBucketDiff !== 0) {
+      return baseBucketDiff;
     }
 
     return sortByScoreDesc(a, b);

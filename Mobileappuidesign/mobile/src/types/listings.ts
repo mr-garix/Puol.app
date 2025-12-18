@@ -63,7 +63,9 @@ export type ListingFeatureFlagKeys =
   | 'gym'
   | 'rooftop'
   | 'elevator'
-  | 'accessible';
+  | 'accessible'
+  | 'is_roadside'
+  | 'within_50m';
 
 export type FullListing = {
   listing: ListingRow;

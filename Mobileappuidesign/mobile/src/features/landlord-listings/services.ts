@@ -41,7 +41,9 @@ type ListingFeatureBooleanColumn =
   | 'gym'
   | 'rooftop'
   | 'elevator'
-  | 'accessible';
+  | 'accessible'
+  | 'is_roadside'
+  | 'within_50m';
 
 export interface LandlordMediaUploadItem {
   id: string;
@@ -110,9 +112,14 @@ const AMENITY_FEATURE_MAP: Partial<Record<string, ListingFeatureBooleanColumn>> 
   rooftop: 'rooftop',
   elevator: 'elevator',
   accessible: 'accessible',
+  'road-direct': 'is_roadside',
+  'road-50': 'within_50m',
 };
 
-const ROAD_AMENITIES = new Set(['road-100', 'road-200']);
+const ROAD_DISTANCE_AMENITIES = new Map([
+  ['road-100', 'within_100m'],
+  ['road-200', 'beyond_200m'],
+]);
 
 const sanitizeNullableString = (value: string | null | undefined) => {
   if (!value) return null;
@@ -130,8 +137,8 @@ const buildListingFeaturesPayload = (
   };
 
   amenities.forEach((amenity) => {
-    if (ROAD_AMENITIES.has(amenity)) {
-      payload.near_main_road = amenity === 'road-100' ? 'within_100m' : 'beyond_200m';
+    if (ROAD_DISTANCE_AMENITIES.has(amenity)) {
+      payload.near_main_road = ROAD_DISTANCE_AMENITIES.get(amenity) ?? null;
       return;
     }
 

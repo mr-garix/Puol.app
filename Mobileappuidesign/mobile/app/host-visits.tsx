@@ -149,7 +149,7 @@ export default function HostVisitsScreen() {
                   key={visit.id}
                   style={styles.card}
                   activeOpacity={0.9}
-                  onPress={() => router.push(`/landlord-visit/${visit.id}` as never)}
+                  onPress={() => router.push(`/host-visit/${visit.id}` as never)}
                 >
                   <View style={styles.cardHeader}>
                     <View style={styles.statusBadge}>

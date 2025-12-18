@@ -192,6 +192,29 @@ export default function ContactSupportScreen() {
         </View>
 
         <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Contact direct</Text>
+          <View style={styles.channelRow}>
+            <TouchableOpacity style={styles.channelCard} activeOpacity={0.85}>
+              <Feather name="phone-call" size={20} color={PRIMARY} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.channelTitle}>WhatsApp Business</Text>
+                <Text style={styles.channelSubtitle}>+237 6 98 45 10 12</Text>
+              </View>
+              <Feather name="external-link" size={16} color={MUTED} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.channelCard} activeOpacity={0.85}>
+              <Feather name="mail" size={20} color={PRIMARY} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.channelTitle}>support@puol.com</Text>
+                <Text style={styles.channelSubtitle}>Réponse sous 12h</Text>
+              </View>
+              <Feather name="external-link" size={16} color={MUTED} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionLabel}>Type de demande</Text>
           <View style={styles.topicGrid}>
             {[SUPPORT_TOPICS.slice(0, 3), SUPPORT_TOPICS.slice(3)].map((row, rowIndex) => (
@@ -253,29 +276,6 @@ export default function ContactSupportScreen() {
               ) : (
                 <Text style={styles.submitButtonText}>Envoyer au support</Text>
               )}
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Autres canaux</Text>
-          <View style={styles.channelRow}>
-            <TouchableOpacity style={styles.channelCard} activeOpacity={0.85}>
-              <Feather name="phone-call" size={20} color={PRIMARY} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.channelTitle}>WhatsApp Business</Text>
-                <Text style={styles.channelSubtitle}>+237 6 98 45 10 12</Text>
-              </View>
-              <Feather name="external-link" size={16} color={MUTED} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.channelCard} activeOpacity={0.85}>
-              <Feather name="mail" size={20} color={PRIMARY} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.channelTitle}>support@puol.com</Text>
-                <Text style={styles.channelSubtitle}>Réponse sous 12h</Text>
-              </View>
-              <Feather name="external-link" size={16} color={MUTED} />
             </TouchableOpacity>
           </View>
         </View>

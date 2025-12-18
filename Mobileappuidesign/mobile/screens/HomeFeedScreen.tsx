@@ -30,7 +30,7 @@ import { ResizeMode } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 
 import { useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useFocusEffect, useNavigation } from '@react-navigation/native';
 import PagerView from 'react-native-pager-view';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -97,6 +97,8 @@ const PROPERTY_TYPE_SUMMARY: Record<string, string> = {
 };
 
 const getMediaItems = (listing: PropertyListing) => listing.media ?? [];
+
+const DOUBLE_TAP_DELAY_MS = 400;
 
 type AuthPurpose = 'comment' | 'comment_like' | 'like';
 
@@ -174,6 +176,7 @@ const formatTitleForDisplay = (title: string, limit = 32): string => {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const headerTopOffset = insets.top + 8;
   const [activeTopTab, setActiveTopTab] = useState<'explorer' | 'pourToi'>('pourToi');
@@ -186,6 +189,8 @@ export default function HomeScreen() {
 
   const heartAnim = useRef(new Animated.Value(0)).current;
   const lastTapRef = useRef<number>(0);
+  const singleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const likeButtonScale = useRef(new Animated.Value(1)).current;
   const mediaScrollX = useRef(new Animated.Value(0)).current;
   const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings, preserveFeedForAuthFlow } = useFeed();
@@ -226,6 +231,18 @@ export default function HomeScreen() {
   const activeListingId = activeListing?.id ?? '';
   const activeListingHostId = activeListing?.hostId ?? null;
   supabaseProfileRef.current = supabaseProfile;
+
+  // Quand l'utilisateur est déjà sur l'accueil et retape l'onglet Accueil, on rafraîchit le feed.
+  useEffect(() => {
+    // Rafraîchit le feed si l'onglet Accueil est pressé alors que nous sommes déjà dessus.
+    const navAny = navigation as any;
+    const unsubscribe = navAny?.addListener?.('tabPress', () => {
+      if (isFeedFocused) {
+        refreshListings();
+      }
+    });
+    return unsubscribe;
+  }, [navigation, isFeedFocused, refreshListings]);
 
   useEffect(() => {
     const previousLength = prevListingsLengthRef.current;
@@ -773,18 +790,36 @@ export default function HomeScreen() {
     });
   };
 
-  const handleCardTap = (listingId: string) => {
+  const handleCardTap = (listingId: string, onSingleTap: () => void) => {
     const now = Date.now();
-    const DOUBLE_TAP_DELAY = 400;
 
-    if (lastTapRef.current && now - lastTapRef.current < DOUBLE_TAP_DELAY) {
-      handleToggleLike(listingId);
+    if (singleTapTimeoutRef.current) {
+      clearTimeout(singleTapTimeoutRef.current);
+      singleTapTimeoutRef.current = null;
+    }
+
+    if (lastTapRef.current && now - lastTapRef.current < DOUBLE_TAP_DELAY_MS) {
       lastTapRef.current = 0;
+      handleToggleLike(listingId);
       return;
     }
 
     lastTapRef.current = now;
+    singleTapTimeoutRef.current = setTimeout(() => {
+      onSingleTap();
+      singleTapTimeoutRef.current = null;
+      lastTapRef.current = 0;
+    }, DOUBLE_TAP_DELAY_MS);
   };
+
+  useEffect(() => {
+    return () => {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current);
+        singleTapTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const onHorizontalScrollEnd = (
     listing: PropertyListing,
@@ -923,11 +958,11 @@ export default function HomeScreen() {
                 }
 
                 const handlePress = () => {
-                  if (mediaItem.type === 'video') {
-                    toggleVideoPlayback(listing.id, mediaItem.id);
-                    return;
-                  }
-                  handleCardTap(listing.id);
+                  handleCardTap(listing.id, () => {
+                    if (mediaItem.type === 'video') {
+                      toggleVideoPlayback(listing.id, mediaItem.id);
+                    }
+                  });
                 };
 
                 return (
@@ -935,7 +970,13 @@ export default function HomeScreen() {
                     key={`${listing.id}-${mediaItem.id}-${mediaIdx}`}
                     onPress={handlePress}
                     delayLongPress={220}
-                    onLongPress={() => handleCardTap(listing.id)}
+                    onLongPress={() =>
+                      handleCardTap(listing.id, () => {
+                        if (mediaItem.type === 'video') {
+                          toggleVideoPlayback(listing.id, mediaItem.id);
+                        }
+                      })
+                    }
                   >
                     {mediaItem.type === 'video' ? (
                       shouldMountVideoInstance ? (

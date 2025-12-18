@@ -449,7 +449,7 @@ const styles = StyleSheet.create({
   },
   metricLabel: {
     fontFamily: 'Manrope',
-    fontSize: 13,
+    fontSize: 12,
     color: '#475569',
     fontWeight: '600',
   },

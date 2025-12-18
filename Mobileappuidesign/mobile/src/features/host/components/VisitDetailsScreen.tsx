@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   Alert,
   Linking,
@@ -7,13 +7,22 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
   Image,
+  Platform,
 } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as Calendar from 'expo-calendar';
+import * as Print from 'expo-print';
+import { shareAsync } from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Asset } from 'expo-asset';
 
 import { useVisits, VisitRecord } from '@/src/contexts/VisitsContext';
+import { Avatar } from '@/src/components/ui/Avatar';
+import { useAuth } from '@/src/contexts/AuthContext';
 
 interface VisitDetailsScreenProps {
   visit: VisitRecord;
@@ -25,16 +34,17 @@ const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1502672260066-6bc36a7c
 export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, onBack }) => {
   const router = useRouter();
   const { cancelVisit } = useVisits();
+  const { supabaseProfile } = useAuth();
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [showRulesModal, setShowRulesModal] = useState(false);
-  const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [isAvatarVisible, setIsAvatarVisible] = useState(false);
+  const [isGeneratingReceipt, setIsGeneratingReceipt] = useState(false);
   const hostProfile = useMemo(() => visit.host ?? null, [visit.host]);
   const guestProfile = useMemo(() => visit.guest ?? null, [visit.guest]);
   const primaryProfile = useMemo(() => hostProfile ?? guestProfile, [hostProfile, guestProfile]);
   const isHostProfile = Boolean(hostProfile);
   const profileLabel = isHostProfile ? 'Hôte' : 'Visiteur';
-  const profileAvatar = primaryProfile?.avatarUrl ?? 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=300&auto=format&fit=crop&q=80';
+  const profileAvatar = primaryProfile?.avatarUrl?.trim() || null;
   const profileName =
     primaryProfile?.name ??
     primaryProfile?.username ??
@@ -95,6 +105,137 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
     onBack?.();
   };
 
+  const ensureCalendarId = async () => {
+    const existing = await Calendar.getCalendarPermissionsAsync();
+    if (existing.status !== 'granted') {
+      const granted = await Calendar.requestCalendarPermissionsAsync();
+      if (granted.status !== 'granted') {
+        throw new Error('calendar_permission_denied');
+      }
+    }
+
+    if (Platform.OS === 'ios') {
+      const defaultCal = await Calendar.getDefaultCalendarAsync();
+      if (defaultCal?.id) return defaultCal.id;
+    }
+
+    const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+    const writable = calendars.find((cal: Calendar.Calendar) => cal.allowsModifications === true);
+    const fallback = calendars[0];
+    if (writable?.id) return writable.id;
+    if (fallback?.id) return fallback.id;
+    throw new Error('no_calendar_available');
+  };
+
+  const handleAddToCalendar = async () => {
+    try {
+      const calendarId = await ensureCalendarId();
+      const [hour, minute] = (visit.visitTime ?? '12:00').split(':').map((v) => parseInt(v, 10));
+      const startDate = new Date(visitDate);
+      startDate.setHours(Number.isFinite(hour) ? hour : 12, Number.isFinite(minute) ? minute : 0, 0, 0);
+      const endDate = new Date(startDate.getTime() + 45 * 60 * 1000); // créneau de 45 min
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      const notes = [
+        'Visite programmée via PUOL',
+        `Date : ${formattedDate}`,
+        `Heure : ${visit.visitTime}`,
+        visit.propertyLocation ? `Lieu : ${visit.propertyLocation}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const eventId = await Calendar.createEventAsync(calendarId, {
+        title: visit.propertyTitle ?? 'Visite PUOL',
+        startDate,
+        endDate,
+        timeZone,
+        location: visit.propertyLocation || undefined,
+        notes,
+      });
+
+      if (Platform.OS === 'ios') {
+        await Calendar.openEventInCalendar(eventId);
+      }
+
+      Alert.alert('Ajouté à votre agenda', 'Votre visite a été ajoutée dans votre calendrier.');
+    } catch (error) {
+      console.error('[VisitDetails] addToCalendar error', error);
+      Alert.alert(
+        "Impossible d'ajouter",
+        "Nous n'avons pas pu accéder à votre agenda. Vérifiez les permissions et réessayez.",
+      );
+    }
+  };
+
+  const guestName = visit.guest?.name || supabaseProfile?.first_name || 'Visiteur PUOL';
+  const guestPhone = visit.guest?.phone || supabaseProfile?.phone || 'Non renseigné';
+
+  const handleDownloadReceipt = useCallback(async () => {
+    try {
+      setIsGeneratingReceipt(true);
+      const logoAsset = Asset.fromModule(require('@/assets/icons/logo.png'));
+      await logoAsset.downloadAsync();
+      const logoUri = logoAsset.localUri ?? logoAsset.uri;
+      const logoBase64 = logoUri ? await FileSystem.readAsStringAsync(logoUri, { encoding: 'base64' }) : '';
+
+      const html = `
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <style>
+              body { font-family: Arial, sans-serif; padding: 24px; color: #0F172A; background: #F9FAFB; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              .card { border: 1px solid #E5E7EB; border-radius: 12px; padding: 20px; background: #FFFFFF; }
+              .row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+              .title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+              .subtitle { font-size: 13px; color: #6B7280; margin-bottom: 16px; }
+              .sectionTitle { font-size: 14px; font-weight: 700; margin: 16px 0 8px; }
+              .value { font-weight: 600; }
+              .divider { height: 1px; background: #E5E7EB; margin: 12px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div style="display:flex; justify-content:center; margin-bottom:16px;">
+                <div style="background:#111827; padding:16px; border-radius:16px; width:160px; height:160px; display:flex; align-items:center; justify-content:center;">
+                  <img src="data:image/png;base64,${logoBase64}" style="width:120px;height:auto;" />
+                </div>
+              </div>
+              <div class="title" style="text-align:center;">Reçu de visite</div>
+              <div class="subtitle" style="text-align:center;">PUOL - ${new Date().toLocaleDateString('fr-FR')}</div>
+              <div class="divider"></div>
+              <div class="sectionTitle">Visite</div>
+              <div class="row"><span>Logement</span><span class="value">${visit.propertyTitle ?? 'Logement PUOL'}</span></div>
+              <div class="row"><span>Adresse</span><span class="value">${visit.propertyLocation}</span></div>
+              <div class="row"><span>Date</span><span class="value">${formattedDate}</span></div>
+              <div class="row"><span>Heure</span><span class="value">${visit.visitTime}</span></div>
+              <div class="divider"></div>
+              <div class="sectionTitle">Montant</div>
+              <div class="row"><span>Montant payé</span><span class="value">${visit.amount.toLocaleString('fr-FR')} FCFA</span></div>
+              <div class="divider"></div>
+              <div class="sectionTitle">Visiteur</div>
+              <div class="row"><span>Nom</span><span class="value">${guestName}</span></div>
+              <div class="row"><span>Téléphone</span><span class="value">${guestPhone}</span></div>
+            </div>
+          </body>
+        </html>
+      `;
+
+      const file = await Print.printToFileAsync({ html });
+      await shareAsync(file.uri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: 'Partager le reçu de visite',
+      });
+    } catch (error) {
+      console.error('[VisitDetails] receipt error', error);
+      Alert.alert('Reçu', "Impossible de générer le reçu pour le moment. Réessaie plus tard.");
+    } finally {
+      setIsGeneratingReceipt(false);
+    }
+  }, [formattedDate, guestName, guestPhone, visit.amount, visit.propertyLocation, visit.propertyTitle, visit.visitTime]);
+
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -126,7 +267,7 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
               icon="dollar-sign"
               iconComponent={<MaterialCommunityIcons name="cash-multiple" size={18} color="#2ECC71" />}
               label="Montant payé"
-              value="5 000 FCFA"
+              value={`${visit.amount.toLocaleString('fr-FR')} FCFA`}
               highlight
             />
           </View>
@@ -141,7 +282,11 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
 
           <View style={styles.buyerCard}>
             <TouchableOpacity onPress={() => setIsAvatarVisible(true)} activeOpacity={0.9}>
-              <Image source={{ uri: profileAvatar }} style={styles.buyerAvatar} />
+              {profileAvatar ? (
+                <Image source={{ uri: profileAvatar }} style={styles.buyerAvatarImage} resizeMode="cover" />
+              ) : (
+                <Avatar source={undefined} name={profileName} size="xlarge" variant="square" />
+              )}
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.buyerLabel}>{profileLabel}</Text>
@@ -171,14 +316,39 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
           </View>
 
           {!isCancelled && (
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={() => setShowCancelModal(true)}
-              activeOpacity={0.8}
-            >
-              <Feather name="x" size={16} color="#EF4444" />
-              <Text style={styles.cancelButtonText}>Annuler la visite</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                style={[
+                  styles.downloadButton,
+                  isGeneratingReceipt && styles.downloadButtonDisabled,
+                ]}
+                onPress={handleDownloadReceipt}
+                activeOpacity={0.85}
+                disabled={isGeneratingReceipt}
+              >
+                <Feather
+                  name="download"
+                  size={16}
+                  color={isGeneratingReceipt ? '#9CA3AF' : '#111827'}
+                />
+                <Text
+                  style={[
+                    styles.downloadButtonText,
+                    isGeneratingReceipt && styles.downloadButtonTextDisabled,
+                  ]}
+                >
+                  {isGeneratingReceipt ? 'Génération...' : 'Télécharger le reçu'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => setShowCancelModal(true)}
+                activeOpacity={0.8}
+              >
+                <Feather name="x" size={16} color="#EF4444" />
+                <Text style={styles.cancelButtonText}>Annuler la visite</Text>
+              </TouchableOpacity>
+            </>
           )}
 
           <TouchableOpacity style={styles.rulesCard} onPress={() => setShowRulesModal(true)} activeOpacity={0.8}>
@@ -192,7 +362,7 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
 
           <TouchableOpacity
             style={styles.calendarButton}
-            onPress={() => setShowCalendarModal(true)}
+            onPress={handleAddToCalendar}
             activeOpacity={0.8}
           >
             <Feather name="calendar" size={18} color="#2ECC71" />
@@ -245,28 +415,29 @@ export const VisitDetailsScreen: React.FC<VisitDetailsScreenProps> = ({ visit, o
         <Text style={[styles.modalText, { marginTop: 8 }]}>Merci de respecter ces règles afin de garantir le bon déroulement des visites.</Text>
       </InfoModal>
 
-      <InfoModal
-        visible={showCalendarModal}
-        icon="calendar"
-        iconBackground="rgba(46,204,113,0.15)"
-        title="Ajouter à l'agenda"
-        onClose={() => setShowCalendarModal(false)}
-        actions={[{
-          label: 'Compris',
-          onPress: () => setShowCalendarModal(false),
-          primary: true,
-        }]}
-      >
-        <Text style={[styles.modalText, { textAlign: 'center' }]}>Fonctionnalité à venir 🚀</Text>
-      </InfoModal>
-
       <Modal visible={isAvatarVisible} transparent animationType="fade" onRequestClose={() => setIsAvatarVisible(false)}>
-        <View style={styles.avatarOverlay}>
-          <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsAvatarVisible(false)} activeOpacity={0.8}>
-            <Feather name="x" size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-          <Image source={{ uri: profileAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
-        </View>
+        <TouchableWithoutFeedback onPress={() => setIsAvatarVisible(false)}>
+          <View style={styles.avatarOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.avatarContent}>
+                {profileAvatar ? (
+                  <Image source={{ uri: profileAvatar }} style={styles.avatarFullImage} resizeMode="cover" />
+                ) : (
+                  <Avatar
+                    source={undefined}
+                    name={profileName}
+                    size="xlarge"
+                    variant="square"
+                    style={styles.avatarFullImage}
+                  />
+                )}
+                <TouchableOpacity style={styles.avatarCloseButton} onPress={() => setIsAvatarVisible(false)} activeOpacity={0.85}>
+                  <Feather name="x" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
       </Modal>
     </View>
   );
@@ -472,7 +643,13 @@ const styles = StyleSheet.create({
   buyerAvatar: {
     width: 64,
     height: 64,
-    borderRadius: 32,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  buyerAvatarImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
   },
   buyerLabel: {
     fontFamily: 'Manrope',
@@ -532,25 +709,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  avatarFullImage: {
-    width: '80%',
+  avatarBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  avatarContent: {
+    width: '85%',
+    maxWidth: 320,
     aspectRatio: 1,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
+    borderRadius: 20,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarFullImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 20,
   },
   avatarCloseButton: {
     position: 'absolute',
-    top: 60,
-    right: 32,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    top: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(17,24,39,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -668,6 +851,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#111827',
+  },
+  downloadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#111827',
+    marginBottom: 12,
+  },
+  downloadButtonDisabled: {
+    opacity: 0.6,
+  },
+  downloadButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  downloadButtonTextDisabled: {
+    color: '#9CA3AF',
   },
 });
 

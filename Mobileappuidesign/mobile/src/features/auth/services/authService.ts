@@ -87,7 +87,7 @@ export async function verifyOtp(
 
   const { data: insertedProfile, error: insertError } = await supabase
     .from('profiles')
-    .insert({ phone: sanitizedPhone })
+    .insert({ phone: sanitizedPhone, supply_role: 'none' })
     .select('*')
     .single();
 
