@@ -19,6 +19,7 @@ import { Feather } from '@expo/vector-icons';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useProfile } from '@/src/contexts/ProfileContext';
 import { supabase } from '@/src/supabaseClient';
+import { fetchListingCountMap } from '@/src/features/listings/services/engagementCounts';
 import type { ListingMediaRow } from '@/src/types/listings';
 import { formatListingLocation } from '@/src/utils/location';
 
@@ -166,20 +167,14 @@ export default function HostListingsScreen() {
 
       const listingIds = rows.map((row) => row.id);
       listingIdsRef.current = new Set(listingIds);
-      const [mediaResult, viewResult, likeResult] = await Promise.all([
+      const [mediaResult, viewCountByListing, likeCountByListing] = await Promise.all([
         supabase
           .from('listing_media')
           .select('*')
           .in('listing_id', listingIds)
           .order('position', { ascending: true }),
-        supabase
-          .from('listing_views')
-          .select('listing_id')
-          .in('listing_id', listingIds),
-        supabase
-          .from('listing_likes')
-          .select('listing_id')
-          .in('listing_id', listingIds),
+        fetchListingCountMap('listing_views', listingIds),
+        fetchListingCountMap('listing_likes', listingIds),
       ]);
 
       const { data: mediaRows, error: mediaError } = mediaResult;
@@ -187,39 +182,11 @@ export default function HostListingsScreen() {
         throw mediaError;
       }
 
-      const { data: viewRows, error: viewRowsError } = viewResult;
-      if (viewRowsError) {
-        throw viewRowsError;
-      }
-
-      const { data: likeRows, error: likeRowsError } = likeResult;
-      if (likeRowsError) {
-        throw likeRowsError;
-      }
-
       const mediaByListing = (mediaRows ?? []).reduce<Record<string, ListingMediaRow[]>>((acc, media) => {
         if (!acc[media.listing_id]) {
           acc[media.listing_id] = [];
         }
         acc[media.listing_id].push(media as ListingMediaRow);
-        return acc;
-      }, {});
-
-      const viewCountByListing = (viewRows ?? []).reduce<Record<string, number>>((acc, row) => {
-        const listingId = typeof row?.listing_id === 'string' ? row.listing_id : null;
-        if (!listingId) {
-          return acc;
-        }
-        acc[listingId] = (acc[listingId] ?? 0) + 1;
-        return acc;
-      }, {});
-
-      const likeCountByListing = (likeRows ?? []).reduce<Record<string, number>>((acc, row) => {
-        const listingId = typeof row?.listing_id === 'string' ? row.listing_id : null;
-        if (!listingId) {
-          return acc;
-        }
-        acc[listingId] = (acc[listingId] ?? 0) + 1;
         return acc;
       }, {});
 

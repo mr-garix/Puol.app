@@ -1,0 +1,363 @@
+import { useMemo, useState, type ReactNode } from 'react';
+import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  Search,
+  Filter,
+  MapPin,
+  Phone,
+  CheckCircle2,
+  Clock3,
+  AlertTriangle,
+  ArrowLeft,
+} from 'lucide-react';
+import type { HostRequest, HostRequestStatus } from '../../UsersManagement';
+
+type HostRequestsBoardProps = {
+  requests: HostRequest[];
+};
+
+const statusLabels: Record<HostRequestStatus, string> = {
+  pending: 'À vérifier',
+  approved: 'Approuvé',
+  rejected: 'Rejeté',
+};
+
+const statusBadgeStyles: Record<HostRequestStatus, string> = {
+  pending: 'bg-amber-50 text-amber-700 border border-amber-100',
+  approved: 'bg-emerald-50 text-emerald-700 border border-emerald-100',
+  rejected: 'bg-rose-50 text-rose-700 border border-rose-100',
+};
+
+const statusIcons: Record<HostRequestStatus, ReactNode> = {
+  pending: <Clock3 className="w-3.5 h-3.5" />,
+  approved: <CheckCircle2 className="w-3.5 h-3.5" />,
+  rejected: <AlertTriangle className="w-3.5 h-3.5" />,
+};
+
+export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | HostRequestStatus>('all');
+  const [cityFilter, setCityFilter] = useState<'all' | string>('all');
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+
+  const stats = useMemo(
+    () =>
+      (['pending', 'approved', 'rejected'] as HostRequestStatus[]).map((status) => ({
+        status,
+        count: requests.filter((request) => request.status === status).length,
+      })),
+    [requests],
+  );
+
+  const cities = useMemo(
+    () => Array.from(new Set(requests.map((request) => request.city))).sort((a, b) => a.localeCompare(b, 'fr-FR')),
+    [requests],
+  );
+
+  const filteredRequests = useMemo(() => {
+    return requests.filter((request) => {
+      const matchesSearch =
+        request.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        request.phone.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        request.city.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || request.status === statusFilter;
+      const matchesCity = cityFilter === 'all' || request.city === cityFilter;
+      return matchesSearch && matchesStatus && matchesCity;
+    });
+  }, [requests, searchQuery, statusFilter, cityFilter]);
+
+  const selectedRequest = useMemo(
+    () => requests.find((request) => request.id === selectedRequestId) ?? null,
+    [requests, selectedRequestId],
+  );
+
+  const handleViewRequest = (requestId: string) => {
+    setSelectedRequestId(requestId);
+    setViewMode('detail');
+  };
+
+  const handleBackToList = () => {
+    setViewMode('list');
+  };
+
+  if (viewMode === 'detail' && selectedRequest) {
+    return (
+      <HostRequestDetailView
+        request={selectedRequest}
+        onBack={handleBackToList}
+        statusLabels={statusLabels}
+        statusBadgeStyles={statusBadgeStyles}
+        statusIcons={statusIcons}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {stats.map(({ status, count }) => (
+          <Card key={status}>
+            <CardContent className="p-5 space-y-2">
+              <p className="text-sm text-gray-500 uppercase">{statusLabels[status]}</p>
+              <p className="text-3xl font-semibold text-gray-900">{count}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative flex-1">
+              <Input
+                placeholder="Rechercher par nom, contact ou ville..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="pl-10 rounded-xl"
+              />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Select value={statusFilter} onValueChange={(value: 'all' | HostRequestStatus) => setStatusFilter(value)}>
+                <SelectTrigger className="w-[180px] rounded-xl">
+                  <SelectValue placeholder="Statut" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous statuts</SelectItem>
+                  <SelectItem value="pending">À vérifier</SelectItem>
+                  <SelectItem value="approved">Approuvé</SelectItem>
+                  <SelectItem value="rejected">Rejeté</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={cityFilter} onValueChange={(value: 'all' | string) => setCityFilter(value)}>
+                <SelectTrigger className="w-[180px] rounded-xl">
+                  <SelectValue placeholder="Ville" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les villes</SelectItem>
+                  {cities.map((city) => (
+                    <SelectItem key={city} value={city}>
+                      {city}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-gray-100">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-gray-50/50">
+                  <TableHead>Date</TableHead>
+                  <TableHead>Candidat</TableHead>
+                  <TableHead>Contact</TableHead>
+                  <TableHead>Expérience</TableHead>
+                  <TableHead>Statut</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRequests.map((request) => (
+                  <TableRow key={request.id} className="hover:bg-gray-50/80">
+                    <TableCell className="text-sm text-gray-500">{request.submittedAt}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar className="border border-gray-100">
+                          <AvatarImage src={request.avatarUrl} alt={request.fullName} />
+                          <AvatarFallback>
+                            {request.firstName.charAt(0)}
+                            {request.lastName.charAt(0)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{request.fullName}</p>
+                          <p className="text-xs text-gray-500 flex items-center gap-1">
+                            <MapPin className="w-3 h-3" />
+                            {request.city}
+                          </p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                        <Phone className="w-3 h-3" />
+                        {request.phone}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm text-gray-900">
+                      {request.experienceYears} ans · {request.listingsHosted} annonces
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={`rounded-full gap-1 ${statusBadgeStyles[request.status]}`}>
+                        {statusIcons[request.status]}
+                        {statusLabels[request.status]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => handleViewRequest(request.id)}
+                      >
+                        Voir la candidature
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            {filteredRequests.length === 0 && (
+              <div className="py-12 text-center space-y-2">
+                <Filter className="w-10 h-10 text-gray-300 mx-auto" />
+                <p className="text-gray-600">Aucune demande ne correspond à ces critères.</p>
+                <p className="text-sm text-gray-400">Ajustez les filtres ou réinitialisez la recherche.</p>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+type HostRequestDetailViewProps = {
+  request: HostRequest;
+  onBack: () => void;
+  statusLabels: Record<HostRequestStatus, string>;
+  statusBadgeStyles: Record<HostRequestStatus, string>;
+  statusIcons: Record<HostRequestStatus, ReactNode>;
+};
+
+function HostRequestDetailView({
+  request,
+  onBack,
+  statusLabels,
+  statusBadgeStyles,
+  statusIcons,
+}: HostRequestDetailViewProps) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" className="rounded-full" onClick={onBack}>
+          <ArrowLeft className="w-4 h-4 mr-2" />
+          Retour aux demandes
+        </Button>
+        <Badge variant="outline" className="rounded-full text-xs">
+          Demande #{request.id}
+        </Badge>
+      </div>
+
+      <div className="rounded-3xl bg-gradient-to-br from-indigo-900 via-indigo-800 to-indigo-700 text-white p-8">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+          <div className="flex items-center gap-4">
+            <Avatar className="size-20 border-4 border-white/30">
+              <AvatarImage src={request.avatarUrl} alt={request.fullName} />
+              <AvatarFallback className="text-lg">
+                {request.firstName.charAt(0)}
+                {request.lastName.charAt(0)}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="text-white/70 text-sm uppercase">Candidat host</p>
+              <h1 className="text-3xl font-semibold">{request.fullName}</h1>
+              <p className="text-white/80 flex items-center gap-2 text-sm">
+                <MapPin className="w-4 h-4 text-white/70" />
+                {request.city}
+              </p>
+            </div>
+          </div>
+          <Badge className={`rounded-full gap-1 px-4 py-1.5 text-base ${statusBadgeStyles[request.status]}`}>
+            {statusIcons[request.status]}
+            {statusLabels[request.status]}
+          </Badge>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <Card className="xl:col-span-2 rounded-3xl">
+          <CardContent className="p-6 space-y-6">
+            <div>
+              <p className="text-sm text-gray-500 uppercase">Résumé de la candidature</p>
+              <h2 className="text-2xl text-gray-900">Motivation & ambitions</h2>
+            </div>
+            <p className="text-base leading-relaxed text-gray-700">{request.motivation}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-2xl border border-gray-100 p-4">
+                <p className="text-xs text-gray-500 uppercase">Expérience</p>
+                <p className="text-2xl font-semibold text-gray-900">{request.experienceYears} ans</p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4">
+                <p className="text-xs text-gray-500 uppercase">Annonces actives</p>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {request.listingsHosted} biens
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-3xl">
+          <CardContent className="p-6 space-y-5">
+            <div className="space-y-2">
+              <p className="text-sm text-gray-500 uppercase">Contacts</p>
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <Phone className="w-4 h-4 text-gray-400" />
+                {request.phone}
+              </div>
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <MapPin className="w-4 h-4 text-gray-400" />
+                {request.city}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm text-gray-500 uppercase">Documents reçus</p>
+              <div className="flex flex-wrap gap-2">
+                {request.documents.map((doc) => (
+                  <Badge key={doc} variant="secondary" className="rounded-lg">
+                    {doc}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <Button variant="outline" className="w-full rounded-xl">
+                Demander des pièces complémentaires
+              </Button>
+              <div className="flex gap-3">
+                <Button variant="destructive" className="flex-1 rounded-xl">
+                  Refuser
+                </Button>
+                <Button className="flex-1 rounded-xl">Approuver</Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

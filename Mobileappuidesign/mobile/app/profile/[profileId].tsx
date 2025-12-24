@@ -33,6 +33,7 @@ import {
 import { recordProfileShare, resolveProfileShareChannel } from '@/src/features/profiles/services/shareService';
 import { buildProfileShareUrl } from '@/src/utils/helpers';
 import { supabase } from '@/src/supabaseClient';
+import { fetchListingCountMap } from '@/src/features/listings/services/engagementCounts';
 import { AuthModal } from '@/src/features/auth/components/AuthModal';
 import { LoginWithOTPScreen } from '@/src/features/auth/components/LoginWithOTPScreen';
 import { SignUpScreen } from '@/src/features/auth/components/SignUpScreen';
@@ -990,25 +991,25 @@ export default function PublicProfileScreen() {
 
       const rows = data ?? [];
       const listingIds = rows.map((listing) => listing.id).filter((id): id is string => Boolean(id));
-      let viewRows: { listing_id?: string | null }[] = [];
-      let likeRows: { listing_id?: string | null }[] = [];
-      let commentRows: { listing_id?: string | null }[] = [];
+      let viewCountByListing: Record<string, number> = {};
+      let likeCountByListing: Record<string, number> = {};
+      let commentCountByListing: Record<string, number> = {};
 
       if (listingIds.length > 0) {
-        const [{ data: viewsData }, { data: likesData }, { data: commentsData }] = await Promise.all([
-          supabase.from('listing_views').select('listing_id').in('listing_id', listingIds),
-          supabase.from('listing_likes').select('listing_id').in('listing_id', listingIds),
-          supabase.from('listing_comments').select('listing_id').in('listing_id', listingIds),
+        const [viewsData, likesData, commentsData] = await Promise.all([
+          fetchListingCountMap('listing_views', listingIds),
+          fetchListingCountMap('listing_likes', listingIds),
+          fetchListingCountMap('listing_comments', listingIds),
         ]);
-        viewRows = viewsData ?? [];
-        likeRows = likesData ?? [];
-        commentRows = commentsData ?? [];
+        viewCountByListing = viewsData;
+        likeCountByListing = likesData;
+        commentCountByListing = commentsData;
       }
 
       const mapped: ListingCard[] = rows.map((listing) => {
-        const views = viewRows.filter((row) => row.listing_id === listing.id).length;
-        const likes = likeRows.filter((row) => row.listing_id === listing.id).length;
-        const comments = commentRows.filter((row) => row.listing_id === listing.id).length;
+        const views = viewCountByListing[listing.id] ?? 0;
+        const likes = likeCountByListing[listing.id] ?? 0;
+        const comments = commentCountByListing[listing.id] ?? 0;
         return {
           id: listing.id,
           title: listing.title,
