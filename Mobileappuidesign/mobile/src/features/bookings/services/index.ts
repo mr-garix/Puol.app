@@ -135,6 +135,73 @@ const reserveListingDates = async (listingId: string, dates: string[]) => {
   }
 };
 
+export const markBookingPaid = async (bookingId: string) => {
+  console.log(`[markBookingPaid] Marking booking ${bookingId} as paid/confirmed`);
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({
+      status: 'confirmed',
+      payment_status: 'paid',
+      deposit_paid: true,
+      remaining_paid: true,
+      remaining_payment_status: 'paid',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', bookingId)
+    .select(BOOKING_SELECT)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[markBookingPaid] Error updating booking:', error);
+    throw error;
+  }
+
+  if (!data) {
+    console.error('[markBookingPaid] Booking not found:', bookingId);
+    throw new Error('booking_not_found');
+  }
+
+  return mapToGuestBooking(data as any);
+};
+
+export const cancelBookingAfterPaymentFailure = async (bookingId: string) => {
+  console.log(`[cancelBookingAfterPaymentFailure] Cancelling booking ${bookingId} and releasing dates`);
+
+  const { data: bookingRow, error: fetchError } = await supabase
+    .from('bookings')
+    .select('id, listing_id, checkin_date, checkout_date')
+    .eq('id', bookingId)
+    .maybeSingle();
+
+  if (fetchError) {
+    console.error('[cancelBookingAfterPaymentFailure] Error fetching booking:', fetchError);
+    throw fetchError;
+  }
+
+  if (!bookingRow) {
+    console.warn('[cancelBookingAfterPaymentFailure] Booking not found, nothing to cancel:', bookingId);
+    return;
+  }
+
+  const stayDates = buildStayDates(bookingRow.checkin_date, bookingRow.checkout_date);
+
+  // Release dates before deleting the booking
+  try {
+    await releaseListingDates(bookingRow.listing_id, stayDates);
+  } catch (releaseError) {
+    console.error('[cancelBookingAfterPaymentFailure] Error releasing dates:', releaseError);
+  }
+
+  const { error: deleteError } = await supabase.from('bookings').delete().eq('id', bookingId);
+
+  if (deleteError) {
+    console.error('[cancelBookingAfterPaymentFailure] Error deleting booking:', deleteError);
+    throw deleteError;
+  }
+
+  console.log('[cancelBookingAfterPaymentFailure] Booking cancelled and dates released');
+};
+
 export const fetchHostListingIds = async (hostProfileId: string): Promise<string[]> => {
   const { data, error } = await supabase
     .from('listings')
@@ -327,15 +394,25 @@ const mapToGuestBooking = (record: BookingRow & {
   const listingHostId = record.listing?.host_id;
   const hostProfile = record.listing?.host;
 
-  // Détecter le statut de paiement du solde basé sur updated_at
+  // Détecter le statut de paiement du solde basé sur remaining_amount et remaining_payment_status
   let remainingPaymentStatus: 'idle' | 'requested' | 'paid' | undefined = 'idle';
   const rawRemainingStatus = record.remaining_payment_status ?? null;
+  const remainingAmount = record.remaining_amount ?? 0;
 
-  if (rawRemainingStatus === 'requested' || rawRemainingStatus === 'paid') {
-    remainingPaymentStatus = rawRemainingStatus;
-  } else if (record.remaining_amount === 0 && record.remaining_paid) {
+  // Logique : si remaining_amount > 0, il y a toujours un reste à payer
+  if (remainingAmount > 0) {
+    // Il y a un reste à payer
+    remainingPaymentStatus = rawRemainingStatus === 'requested' ? 'requested' : 'idle';
+  }
+  // Si remaining_amount === 0 ET remaining_paid === true, le solde est payé
+  else if (remainingAmount === 0 && record.remaining_paid) {
     remainingPaymentStatus = 'paid';
-  } else if (record.updated_at && record.updated_at.startsWith('PAYMENT_REQUESTED_')) {
+  }
+  // Si le statut est explicitement défini et qu'il n'y a pas de reste
+  else if (rawRemainingStatus === 'requested' || rawRemainingStatus === 'paid') {
+    remainingPaymentStatus = rawRemainingStatus;
+  }
+  else if (record.updated_at && record.updated_at.startsWith('PAYMENT_REQUESTED_')) {
     remainingPaymentStatus = 'requested';
   }
 
@@ -400,15 +477,25 @@ const mapToHostBooking = (record: BookingRow & {
   const computedOriginal = record.nightly_price * record.nights;
   const originalTotal = discountAmount > 0 ? record.total_price + discountAmount : computedOriginal;
 
-  // Détecter le statut de paiement du solde basé sur updated_at
+  // Détecter le statut de paiement du solde basé sur remaining_amount et remaining_payment_status
   let remainingPaymentStatus: 'idle' | 'requested' | 'paid' | undefined = 'idle';
   const rawRemainingStatus = record.remaining_payment_status ?? null;
+  const remainingAmount = record.remaining_amount ?? 0;
 
-  if (rawRemainingStatus === 'requested' || rawRemainingStatus === 'paid') {
-    remainingPaymentStatus = rawRemainingStatus;
-  } else if (record.remaining_amount === 0 && record.remaining_paid) {
+  // Logique : si remaining_amount > 0, il y a toujours un reste à payer
+  if (remainingAmount > 0) {
+    // Il y a un reste à payer
+    remainingPaymentStatus = rawRemainingStatus === 'requested' ? 'requested' : 'idle';
+  }
+  // Si remaining_amount === 0 ET remaining_paid === true, le solde est payé
+  else if (remainingAmount === 0 && record.remaining_paid) {
     remainingPaymentStatus = 'paid';
-  } else if (record.updated_at && record.updated_at.startsWith('PAYMENT_REQUESTED_')) {
+  }
+  // Si le statut est explicitement défini et qu'il n'y a pas de reste
+  else if (rawRemainingStatus === 'requested' || rawRemainingStatus === 'paid') {
+    remainingPaymentStatus = rawRemainingStatus;
+  }
+  else if (record.updated_at && record.updated_at.startsWith('PAYMENT_REQUESTED_')) {
     remainingPaymentStatus = 'requested';
   }
 
@@ -581,12 +668,19 @@ export interface CreateBookingInput {
 }
 
 export const createBooking = async (input: CreateBookingInput) => {
+  console.log('[createBooking] Début création booking avec input:', input);
+  
   const stayDates = buildStayDates(input.checkInDate, input.checkOutDate);
+  console.log('[createBooking] Dates de séjour construites:', stayDates);
+  
   if (!stayDates.length) {
+    console.error('[createBooking] Plage de dates invalide');
     throw new Error('invalid_stay_range');
   }
 
+  console.log('[createBooking] Vérification disponibilité des dates...');
   await assertDatesAvailable(input.listingId, stayDates);
+  console.log('[createBooking] Dates disponibles confirmées');
 
   const isSplitPayment = input.nights >= 8;
   const enforcedRemainingNights = isSplitPayment ? Math.min(2, input.nights) : 0;
@@ -642,6 +736,8 @@ export const createBooking = async (input: CreateBookingInput) => {
     created_at: new Date().toISOString(),
   };
 
+  console.log('[createBooking] Insertion en base avec payload:', payload);
+  
   const { data, error } = await supabase
     .from('bookings')
     .insert(payload)
@@ -649,21 +745,32 @@ export const createBooking = async (input: CreateBookingInput) => {
     .maybeSingle();
 
   if (error) {
+    console.error('[createBooking] Erreur insertion booking:', error);
     throw error;
   }
 
   if (!data) {
+    console.error('[createBooking] Aucune donnée retournée après insertion');
     throw new Error('Unable to create booking');
   }
+  
+  console.log('[createBooking] Booking inséré avec succès:', data);
 
   try {
+    console.log('[createBooking] Réservation des dates dans le calendrier...');
     await reserveListingDates(input.listingId, stayDates);
+    console.log('[createBooking] Dates réservées avec succès');
   } catch (availabilityError) {
+    console.error('[createBooking] Erreur réservation dates, suppression du booking:', availabilityError);
     await supabase.from('bookings').delete().eq('id', data.id);
     throw availabilityError;
   }
 
-  return mapToGuestBooking(data as any);
+  console.log('[createBooking] Mapping vers GuestBooking...');
+  const mapped = mapToGuestBooking(data as any);
+  console.log('[createBooking] Booking créé et mappé avec succès:', mapped);
+  
+  return mapped;
 };
 
 export const requestRemainingPayment = async (bookingId: string) => {

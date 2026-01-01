@@ -28,7 +28,6 @@ import {
   Search,
   Filter,
   MapPin,
-  Mail,
   Phone,
   CheckCircle2,
   Clock3,
@@ -36,6 +35,7 @@ import {
   ArrowLeft
 } from 'lucide-react';
 import type { LandlordRequest, LandlordRequestStatus } from '../../UsersManagement';
+import { approveLandlordApplication, rejectLandlordApplication } from '@/lib/services/landlords';
 
 type LandlordRequestsBoardProps = {
   requests: LandlordRequest[];
@@ -65,13 +65,19 @@ export function LandlordRequestsBoard({ requests }: LandlordRequestsBoardProps) 
   const [cityFilter, setCityFilter] = useState<'all' | string>('all');
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, LandlordRequestStatus>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingAction, setProcessingAction] = useState<'approve' | 'reject' | null>(null);
+
+  const getStatus = (request: LandlordRequest) => statusOverrides[request.id] ?? request.status;
 
   const stats = useMemo(() => {
     return (['pending', 'approved', 'rejected'] as LandlordRequestStatus[]).map((status) => ({
       status,
-      count: requests.filter((request) => request.status === status).length
+      count: requests.filter((request) => getStatus(request) === status).length
     }));
-  }, [requests]);
+  }, [requests, statusOverrides]);
 
   const cities = useMemo(() => {
     return Array.from(new Set(requests.map((request) => request.city))).sort((a, b) =>
@@ -81,22 +87,71 @@ export function LandlordRequestsBoard({ requests }: LandlordRequestsBoardProps) 
 
   const filteredRequests = useMemo(() => {
     return requests.filter((request) => {
+      const effectiveStatus = getStatus(request);
       const matchesSearch =
         request.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         request.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
         request.phone.toLowerCase().includes(searchQuery.toLowerCase()) ||
         request.city.toLowerCase().includes(searchQuery.toLowerCase());
 
-      const matchesStatus = statusFilter === 'all' || request.status === statusFilter;
+      const matchesStatus = statusFilter === 'all' || effectiveStatus === statusFilter;
       const matchesCity = cityFilter === 'all' || request.city === cityFilter;
 
       return matchesSearch && matchesStatus && matchesCity;
     });
-  }, [requests, searchQuery, statusFilter, cityFilter]);
+  }, [requests, searchQuery, statusFilter, cityFilter, statusOverrides]);
 
   const selectedRequest = useMemo(() => {
     return requests.find((request) => request.id === selectedRequestId) ?? null;
   }, [requests, selectedRequestId]);
+
+  const handleApprove = async (request: LandlordRequest) => {
+    if (!request || !request.profileId) {
+      setActionError('Impossible de valider : profil lié manquant.');
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingAction('approve');
+    setActionError(null);
+    try {
+      const ok = await approveLandlordApplication(request.id, request.profileId);
+      if (!ok) {
+        setActionError("Échec de l'approbation sur Supabase.");
+        return;
+      }
+      setStatusOverrides((prev) => ({ ...prev, [request.id]: 'approved' }));
+    } catch (error) {
+      console.warn('[LandlordRequestsBoard] approve failed', error);
+      setActionError("Une erreur est survenue lors de l'approbation.");
+    } finally {
+      setIsProcessing(false);
+      setProcessingAction(null);
+    }
+  };
+
+  const handleReject = async (request: LandlordRequest) => {
+    if (!request || !request.profileId) {
+      setActionError('Impossible de refuser : profil lié manquant.');
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingAction('reject');
+    setActionError(null);
+    try {
+      const ok = await rejectLandlordApplication(request.id, request.profileId);
+      if (!ok) {
+        setActionError("Échec du refus sur Supabase.");
+        return;
+      }
+      setStatusOverrides((prev) => ({ ...prev, [request.id]: 'rejected' }));
+    } catch (error) {
+      console.warn('[LandlordRequestsBoard] reject failed', error);
+      setActionError("Une erreur est survenue lors du refus.");
+    } finally {
+      setIsProcessing(false);
+      setProcessingAction(null);
+    }
+  };
 
   const handleViewRequest = (requestId: string) => {
     setSelectedRequestId(requestId);
@@ -108,10 +163,17 @@ export function LandlordRequestsBoard({ requests }: LandlordRequestsBoardProps) 
   };
 
   if (viewMode === 'detail' && selectedRequest) {
+    const status = getStatus(selectedRequest);
     return (
       <LandlordRequestDetailView
         request={selectedRequest}
         onBack={handleBackToList}
+        onApprove={handleApprove}
+        onReject={handleReject}
+        isProcessing={isProcessing}
+        processingAction={processingAction}
+        actionError={actionError}
+        status={status}
         statusBadgeStyles={statusBadgeStyles}
         statusIcons={statusIcons}
         statusLabels={statusLabels}
@@ -219,12 +281,23 @@ export function LandlordRequestsBoard({ requests }: LandlordRequestsBoardProps) 
                       </div>
                     </TableCell>
                     <TableCell className="text-sm text-gray-900">
-                      {request.experienceYears} ans · {request.unitsPortfolio} unités
+                      <div className="space-y-1">
+                        <span>{request.unitsPortfolio} unités</span>
+                        {request.propertyTypes.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {request.propertyTypes.map((type) => (
+                              <Badge key={type} variant="secondary" className="rounded-full px-2 py-0.5 text-xs">
+                                {type}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
-                      <Badge className={`rounded-full gap-1 ${statusBadgeStyles[request.status]}`}>
-                        {statusIcons[request.status]}
-                        {statusLabels[request.status]}
+                      <Badge className={`rounded-full gap-1 ${statusBadgeStyles[getStatus(request)]}`}>
+                        {statusIcons[getStatus(request)]}
+                        {statusLabels[getStatus(request)]}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
@@ -261,6 +334,12 @@ export function LandlordRequestsBoard({ requests }: LandlordRequestsBoardProps) 
 type LandlordRequestDetailViewProps = {
   request: LandlordRequest;
   onBack: () => void;
+  onApprove: (request: LandlordRequest) => void;
+  onReject: (request: LandlordRequest) => void;
+  isProcessing: boolean;
+  processingAction: 'approve' | 'reject' | null;
+  actionError: string | null;
+  status: LandlordRequestStatus;
   statusLabels: Record<LandlordRequestStatus, string>;
   statusBadgeStyles: Record<LandlordRequestStatus, string>;
   statusIcons: Record<LandlordRequestStatus, ReactNode>;
@@ -269,6 +348,12 @@ type LandlordRequestDetailViewProps = {
 function LandlordRequestDetailView({
   request,
   onBack,
+  onApprove,
+  onReject,
+  isProcessing,
+  processingAction,
+  actionError,
+  status,
   statusLabels,
   statusBadgeStyles,
   statusIcons
@@ -280,10 +365,21 @@ function LandlordRequestDetailView({
           <ArrowLeft className="w-4 h-4 mr-2" />
           Retour aux demandes
         </Button>
+        {status !== 'approved' && (
+          <Button className="rounded-full" disabled={isProcessing} onClick={() => onApprove(request)}>
+            {isProcessing ? 'Approbation...' : 'Approuver la demande'}
+          </Button>
+        )}
         <Badge variant="outline" className="rounded-full text-xs">
           Demande #{request.id}
         </Badge>
       </div>
+
+      {actionError ? (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="text-red-700 text-sm py-3">{actionError}</CardContent>
+        </Card>
+      ) : null}
 
       <div className="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 text-white p-8">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -305,10 +401,10 @@ function LandlordRequestDetailView({
             </div>
           </div>
           <Badge
-            className={`rounded-full gap-1 px-4 py-1.5 text-base ${statusBadgeStyles[request.status]}`}
+            className={`rounded-full gap-1 px-4 py-1.5 text-base ${statusBadgeStyles[status]}`}
           >
-            {statusIcons[request.status]}
-            {statusLabels[request.status]}
+            {statusIcons[status]}
+            {statusLabels[status]}
           </Badge>
         </div>
       </div>
@@ -318,19 +414,30 @@ function LandlordRequestDetailView({
           <CardContent className="p-6 space-y-6">
             <div>
               <p className="text-sm text-gray-500 uppercase">Résumé de la candidature</p>
-              <h2 className="text-2xl text-gray-900">Motivation & ambitions</h2>
             </div>
-            <p className="text-base leading-relaxed text-gray-700">{request.motivation}</p>
+            {request.motivation.trim().length > 0 && (
+              <p className="text-base leading-relaxed text-gray-700">{request.motivation}</p>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="rounded-2xl border border-gray-100 p-4">
-                <p className="text-xs text-gray-500 uppercase">Expérience</p>
-                <p className="text-2xl font-semibold text-gray-900">{request.experienceYears} ans</p>
-              </div>
               <div className="rounded-2xl border border-gray-100 p-4">
                 <p className="text-xs text-gray-500 uppercase">Portefeuille</p>
                 <p className="text-2xl font-semibold text-gray-900">
                   {request.unitsPortfolio} unités
                 </p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 p-4">
+                <p className="text-xs text-gray-500 uppercase">Types de biens</p>
+                {request.propertyTypes.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {request.propertyTypes.map((type) => (
+                      <Badge key={type} variant="secondary" className="rounded-lg">
+                        {type}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-lg text-gray-400 mt-2">—</p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -340,10 +447,6 @@ function LandlordRequestDetailView({
           <CardContent className="p-6 space-y-5">
             <div className="space-y-2">
               <p className="text-sm text-gray-500 uppercase">Contacts</p>
-              <div className="flex items-center gap-2 text-sm text-gray-700">
-                <Mail className="w-4 h-4 text-gray-400" />
-                {request.email}
-              </div>
               <div className="flex items-center gap-2 text-sm text-gray-700">
                 <Phone className="w-4 h-4 text-gray-400" />
                 {request.phone}
@@ -366,14 +469,30 @@ function LandlordRequestDetailView({
             </div>
 
             <div className="space-y-3">
-              <Button variant="outline" className="w-full rounded-xl">
-                Demander des pièces complémentaires
-              </Button>
               <div className="flex gap-3">
-                <Button variant="destructive" className="flex-1 rounded-xl">
-                  Refuser
+                <Button
+                  variant="destructive"
+                  className="flex-1 rounded-xl"
+                  disabled={isProcessing || status === 'rejected'}
+                  onClick={() => onReject(request)}
+                >
+                  {processingAction === 'reject'
+                    ? 'Refus...'
+                    : status === 'rejected'
+                      ? 'Déjà refusé'
+                      : 'Refuser'}
                 </Button>
-                <Button className="flex-1 rounded-xl">Approuver</Button>
+                <Button
+                  className="flex-1 rounded-xl"
+                  disabled={isProcessing || status === 'approved'}
+                  onClick={() => onApprove(request)}
+                >
+                  {processingAction === 'approve'
+                    ? 'Approbation...'
+                    : status === 'approved'
+                      ? 'Déjà approuvé'
+                      : 'Approuver'}
+                </Button>
               </div>
             </div>
           </CardContent>

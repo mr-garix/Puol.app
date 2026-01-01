@@ -29,6 +29,7 @@ interface VisitScheduleModalProps {
   onClose: () => void;
   onConfirm: (date: Date, time: string) => void;
   listingId: string;
+  hostProfileId: string; // Ajouté pour le paiement
   initialDate?: Date | null;
   initialTime?: string;
 }
@@ -38,6 +39,7 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
   onClose,
   onConfirm,
   listingId,
+  hostProfileId,
   initialDate,
   initialTime,
 }) => {
@@ -48,6 +50,7 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
   const [isFetchingSlots, setIsFetchingSlots] = useState(false);
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [slotError, setSlotError] = useState<string | null>(null);
+  
   const [unavailableDates, setUnavailableDates] = useState<string[]>([]);
   const [isFetchingUnavailableDates, setIsFetchingUnavailableDates] = useState(false);
 
@@ -204,6 +207,8 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
         void loadOccupiedTimeslots(selectedDate);
         return;
       }
+      
+      // Créneau disponible, retourner date/heure au parent pour le paiement
       onConfirm(selectedDate, selectedTime);
       handleClose();
     } catch (err) {

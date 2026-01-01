@@ -20,6 +20,7 @@ import { useNavigation, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 
@@ -41,8 +42,10 @@ import {
   resetPhoneConfirmation,
   startPhoneSignIn,
 } from '@/src/features/auth/phoneAuthService';
+import { HostVerificationModal } from '@/src/features/auth/components/HostVerificationModal';
+import { LandlordSuccessScreen } from '@/src/features/auth/components/LandlordSuccessScreen';
 import { firebaseConfig } from '@/src/firebaseClient';
-import { HostVerificationModal, LandlordSuccessScreen } from '@/src/features/auth/components';
+import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 const PUOL_GREEN = '#2ECC71';
 const PUOL_GREEN_LIGHT = 'rgba(46, 204, 113, 0.12)';
@@ -126,6 +129,8 @@ export default function BecomeLandlordScreen() {
   const pendingProfileRef = useRef<SupabaseProfile | null>(null);
   const prefillDoneRef = useRef(false);
   const hasRedirectedRef = useRef(false);
+  const justCompletedRef = useRef(false);
+  const [hasLandlordCompletionFlag, setHasLandlordCompletionFlag] = useState(false);
 
   const isAuthenticated = Boolean(user);
   const hasPrefilledIdentity = Boolean(user?.first_name && user?.last_name && user?.phone);
@@ -339,11 +344,33 @@ export default function BecomeLandlordScreen() {
     }
 
     const currentStatus = user.landlord_status ?? 'none';
-    if (currentStatus === 'pending' || currentStatus === 'approved' || user.role === 'landlord') {
+    if (currentStatus === 'approved') {
       hasRedirectedRef.current = true;
       router.replace('/(tabs)' as never);
     }
   }, [modalStep, router, user]);
+
+  useEffect(() => {
+    let mounted = true;
+    const checkCompletionFlag = async () => {
+      try {
+        const flag = await AsyncStorage.getItem(STORAGE_KEYS.LANDLORD_APPLICATION_COMPLETED);
+        if (!mounted) return;
+        const completed = flag === 'true';
+        setHasLandlordCompletionFlag(completed);
+        if (completed && !hasRedirectedRef.current && modalStep !== 'success' && !justCompletedRef.current) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        }
+      } catch (error) {
+        console.warn('[BecomeLandlord] read LANDLORD_APPLICATION_COMPLETED failed', error);
+      }
+    };
+    checkCompletionFlag();
+    return () => {
+      mounted = false;
+    };
+  }, [router]);
 
   const handleBlockAction = useCallback(() => {
     if (!blockInfo?.action) {
@@ -408,6 +435,15 @@ export default function BecomeLandlordScreen() {
     }
   }, []);
 
+  const markLandlordCompletion = useCallback(async () => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.LANDLORD_APPLICATION_COMPLETED, 'true');
+      setHasLandlordCompletionFlag(true);
+    } catch (error) {
+      console.warn('[BecomeLandlord] persist completion flag failed', error);
+    }
+  }, []);
+
   const submitLandlordApplication = useCallback(
     async (profileId: string, normalizedPhoneNumber: string) => {
       await ensureLandlordApplication(profileId);
@@ -429,6 +465,7 @@ export default function BecomeLandlordScreen() {
       }
 
       await refreshProfile().catch((err) => console.warn('[BecomeLandlord] refreshProfile warning', err));
+      await markLandlordCompletion();
 
       const messageLines = [
         'Nouvelle demande bailleur PUOL',
@@ -476,14 +513,21 @@ export default function BecomeLandlordScreen() {
     }
 
     if (shouldLockIdentity && user?.id) {
+      const alreadyCompleted = hasLandlordCompletionFlag;
       setIsSubmittingApplication(true);
       setVerificationError(null);
 
       try {
         await submitLandlordApplication(user.id, e164Phone);
         setBlockInfo(null);
-        setModalStep('success');
         clearVerificationState();
+        if (alreadyCompleted) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        } else {
+          justCompletedRef.current = true;
+          setModalStep('success');
+        }
       } catch (error) {
         console.error('[BecomeLandlord] direct submit error', error);
         setVerificationError("Impossible d'envoyer la demande. Réessaie ou contacte le support.");
@@ -524,8 +568,10 @@ export default function BecomeLandlordScreen() {
   }, [
     canSubmit,
     clearVerificationState,
-    evaluateBlockInfo,
+    clearVerificationState,
+    hasLandlordCompletionFlag,
     normalizedPhone,
+    router,
     shouldLockIdentity,
     startResendCountdown,
     submitLandlordApplication,
@@ -570,11 +616,18 @@ export default function BecomeLandlordScreen() {
           pendingProfileRef.current = created;
         }
 
+        const alreadyCompleted = hasLandlordCompletionFlag;
         await submitLandlordApplication(profileId, normalizedPhone);
 
         setBlockInfo(null);
-        setModalStep('success');
         clearVerificationState();
+        if (alreadyCompleted) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        } else {
+          justCompletedRef.current = true;
+          setModalStep('success');
+        }
       } catch (error) {
         console.error('[BecomeLandlord] OTP verification error', error);
         const errorCode = (error as { code?: string })?.code;
@@ -591,7 +644,7 @@ export default function BecomeLandlordScreen() {
         setIsSubmitting(false);
       }
     },
-    [clearVerificationState, submitLandlordApplication, user],
+    [clearVerificationState, hasLandlordCompletionFlag, router, submitLandlordApplication, user],
   );
 
   const handleResendCode = useCallback(async () => {
@@ -621,9 +674,9 @@ export default function BecomeLandlordScreen() {
 
   const handleCloseSuccess = useCallback(() => {
     clearVerificationState();
+    justCompletedRef.current = false;
     setModalStep(null);
-    router.replace('/(tabs)/profile' as never);
-  }, [clearVerificationState, router]);
+  }, [clearVerificationState]);
 
   useFocusEffect(
     useCallback(() => {

@@ -37,6 +37,7 @@ export type ListingRecord = {
   price: number;
   priceType: 'jour' | 'mois';
   status: ListingStatus;
+  statusLabel?: string;
   owner: string;
   ownerLabel: string;
   images?: number;
@@ -66,8 +67,8 @@ type ListingsBoardProps = {
 
 const getListingStatusBadge = (status: ListingStatus) => {
   const variants = {
-    pending: { label: 'En attente', className: 'bg-orange-100 text-orange-700' },
-    approved: { label: 'Approuvée', className: 'bg-green-100 text-green-700' },
+    pending: { label: 'Brouillon', className: 'bg-orange-100 text-orange-700' },
+    approved: { label: 'En ligne', className: 'bg-green-100 text-green-700' },
     rejected: { label: 'Refusée', className: 'bg-red-100 text-red-700' },
     suspended: { label: 'Suspendue', className: 'bg-gray-100 text-gray-700' },
   };
@@ -194,6 +195,7 @@ export function ListingsBoard({
               <TableBody>
                 {filteredListings.map((listing) => {
                   const statusBadge = getListingStatusBadge(listing.status);
+                  const statusLabel = listing.statusLabel ?? statusBadge.label;
                   return (
                     <TableRow key={listing.id} className="hover:bg-gray-50">
                       <TableCell>
@@ -241,7 +243,7 @@ export function ListingsBoard({
                         </span>
                       </TableCell>
                       <TableCell className="align-top">
-                        <Badge className={statusBadge.className}>{statusBadge.label}</Badge>
+                        <Badge className={statusBadge.className}>{statusLabel}</Badge>
                       </TableCell>
                       <TableCell className="text-sm text-gray-500 align-top">{listing.createdAt}</TableCell>
                       <TableCell className="text-right align-top">

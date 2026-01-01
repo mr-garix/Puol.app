@@ -2,11 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar } from 'react-native-calendars';
 import { Alert, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { calculateReservationAmounts, formatReservationPrice } from '../../../lib/services/payments';
 
 interface ReservationModalProps {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (checkIn: Date, checkOut: Date, nights: number, total: number) => void;
+  /**
+   * Appelé quand l'utilisateur confirme les dates. Le parent gère le paiement.
+   */
+  onConfirm: (
+    checkIn: Date,
+    checkOut: Date,
+    nights: number,
+    total: number
+  ) => void;
   pricePerNight: number;
   propertyTitle: string;
   initialCheckIn?: Date | null;
@@ -67,7 +76,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
     promotion && promotion.nights_required > 0 && promotion.discount_percent > 0 && nights >= promotion.nights_required,
   );
   const discountAmount = isPromotionEligible ? (totalBeforeDiscount * (promotion!.discount_percent / 100)) : 0;
-  const totalPrice = Math.max(totalBeforeDiscount - discountAmount, 0);
+  const customerPrice = Math.max(totalBeforeDiscount - discountAmount, 0); // Prix payé par le client
 
   const unavailableDatesSet = useMemo(() => {
     if (!unavailableDates?.length) return new Set<string>();
@@ -256,7 +265,8 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
         return;
       }
 
-      onConfirm(checkInDate, checkOutDate, nights, totalPrice);
+      // Retourner les dates au parent pour le paiement
+      onConfirm(checkInDate, checkOutDate, nights, customerPrice);
       handleClose();
     }
   };
@@ -396,7 +406,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 <View style={styles.summaryDivider} />
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryTotalLabel}>Total</Text>
-                  <Text style={styles.summaryTotalValue}>{totalPrice.toLocaleString('fr-FR')} FCFA</Text>
+                  <Text style={styles.summaryTotalValue}>{customerPrice.toLocaleString('fr-FR')} FCFA</Text>
                 </View>
               </View>
             )}
@@ -404,7 +414,10 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
 
           <View style={styles.footer}>
             <TouchableOpacity
-              style={[styles.confirmButton, (!checkInDate || !checkOutDate || nights === 0) && styles.confirmButtonDisabled]}
+              style={[
+                styles.confirmButton,
+                (!checkInDate || !checkOutDate || nights === 0) && styles.confirmButtonDisabled,
+              ]}
               onPress={handleConfirm}
               disabled={!checkInDate || !checkOutDate || nights === 0}
               activeOpacity={0.8}

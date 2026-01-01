@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import {
   Tabs,
   TabsContent,
@@ -7,18 +8,17 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs';
 import {
-  landlordListings,
-  landlordRequests,
-  landlordVisits,
+  landlordRequests as landlordRequestsMock,
   landlordSubtabs,
   landlordProfileDetails,
-  landlordListingDetails,
   landlordProfiles,
+  type LandlordRequest,
   type ListingRecord,
   type LandlordProfileDetail,
+  type LandlordListingDetail,
 } from '../UsersManagement';
+import { VisitsBoard, type VisitRecord } from '../VisitsManagement';
 import type { ListingFilters } from '../UsersManagement';
-import { VisitsBoard } from '../VisitsManagement';
 import { LandlordBuyersBoard } from './shared/LandlordBuyersBoard';
 import { LandlordProfileView } from './shared/LandlordProfileView';
 import { ListingsBoard } from './shared/ListingsBoard';
@@ -29,10 +29,15 @@ import {
   fetchLandlordStats,
   fetchLandlordProfileData,
   fetchLandlordListingsLive,
+  fetchLandlordListingDetail,
+  fetchLandlordApplications,
+  fetchLandlordVisits,
   resolveSegment,
   type LandlordProfileData,
   type LandlordBoardListing,
 } from '@/lib/services/landlords';
+import { isSupabaseConfigured } from '@/lib/supabaseClient';
+import { RefreshCw } from 'lucide-react';
 
 const PRICE_PLACEHOLDER = 'Tarif non renseigné';
 const NO_VALUE_PLACEHOLDER = '—';
@@ -94,6 +99,26 @@ function resolveListingStatus(liveListing: LandlordProfileData['listings'][numbe
   }
 
   return 'en brouillon';
+}
+
+function mapBoardListingStatus(listing: LandlordBoardListing): ListingRecord['status'] {
+  const normalized = listing.statusRaw?.toLowerCase().trim() ?? '';
+  const includesAny = (keywords: string[]) => keywords.some((keyword) => normalized.includes(keyword));
+
+  if (listing.isAvailable || includesAny(['online', 'publish', 'approuv', 'active', 'available', 'live'])) {
+    return 'approved';
+  }
+  if (includesAny(['reject', 'refus', 'denied', 'declin'])) {
+    return 'rejected';
+  }
+  if (includesAny(['suspend', 'pause', 'offline', 'disable', 'archiv'])) {
+    return 'suspended';
+  }
+  if (includesAny(['draft', 'pending', 'brouillon', 'review', 'moderation', 'waiting', 'submitted'])) {
+    return 'pending';
+  }
+
+  return 'pending';
 }
 
 function formatIsoToShortDate(iso: string | null): string {
@@ -262,16 +287,104 @@ export function LandlordsSection() {
   const [selectedLandlordDetail, setSelectedLandlordDetail] = useState<LandlordProfileDetail | null>(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [selectedListingDetail, setSelectedListingDetail] = useState<LandlordListingDetail | null>(null);
+  const [isListingDetailLoading, setIsListingDetailLoading] = useState(false);
+  const [listingDetailError, setListingDetailError] = useState<string | null>(null);
   const [liveLandlordListings, setLiveLandlordListings] = useState<LandlordBoardListing[]>([]);
+  const [liveLandlordVisits, setLiveLandlordVisits] = useState<VisitRecord[]>([]);
+  const [isVisitsLoading, setIsVisitsLoading] = useState(false);
+  const [visitsError, setVisitsError] = useState<string | null>(null);
+  const [landlordApplications, setLandlordApplications] = useState<LandlordRequest[]>(landlordRequestsMock);
+  const [isApplicationsLoading, setIsApplicationsLoading] = useState(false);
+  const [applicationsError, setApplicationsError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [statsState, setStatsState] = useState({
     isLoading: false,
     data: {
       activeLandlords: landlordProfiles.length,
-      landlordListings: landlordListings.length,
-      landlordVisits: landlordVisits.length,
-      pendingApplications: landlordRequests.length,
+      landlordListings: liveLandlordListings.length,
+      landlordVisits: liveLandlordVisits.length,
+      pendingApplications: landlordRequestsMock.length,
     },
   });
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadApplications = async () => {
+      setIsApplicationsLoading(true);
+      setApplicationsError(null);
+
+      try {
+        const applications = await fetchLandlordApplications();
+        if (!isMounted) {
+          return;
+        }
+
+        setLandlordApplications(applications);
+        setStatsState((prev) => ({
+          ...prev,
+          data: {
+            ...prev.data,
+            pendingApplications: applications.length,
+          },
+        }));
+      } catch (error) {
+        console.warn('[LandlordsSection] Unable to fetch landlord applications', error);
+        if (isMounted) {
+          setApplicationsError('Impossible de charger les candidatures bailleurs.');
+        }
+      } finally {
+        if (isMounted) {
+          setIsApplicationsLoading(false);
+        }
+      }
+    };
+
+    loadApplications();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const formatTime = (date: Date) => date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+
+    setStatsState(prev => ({ ...prev, isLoading: true }));
+    setIsApplicationsLoading(true);
+    setApplicationsError(null);
+    setIsVisitsLoading(true);
+    setVisitsError(null);
+
+    try {
+      const [stats, applications, listings, visits] = await Promise.all([
+        fetchLandlordStats(),
+        fetchLandlordApplications(),
+        fetchLandlordListingsLive(),
+        fetchLandlordVisits(),
+      ]);
+
+      setStatsState({ isLoading: false, data: stats });
+      setLandlordApplications(applications);
+      setLiveLandlordListings(listings);
+      setLiveLandlordVisits(visits);
+    } catch (error) {
+      console.warn('[LandlordsSection] handleRefresh failed', error);
+    } finally {
+      setIsApplicationsLoading(false);
+      setIsVisitsLoading(false);
+      setLastUpdate(new Date());
+      setIsRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     if (activeSubtab !== 'buyers' && selectedLandlordId) {
@@ -282,6 +395,9 @@ export function LandlordsSection() {
     }
     if (activeSubtab !== 'annonces' && selectedListingId) {
       setSelectedListingId(null);
+      setSelectedListingDetail(null);
+      setListingDetailError(null);
+      setIsListingDetailLoading(false);
     }
   }, [activeSubtab, selectedLandlordId, selectedListingId]);
 
@@ -337,6 +453,49 @@ export function LandlordsSection() {
   }, [selectedLandlordId]);
 
   useEffect(() => {
+    if (!selectedListingId) {
+      setSelectedListingDetail(null);
+      setListingDetailError(null);
+      setIsListingDetailLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    setSelectedListingDetail(null);
+    setListingDetailError(null);
+    setIsListingDetailLoading(true);
+
+    const loadListing = async () => {
+      try {
+        const detail = await fetchLandlordListingDetail(selectedListingId);
+        console.log('[LandlordsSection] detail fetched', { listingId: selectedListingId, detail });
+        if (isCancelled) return;
+        if (detail) {
+          setSelectedListingDetail(detail);
+          return;
+        }
+
+        setListingDetailError('Aucune donnée réelle disponible pour cette annonce.');
+      } catch (error) {
+        console.warn('[LandlordsSection] fetchLandlordListingDetail failed', error);
+        console.warn('[LandlordsSection] Unable to fetch landlord listing detail', error);
+        setListingDetailError('Impossible de charger les données Supabase pour cette annonce.');
+      } finally {
+        if (!isCancelled) {
+          setIsListingDetailLoading(false);
+        }
+      }
+    };
+
+    loadListing();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedListingId]);
+
+  useEffect(() => {
     let isMounted = true;
     const loadStats = async () => {
       setStatsState(prev => ({ ...prev, isLoading: true }));
@@ -378,6 +537,56 @@ export function LandlordsSection() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadVisits = async () => {
+      setIsVisitsLoading(true);
+      setVisitsError(null);
+      try {
+        const visits = await fetchLandlordVisits();
+        if (isMounted) {
+          setLiveLandlordVisits(visits);
+          // Mettre à jour les statistiques avec les vraies données
+          setStatsState(prev => ({
+            ...prev,
+            data: {
+              ...prev.data,
+              landlordVisits: visits.length,
+            }
+          }));
+        }
+      } catch (error) {
+        console.warn('[LandlordsSection] Unable to fetch landlord visits', error);
+        if (isMounted) {
+          setVisitsError('Impossible de charger les données de visites');
+        }
+      } finally {
+        if (isMounted) {
+          setIsVisitsLoading(false);
+        }
+      }
+    };
+
+    loadVisits();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleViewLandlordProfile = useCallback(
+    (landlordId: string) => {
+      if (!landlordId) {
+        return;
+      }
+      setSelectedListingId(null);
+      setSelectedListingDetail(null);
+      setActiveSubtab('buyers');
+      setSelectedLandlordId(landlordId);
+    },
+    [],
+  );
 
   const stats = useMemo(
     () => [
@@ -439,15 +648,44 @@ export function LandlordsSection() {
       }
       case 'annonces':
         if (selectedListingId) {
-          const detail = landlordListingDetails[selectedListingId];
-          if (detail) {
-            return (
-              <LandlordListingDetailView
-                listing={detail}
-                onBack={() => setSelectedListingId(null)}
-              />
-            );
-          }
+          return (
+            <div className="space-y-4">
+              {(isListingDetailLoading || listingDetailError) && (
+                <Card className="border-dashed border-emerald-200 bg-emerald-50/60">
+                  <CardContent className="p-4 space-y-2">
+                    {isListingDetailLoading && (
+                      <p className="text-sm text-emerald-700">Chargement des données Supabase…</p>
+                    )}
+                    {listingDetailError && (
+                      <p className="text-sm text-red-600">{listingDetailError}</p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+              {selectedListingDetail ? (
+                <LandlordListingDetailView
+                  listing={selectedListingDetail}
+                  onBack={() => setSelectedListingId(null)}
+                  onViewLandlordProfile={handleViewLandlordProfile}
+                />
+              ) : (
+                <Card className="rounded-2xl border-gray-100">
+                  <CardContent className="p-6 space-y-3 text-sm text-gray-600">
+                    <p>Aucune donnée n’est disponible pour cette annonce pour le moment.</p>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedListingId(null)}
+                        className="text-emerald-700 hover:underline"
+                      >
+                        Retourner à la liste des annonces
+                      </button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          );
         }
 
         const listingsFromSupabase = liveLandlordListings.map((listing) => ({
@@ -458,7 +696,7 @@ export function LandlordsSection() {
           district: listing.district || '—',
           price: listing.pricePerMonth ?? 0,
           priceType: 'mois' as const,
-          status: 'approved' as const,
+          status: mapBoardListingStatus(listing),
           owner: listing.hostName ?? 'Bailleur PUOL',
           ownerLabel: 'Bailleur',
           images: listing.imagesCount ?? 0,
@@ -469,15 +707,7 @@ export function LandlordsSection() {
           previewUrl: listing.coverPhotoUrl ?? null,
         }));
 
-        const listingsFallback = landlordListings.map((listing) => ({
-          ...listing,
-          status: 'approved' as const,
-          priceType: listing.priceType,
-          visits: listing.visits ?? 0,
-          previewUrl: (landlordListingDetails[listing.id]?.coverUrl ?? null) || (landlordListingDetails[listing.id]?.gallery?.[0] ?? null) || null,
-        } satisfies ListingRecord));
-
-        const listingsToDisplay = listingsFromSupabase.length ? listingsFromSupabase : listingsFallback;
+        const listingsToDisplay = listingsFromSupabase.length ? listingsFromSupabase : [];
 
         return (
           <ListingsBoard
@@ -495,15 +725,48 @@ export function LandlordsSection() {
         );
       case 'requests':
         return (
-          <LandlordRequestsBoard requests={landlordRequests} />
+          <div className="space-y-4">
+            {(isApplicationsLoading || applicationsError) && (
+              <Card className="border-dashed border-emerald-200 bg-emerald-50/60">
+                <CardContent className="p-4 space-y-2">
+                  {isApplicationsLoading && (
+                    <p className="text-sm text-emerald-700">
+                      Chargement des candidatures bailleurs...
+                    </p>
+                  )}
+                  {applicationsError && (
+                    <p className="text-sm text-red-600">{applicationsError}</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+            <LandlordRequestsBoard requests={landlordApplications} />
+          </div>
         );
       case 'visits':
         return (
-          <VisitsBoard
-            visits={landlordVisits}
-            feeLabel="Frais bailleurs"
-            searchPlaceholder="Filtrer par bien, client ou ville..."
-          />
+          <div className="space-y-4">
+            {(isVisitsLoading || visitsError) && (
+              <Card className="border-dashed border-emerald-200 bg-emerald-50/60">
+                <CardContent className="p-4 space-y-2">
+                  {isVisitsLoading && (
+                    <p className="text-sm text-emerald-700">
+                      Chargement des données de visites Supabase…
+                    </p>
+                  )}
+                  {visitsError && (
+                    <p className="text-sm text-red-600">{visitsError}</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+            {!isVisitsLoading && !visitsError && (
+              <VisitsBoard
+                visits={liveLandlordVisits}
+                searchPlaceholder="Filtrer par bien, client ou ville..."
+              />
+            )}
+          </div>
         );
       case 'messages':
         return <LandlordMessagesBoard />;
@@ -514,11 +777,25 @@ export function LandlordsSection() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl text-gray-900">Bailleurs</h1>
-        <p className="text-gray-500 mt-1">
-          Monitoring complet des bailleurs, de leurs annonces et opérations
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl text-gray-900">Bailleurs</h1>
+          <p className="text-gray-500 mt-1">
+            Monitoring complet des bailleurs, de leurs annonces et opérations
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-gray-500">Dernière mise à jour : {formatTime(lastUpdate)}</div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="rounded-xl"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

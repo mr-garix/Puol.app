@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -6,11 +6,12 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { clientProfiles, clientProfileDetails, clientSubtabs } from '../UsersManagement';
-import type { ClientProfileRecord } from '../UsersManagement';
-import { Users, Star, TrendingUp, Search, ArrowRightCircle } from 'lucide-react';
+import { clientProfiles, clientSubtabs } from '../UsersManagement';
+import type { ClientProfileDetail, ClientProfileRecord } from '../UsersManagement';
+import { Users, Star, TrendingUp, Search, ArrowRightCircle, RefreshCw } from 'lucide-react';
 import { ClientMessagesBoard } from './shared/ClientMessagesBoard';
 import { ClientProfileView } from './shared/ClientProfileView';
+import { fetchClientProfiles, fetchClientProfileDetail } from '@/lib/services/clients';
 
 type ClientsBoardProps = {
   clients: ClientProfileRecord[];
@@ -48,7 +49,6 @@ function ClientsBoard({ clients, onViewProfile }: ClientsBoardProps) {
               <TableHead>Segment</TableHead>
               <TableHead>Ville</TableHead>
               <TableHead>Réservations</TableHead>
-              <TableHead>Nuits</TableHead>
               <TableHead>Dépenses</TableHead>
               <TableHead>Visites</TableHead>
               <TableHead>Baux signés</TableHead>
@@ -81,7 +81,6 @@ function ClientsBoard({ clients, onViewProfile }: ClientsBoardProps) {
                 <TableCell className="text-sm text-gray-600 uppercase">{client.segment}</TableCell>
                 <TableCell className="text-sm text-gray-600">{client.city}</TableCell>
                 <TableCell className="text-sm font-semibold text-gray-900">{client.reservations}</TableCell>
-                <TableCell className="text-sm font-semibold text-gray-900">{client.nights}</TableCell>
                 <TableCell className="text-sm font-semibold text-gray-900">
                   {client.spend.toLocaleString('fr-FR')} FCFA
                 </TableCell>
@@ -120,26 +119,162 @@ function ClientsBoard({ clients, onViewProfile }: ClientsBoardProps) {
 export function ClientsSection() {
   const [activeSubtab, setActiveSubtab] = useState(clientSubtabs[0]?.id ?? 'clients');
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [liveClients, setLiveClients] = useState<ClientProfileRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedClientDetail, setSelectedClientDetail] = useState<ClientProfileDetail | null>(null);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const stats = useMemo(
-    () => [
-      { label: 'Clients vérifiés', value: '6 920', icon: Users },
-      { label: 'Satisfaction moyenne', value: '4,6 / 5', icon: Star },
-      { label: 'Recettes annuelles', value: '1,8 Md FCFA', icon: TrendingUp },
-    ],
-    [],
+  const loadClients = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const data = await fetchClientProfiles();
+      setLiveClients(data.length ? data : []);
+    } catch (error) {
+      console.warn('[ClientsSection] unable to fetch client profiles', error);
+      setLoadError('Impossible de charger les clients.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const run = async () => {
+      await loadClients();
+      if (isMounted) {
+        setLastUpdate(new Date());
+      }
+    };
+    void run();
+    return () => {
+      isMounted = false;
+    };
+  }, [loadClients]);
+
+  const formatTime = (date: Date) => date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await loadClients();
+    setLastUpdate(new Date());
+    setIsRefreshing(false);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!selectedClientId) {
+      setSelectedClientDetail(null);
+      setDetailError(null);
+      setIsDetailLoading(false);
+      return;
+    }
+
+    const loadDetail = async () => {
+      setIsDetailLoading(true);
+      setDetailError(null);
+      try {
+        const detail = await fetchClientProfileDetail(selectedClientId);
+        if (detail) {
+          setSelectedClientDetail(detail);
+        } else {
+          setDetailError('Aucune donnée trouvée pour ce client.');
+        }
+      } catch (error) {
+        console.warn('[ClientsSection] unable to fetch client detail', error);
+        if (isMounted) {
+          setDetailError('Impossible de charger le profil client.');
+        }
+      } finally {
+        if (isMounted) {
+          setIsDetailLoading(false);
+        }
+      }
+    };
+    void loadDetail();
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedClientId]);
+
+  const effectiveClients = useMemo(
+    () => (liveClients.length ? liveClients : clientProfiles),
+    [liveClients],
   );
+
+  const stats = useMemo(() => {
+    const totalClients = effectiveClients.length;
+    const avgSatisfaction =
+      totalClients > 0
+        ? (effectiveClients.reduce((sum, c) => sum + (c.satisfaction ?? 0), 0) / totalClients).toFixed(1)
+        : '—';
+    const totalSpend =
+      totalClients > 0
+        ? effectiveClients.reduce((sum, c) => sum + (c.spend ?? 0), 0).toLocaleString('fr-FR')
+        : '—';
+    return [
+      { label: 'Clients référencés', value: totalClients ? totalClients.toLocaleString('fr-FR') : '—', icon: Users },
+      { label: 'Satisfaction moyenne', value: totalClients ? `${avgSatisfaction} / 5` : '—', icon: Star },
+      { label: 'Recettes cumulées', value: totalClients ? `${totalSpend} FCFA` : '—', icon: TrendingUp },
+    ];
+  }, [effectiveClients]);
 
   const renderSubtab = (tab: string) => {
     switch (tab) {
       case 'clients': {
         if (selectedClientId) {
-          const detail = clientProfileDetails[selectedClientId];
-          if (detail) {
-            return <ClientProfileView client={detail} onBack={() => setSelectedClientId(null)} />;
+          if (isDetailLoading) {
+            return (
+              <div className="rounded-3xl border border-emerald-100 bg-gradient-to-r from-emerald-50 via-white to-emerald-50 p-6 text-emerald-700 shadow-sm">
+                <p className="text-sm font-medium">En attente du résultat…</p>
+                <p className="text-xs text-emerald-600/80">Chargement du profil client</p>
+              </div>
+            );
           }
+          if (detailError) {
+            return (
+              <Card className="border-dashed border-red-200 bg-red-50/60">
+                <CardContent className="p-4 text-sm space-y-2">
+                  <p className="text-red-600">{detailError}</p>
+                  <Button variant="outline" size="sm" onClick={() => setSelectedClientId(null)} className="rounded-full">
+                    Retour à la liste
+                  </Button>
+                </CardContent>
+              </Card>
+            );
+          }
+          if (selectedClientDetail) {
+            return <ClientProfileView client={selectedClientDetail} onBack={() => setSelectedClientId(null)} />;
+          }
+          return (
+            <Card className="border-dashed border-gray-200">
+              <CardContent className="p-4 text-sm space-y-2">
+                <p className="text-gray-600">Aucune donnée n’est disponible pour ce client.</p>
+                <Button variant="outline" size="sm" onClick={() => setSelectedClientId(null)} className="rounded-full">
+                  Retour à la liste
+                </Button>
+              </CardContent>
+            </Card>
+          );
         }
-        return <ClientsBoard clients={clientProfiles} onViewProfile={setSelectedClientId} />;
+        return (
+          <div className="space-y-3">
+            {(isLoading || loadError) && (
+              <Card className="rounded-3xl border border-emerald-100 bg-gradient-to-r from-emerald-50 via-white to-emerald-50 shadow-sm">
+                <CardContent className="p-5 space-y-2 text-sm">
+                  {isLoading && <p className="text-emerald-700 font-medium">En attente du résultat…</p>}
+                  {isLoading && <p className="text-emerald-600/80">La page est en train de charger.</p>}
+                  {loadError && <p className="text-red-600">{loadError}</p>}
+                </CardContent>
+              </Card>
+            )}
+            <ClientsBoard clients={effectiveClients} onViewProfile={setSelectedClientId} />
+          </div>
+        );
       }
       case 'support':
         return <ClientMessagesBoard />;
@@ -150,9 +285,23 @@ export function ClientsSection() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl text-gray-900">Gestion Clients</h1>
-        <p className="text-gray-500 mt-1">Suivi des profils clients, des réservations et du support.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl text-gray-900">Gestion Clients</h1>
+          <p className="text-gray-500 mt-1">Suivi des profils clients, des réservations et du support.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-gray-500">Dernière mise à jour : {formatTime(lastUpdate)}</div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="rounded-xl"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

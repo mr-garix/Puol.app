@@ -229,11 +229,39 @@ export const ReservationProvider = ({ children }: { children: ReactNode }) => {
             } 
             else if (payload.eventType === 'UPDATE' && payload.new) {
               const updatedId = payload.new.id;
-              console.log('[ReservationContext] Booking updated, refreshing:', updatedId);
+              const newRemainingPaymentStatus = payload.new.remaining_payment_status;
+              console.log('[ReservationContext] Booking updated:', {
+                id: updatedId,
+                remainingPaymentStatus: newRemainingPaymentStatus
+              });
               
-              // Recharger les données pour s'assurer d'avoir les dernières infos
-              const bookings = await fetchGuestBookings(supabaseProfile.id);
-              applyReservations(bookings);
+              // Mettre à jour immédiatement si c'est un changement de remaining_payment_status
+              if (newRemainingPaymentStatus === 'requested') {
+                console.log('[ReservationContext] Payment requested detected, updating immediately');
+                setReservations((prev) => {
+                  const updated = prev.map((reservation) => {
+                    if (reservation.id === updatedId) {
+                      return {
+                        ...reservation,
+                        remainingPaymentStatus: 'requested' as const
+                      };
+                    }
+                    return reservation;
+                  });
+                  
+                  const requestedPayment = updated.find(
+                    (reservation) => reservation.remainingPaymentStatus === 'requested',
+                  );
+                  setPendingRemainingPayment((requestedPayment as ReservationRecord | null) ?? null);
+                  
+                  return updated;
+                });
+              } else {
+                // Pour les autres changements, recharger complètement
+                console.log('[ReservationContext] Other update detected, refreshing completely');
+                const bookings = await fetchGuestBookings(supabaseProfile.id);
+                applyReservations(bookings);
+              }
             } 
             else if (payload.eventType === 'INSERT' && payload.new) {
               const newId = payload.new.id;
@@ -277,34 +305,52 @@ export const ReservationProvider = ({ children }: { children: ReactNode }) => {
 
   const addReservation = useCallback(
     async (input: NewReservationInput) => {
+      console.log('[ReservationContext] addReservation appelé avec input:', input);
+      
       if (!supabaseProfile) {
+        console.error('[ReservationContext] Pas de supabaseProfile, utilisateur non authentifié');
         throw new Error('not_authenticated');
       }
 
-      const booking = await createBooking({
-        listingId: input.propertyId,
-        guestProfileId: supabaseProfile.id,
-        checkInDate: input.checkInDate,
-        checkOutDate: input.checkOutDate,
-        nights: input.nights,
-        nightlyPrice: input.pricePerNight,
-        totalPrice: input.totalPrice,
-        depositAmount: input.amountPaid,
-        remainingAmount: input.amountRemaining,
-        discountAmount: input.discountAmount,
-        discountPercent: input.discountPercent,
-        hasDiscount: Boolean(input.discountAmount && input.discountAmount > 0),
-        status: 'confirmed',
-      });
+      console.log('[ReservationContext] Appel createBooking avec supabaseProfile.id:', supabaseProfile.id);
+      
+      try {
+        const booking = await createBooking({
+          listingId: input.propertyId,
+          guestProfileId: supabaseProfile.id,
+          checkInDate: input.checkInDate,
+          checkOutDate: input.checkOutDate,
+          nights: input.nights,
+          nightlyPrice: input.pricePerNight,
+          totalPrice: input.totalPrice,
+          depositAmount: input.amountPaid,
+          remainingAmount: input.amountRemaining,
+          discountAmount: input.discountAmount,
+          discountPercent: input.discountPercent,
+          hasDiscount: Boolean(input.discountAmount && input.discountAmount > 0),
+          status: 'confirmed',
+        });
+        
+        console.log('[ReservationContext] createBooking réussi, booking créé:', booking);
 
-      const mapped = mapBookingToReservationRecord(booking, input);
-      setReservations((prev) => {
-        const next = [mapped, ...prev.filter((reservation) => reservation.id !== mapped.id)];
-        const requestedPayment = next.find((reservation) => reservation.remainingPaymentStatus === 'requested');
-        setPendingRemainingPayment(requestedPayment ?? null);
-        return next;
-      });
-      return mapped;
+        const mapped = mapBookingToReservationRecord(booking, input);
+        console.log('[ReservationContext] Mapping réussi, réservation mappée:', mapped);
+        
+        setReservations((prev) => {
+          const next = [mapped, ...prev.filter((reservation) => reservation.id !== mapped.id)];
+          const requestedPayment = next.find((reservation) => reservation.remainingPaymentStatus === 'requested');
+          setPendingRemainingPayment(requestedPayment ?? null);
+          console.log('[ReservationContext] État des réservations mis à jour, nombre total:', next.length);
+          return next;
+        });
+        
+        console.log('[ReservationContext] addReservation terminé avec succès');
+        return mapped;
+      } catch (error) {
+        console.error('[ReservationContext] Erreur dans addReservation:', error);
+        console.error('[ReservationContext] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+        throw error;
+      }
     },
     [supabaseProfile],
   );

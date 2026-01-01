@@ -2,10 +2,12 @@ import React, { useEffect } from 'react';
 import { Alert } from 'react-native';
 import { PaymentModal } from './PaymentModal';
 import { useReservations } from '@/src/contexts/ReservationContext';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { supabase } from '@/src/supabaseClient';
 
 export const RemainingPaymentHandler: React.FC = () => {
   const { pendingRemainingPayment, clearPendingRemainingPayment, refreshReservations } = useReservations();
+  const { supabaseProfile } = useAuth();
 
   const handlePaymentSuccess = async () => {
     if (!pendingRemainingPayment) return;
@@ -84,6 +86,12 @@ export const RemainingPaymentHandler: React.FC = () => {
       title="Paiement du solde"
       description="Finalisez votre réservation"
       infoMessage={infoMessage}
+      // Fournir le guest, le host et la réservation pour pouvoir créer le paiement côté Supabase
+      payerProfileId={supabaseProfile?.id}
+      hostProfileId={pendingRemainingPayment.hostId}
+      relatedId={pendingRemainingPayment.id}
+      purpose="booking"
+      customerPrice={pendingRemainingPayment.amountRemaining}
     />
   );
 };

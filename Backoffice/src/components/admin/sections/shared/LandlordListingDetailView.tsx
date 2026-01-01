@@ -1,26 +1,11 @@
-import {
-  useEffect,
-  useState,
-  type ChangeEvent,
-  type ComponentType,
-  type InputHTMLAttributes,
-  type ReactNode,
-} from 'react';
+import { useEffect, useState, type ChangeEvent, type ComponentType, type ReactNode } from 'react';
 import type { LandlordListingDetail } from '../../UsersManagement';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogTrigger,
@@ -33,12 +18,16 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
+  Dialog,
+  DialogContent,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
   ArrowLeft,
   ShieldOff,
   Pencil,
   Home,
   DollarSign,
-  Users,
   Shield,
   Maximize2,
   CheckCircle2,
@@ -47,6 +36,7 @@ import {
   MessageSquare,
   CalendarCheck,
   UserCheck,
+  Heart,
   Video,
   Images,
   Plus,
@@ -74,13 +64,6 @@ const priceFormatter = new Intl.NumberFormat('fr-FR', {
   currency: 'XAF',
   maximumFractionDigits: 0,
 });
-
-const listingStatusOptions: { value: LandlordListingDetail['status']; label: string }[] = [
-  { value: 'pending', label: 'En attente' },
-  { value: 'approved', label: 'Approuvée' },
-  { value: 'rejected', label: 'Refusée' },
-  { value: 'suspended', label: 'Suspendue' },
-];
 
 export function LandlordListingDetailView({ listing: initialListing, onBack, onViewLandlordProfile }: LandlordListingDetailViewProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -113,10 +96,6 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
       ...prev,
       [field]: value,
     }));
-  };
-
-  const handleNumericFieldChange = (field: keyof LandlordListingDetail, value: string) => {
-    handleFieldChange(field as keyof LandlordListingDetail, value === '' ? ('' as any) : Number(value));
   };
 
   const handleRoomBreakdownChange = (roomKey: keyof LandlordListingDetail['roomBreakdown'], value: string) => {
@@ -178,6 +157,11 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
     setAssignedLeaseEnd('');
   };
 
+  const fallbackAddress =
+    [listing.district, listing.city].filter((value) => Boolean(value?.trim())).join(' · ') || 'Localisation non renseignée';
+
+  const fullAddress = listing.formattedAddress ?? listing.addressText ?? fallbackAddress;
+
   const infoChips: InfoChipProps[] = [
     {
       icon: Home,
@@ -200,24 +184,17 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
       value: listing.minLeaseMonths ? `${listing.minLeaseMonths} mois` : 'Non précisée',
     },
     {
-      icon: Users,
-      label: 'Capacité',
-      value: `${listing.guestCapacity} personnes`,
-    },
-    {
       icon: CheckCircle2,
       label: 'Disponibilité',
       value: listing.isAvailable ? 'Publiée' : 'Brouillon',
       tone: listing.isAvailable ? 'success' : 'warning',
     },
   ];
-  if (listing.isCommercial) {
-    infoChips.splice(5, 0, {
-      icon: Maximize2,
-      label: 'Surface',
-      value: listing.surfaceArea ? `${listing.surfaceArea} m²` : '—',
-    });
-  }
+  infoChips.splice(5, 0, {
+    icon: Maximize2,
+    label: listing.surfaceArea ? 'Surface' : 'Durée min.',
+    value: listing.surfaceArea ? `${listing.surfaceArea} m²` : (listing.minLeaseMonths ? `${listing.minLeaseMonths} mois` : '—'),
+  });
 
   return (
     <div className="space-y-6">
@@ -226,9 +203,6 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
           <ArrowLeft className="w-4 h-4 mr-2" />
           Retour aux annonces
         </Button>
-        <Badge variant="outline" className="rounded-full text-xs">
-          {listing.id}
-        </Badge>
         <div className="ml-auto flex gap-2">
           {isEditing ? (
             <>
@@ -249,59 +223,61 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
 
       <Card className="rounded-3xl overflow-hidden border-gray-100">
         <div className="grid md:grid-cols-[3fr_2fr]">
-          <div className="relative h-64 md:h-full">
+          <div
+            className="relative flex items-center justify-center bg-gray-900 overflow-hidden"
+            style={{ aspectRatio: '4 / 3', maxHeight: '340px' }}
+          >
             <img
               src={listing.coverUrl}
               alt={listing.title}
               className="h-full w-full object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+            <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
             <div className="absolute bottom-0 left-0 right-0 p-6 text-white space-y-2">
               <p className="text-sm uppercase tracking-wide text-white/70">Couverture</p>
               <p className="text-lg font-semibold">{listing.city} · {listing.district}</p>
             </div>
           </div>
-          <div className="p-6 space-y-4">
-            <div className="flex items-center gap-3">
+          <div className="px-4 py-4 space-y-3">
+            <div className="flex items-center gap-2">
               <div>
-                <p className="text-xs uppercase text-gray-500">Titre annonce</p>
-                <h1 className="text-2xl font-semibold text-gray-900">{listing.title}</h1>
+                <p className="text-[11px] uppercase text-gray-500 tracking-wide">Titre annonce</p>
+                <h1 className="text-xl font-semibold text-gray-900 leading-tight">{listing.title}</h1>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={statusBadgeStyles[listing.status]}>{getStatusLabel(listing.status)}</Badge>
               <Badge variant="outline" className="rounded-full">{listing.propertyType}</Badge>
             </div>
-            <div>
-              <p className="text-xs uppercase text-gray-500">Tarification</p>
-              <p className="text-3xl font-semibold text-gray-900">
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase text-gray-500">Tarification</p>
+              <p className="text-xl font-semibold text-gray-900 leading-tight">
                 {listing.price.toLocaleString('fr-FR')} FCFA
-                <span className="text-base font-medium text-gray-500"> / {listing.priceType}</span>
+                <span className="text-xs font-medium text-gray-500"> / {listing.priceType}</span>
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-2xl border border-gray-100 p-3">
-                <p className="text-xs uppercase text-gray-500">Capacité</p>
-                <p className="text-lg font-semibold text-gray-900">{listing.guestCapacity} pers.</p>
+                <p className="text-[10px] uppercase text-gray-500">
+                  {listing.surfaceArea ? 'Surface' : 'Durée min.'}
+                </p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {listing.surfaceArea ? `${listing.surfaceArea} m²` : (listing.minLeaseMonths ? `${listing.minLeaseMonths} mois` : '—')}
+                </p>
               </div>
               <div className="rounded-2xl border border-gray-100 p-3">
-                <p className="text-xs uppercase text-gray-500">Caution</p>
-                <p className="text-lg font-semibold text-gray-900">
+                <p className="text-[10px] uppercase text-gray-500">Caution</p>
+                <p className="text-sm font-semibold text-gray-900">
                   {listing.depositAmount ? priceFormatter.format(listing.depositAmount) : '—'}
                 </p>
               </div>
             </div>
-            {listing.gallery.length > 0 && (
-              <div className="flex gap-2">
-                {listing.gallery.slice(0, 3).map((image) => (
-                  <div
-                    key={image}
-                    className="h-16 w-16 rounded-2xl border border-gray-100 bg-cover bg-center"
-                    style={{ backgroundImage: `url(${image})` }}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="rounded-2xl border border-gray-100 p-3 text-xs">
+              <p className="text-[10px] uppercase text-gray-500">Adresse</p>
+              <p className="text-[13px] font-semibold text-gray-900">
+                {fullAddress}
+              </p>
+            </div>
           </div>
         </div>
       </Card>
@@ -335,137 +311,13 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
 
           <Card className="rounded-2xl border-gray-100">
             <CardContent className="p-6 space-y-4">
-              <h2 className="text-lg font-semibold text-gray-900">Conditions & disponibilité</h2>
-              {isEditing ? (
-                <div className="grid gap-4 md:grid-cols-2">
-                  <EditableField
-                    label="Loyer mensuel (FCFA)"
-                    icon={DollarSign}
-                    inputProps={{
-                      id: 'price',
-                      type: 'number',
-                      value: draftListing.price?.toString() ?? '',
-                      onChange: (event: ChangeEvent<HTMLInputElement>) =>
-                        handleNumericFieldChange('price', event.target.value),
-                    }}
-                  />
-                  <EditableField
-                    label="Caution (FCFA)"
-                    icon={Shield}
-                    inputProps={{
-                      id: 'deposit',
-                      type: 'number',
-                      value: draftListing.depositAmount?.toString() ?? '',
-                      onChange: (event: ChangeEvent<HTMLInputElement>) =>
-                        handleNumericFieldChange('depositAmount', event.target.value),
-                    }}
-                  />
-                  <EditableField
-                    label="Durée minimale (mois)"
-                    icon={Clock4}
-                    inputProps={{
-                      id: 'lease',
-                      type: 'number',
-                      min: 0,
-                      value: draftListing.minLeaseMonths?.toString() ?? '',
-                      onChange: (event: ChangeEvent<HTMLInputElement>) =>
-                        handleNumericFieldChange('minLeaseMonths', event.target.value),
-                    }}
-                  />
-                  <EditableField
-                    label="Capacité"
-                    icon={Users}
-                    inputProps={{
-                      id: 'capacity',
-                      type: 'number',
-                      min: 1,
-                      value: draftListing.guestCapacity?.toString() ?? '',
-                      onChange: (event: ChangeEvent<HTMLInputElement>) =>
-                        handleNumericFieldChange('guestCapacity', event.target.value),
-                    }}
-                  />
-                  {draftListing.isCommercial && (
-                    <EditableField
-                      label="Surface (m²)"
-                      icon={Maximize2}
-                      inputProps={{
-                        id: 'surface',
-                        type: 'number',
-                        min: 0,
-                        value: draftListing.surfaceArea?.toString() ?? '',
-                        onChange: (event: ChangeEvent<HTMLInputElement>) =>
-                          handleNumericFieldChange('surfaceArea', event.target.value),
-                      }}
-                    />
-                  )}
-                  <div className="space-y-2">
-                    <Label className="text-sm text-gray-600 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                      Statut & disponibilité
-                    </Label>
-                    <Select
-                      value={draftListing.status}
-                      onValueChange={(value) => handleFieldChange('status', value as LandlordListingDetail['status'])}
-                    >
-                      <SelectTrigger className="rounded-xl">
-                        <SelectValue placeholder="Statut" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {listingStatusOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <div className="flex items-center justify-between rounded-xl border border-gray-200 p-3">
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">Annonce publiée</p>
-                        <p className="text-xs text-gray-500">Contrôle la visibilité côté app</p>
-                      </div>
-                      <Switch
-                        checked={draftListing.isAvailable}
-                        onCheckedChange={(checked) => handleFieldChange('isAvailable', checked)}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  <DetailLine icon={DollarSign} label="Loyer mensuel" value={priceFormatter.format(listing.price)} />
-                  <DetailLine
-                    icon={Shield}
-                    label="Caution"
-                    value={listing.depositAmount ? priceFormatter.format(listing.depositAmount) : 'Non renseignée'}
-                  />
-                  <DetailLine
-                    icon={Clock4}
-                    label="Durée minimale"
-                    value={listing.minLeaseMonths ? `${listing.minLeaseMonths} mois` : 'Non précisée'}
-                  />
-                  <DetailLine icon={Users} label="Capacité" value={`${listing.guestCapacity} personnes`} />
-                  {listing.isCommercial && (
-                    <DetailLine icon={Maximize2} label="Surface" value={listing.surfaceArea ? `${listing.surfaceArea} m²` : '—'} />
-                  )}
-                  <DetailLine
-                    icon={CheckCircle2}
-                    label="Statut"
-                    value={listing.isAvailable ? 'Publiée' : 'Brouillon'}
-                    accent={listing.isAvailable ? 'text-emerald-600' : 'text-orange-600'}
-                  />
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border-gray-100">
-            <CardContent className="p-6 space-y-4">
               <h2 className="text-lg font-semibold text-gray-900">Performances</h2>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <ListingStat icon={Eye} label="Vues cumulées" value={listing.viewsCount.toLocaleString('fr-FR')} />
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                <ListingStat icon={Eye} label="Vues totales" value={listing.viewsCount.toLocaleString('fr-FR')} />
                 <ListingStat icon={MessageSquare} label="Commentaires" value={listing.commentsCount.toLocaleString('fr-FR')} />
-                <ListingStat icon={CalendarCheck} label="Visites planifiées" value={`${listing.visits}`} />
+                <ListingStat icon={CalendarCheck} label="Visites" value={`${listing.visits}`} />
                 <ListingStat icon={UserCheck} label="Baux signés" value={`${listing.bookings}`} />
+                <ListingStat icon={Heart} label="Likes" value={(listing.likesCount ?? 0).toLocaleString('fr-FR')} />
               </div>
             </CardContent>
           </Card>
@@ -474,17 +326,26 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
             <CardContent className="p-6 space-y-4">
               <h2 className="text-lg font-semibold text-gray-900">Configuration des pièces</h2>
               <div className="flex flex-wrap gap-2">
-                {Object.entries(roomLabelMap).map(([key, label]) => (
-                  <RoomBadge
-                    key={key}
-                    label={label}
-                    value={listing.roomBreakdown[key as keyof typeof roomLabelMap]}
-                    isEditing={isEditing}
-                    onChange={(value) =>
-                      handleRoomBreakdownChange(key as keyof LandlordListingDetail['roomBreakdown'], value)
-                    }
-                  />
-                ))}
+                {Object.entries(roomLabelMap)
+                  .filter(([key]) => {
+                    const count = listing.roomBreakdown[key as keyof typeof roomLabelMap] ?? 0;
+                    return isEditing || count > 0;
+                  })
+                  .map(([key, label]) => (
+                    <RoomBadge
+                      key={key}
+                      label={label}
+                      value={listing.roomBreakdown[key as keyof typeof roomLabelMap]}
+                      isEditing={isEditing}
+                      onChange={(value) =>
+                        handleRoomBreakdownChange(key as keyof LandlordListingDetail['roomBreakdown'], value)
+                      }
+                    />
+                  ))}
+                {!isEditing &&
+                  Object.values(listing.roomBreakdown).every((count) => !count || count <= 0) && (
+                    <p className="text-sm text-gray-500">Aucune donnée disponible pour cette annonce.</p>
+                  )}
               </div>
             </CardContent>
           </Card>
@@ -507,30 +368,49 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
                 </Button>
               )}
               <div className="grid gap-4 md:grid-cols-2">
-                {listing.mediaAssets.map((asset) => (
-                  <MediaItemCard
-                    key={asset.id}
-                    asset={asset}
-                    isEditing={isEditing}
-                    onRemove={handleMediaRemove}
-                  />
-                ))}
+                {listing.mediaAssets.length > 0 ? (
+                  listing.mediaAssets.map((asset) => (
+                    <MediaItemCard
+                      key={asset.id}
+                      asset={asset}
+                      isEditing={isEditing}
+                      onRemove={handleMediaRemove}
+                    />
+                  ))
+                ) : (
+                  <div className="col-span-full text-center py-8 text-gray-500">
+                    <Images className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                    <p className="text-sm">Aucun média disponible pour cette annonce</p>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
 
-          <Card className="rounded-2xl border-gray-100">
-            <CardContent className="p-6 space-y-4">
-              <h2 className="text-lg font-semibold text-gray-900">Équipements</h2>
-              <div className="flex flex-wrap gap-2">
-                {listing.amenities.map((item) => (
-                  <Badge key={item} variant="secondary" className="rounded-full text-xs">
-                    {item}
-                  </Badge>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          {listing.amenities.length > 0 ? (
+            <Card className="rounded-2xl border-gray-100">
+              <CardContent className="p-6 space-y-4">
+                <h2 className="text-lg font-semibold text-gray-900">Équipements</h2>
+                <div className="flex flex-wrap gap-2">
+                  {listing.amenities.map((item) => (
+                    <Badge key={item} variant="secondary" className="rounded-full text-xs">
+                      {item}
+                    </Badge>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="rounded-2xl border-gray-100">
+              <CardContent className="p-6 space-y-4">
+                <h2 className="text-lg font-semibold text-gray-900">Équipements</h2>
+                <div className="text-center py-8 text-gray-500">
+                  <Home className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p className="text-sm">Aucun équipement renseigné pour cette annonce</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -681,8 +561,8 @@ function ListingStat({
           <Icon className="w-5 h-5" />
         </div>
       )}
-      <p className="text-xs text-gray-500 uppercase">{label}</p>
-      <p className="text-2xl font-semibold text-gray-900">{value}</p>
+      <p className="text-[10px] text-gray-500 uppercase tracking-wide">{label}</p>
+      <p className="text-lg font-semibold text-gray-900">{value}</p>
     </div>
   );
 }
@@ -711,8 +591,8 @@ function ContactLine({
 
 function getStatusLabel(status: LandlordListingDetail['status']) {
   const labels: Record<LandlordListingDetail['status'], string> = {
-    pending: 'En attente',
-    approved: 'Approuvée',
+    pending: 'Brouillon',
+    approved: 'En ligne',
     rejected: 'Refusée',
     suspended: 'Suspendue',
   };
@@ -745,28 +625,6 @@ function InfoChip({ icon: Icon, label, value, tone }: InfoChipProps) {
   );
 }
 
-type DetailLineProps = {
-  icon: ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-  stacked?: boolean;
-  accent?: string;
-};
-
-function DetailLine({ icon: Icon, label, value, stacked = false, accent }: DetailLineProps) {
-  return (
-    <div className={stacked ? 'flex items-start gap-3' : 'flex items-center gap-3'}>
-      <div className="w-10 h-10 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-500">
-        <Icon className="w-4 h-4" />
-      </div>
-      <div className="flex-1">
-        <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
-        <p className={`text-sm font-medium text-gray-900 mt-0.5 ${accent ?? ''}`}>{value}</p>
-      </div>
-    </div>
-  );
-}
-
 const roomLabelMap = {
   livingRoom: 'Salon',
   bedrooms: 'Chambres',
@@ -775,24 +633,6 @@ const roomLabelMap = {
   diningRooms: 'Salles à manger',
   toilets: 'Toilettes',
 } as const;
-
-type EditableFieldProps = {
-  label: string;
-  icon: ComponentType<{ className?: string }>;
-  inputProps: InputHTMLAttributes<HTMLInputElement>;
-};
-
-function EditableField({ label, icon: Icon, inputProps }: EditableFieldProps) {
-  return (
-    <div className="space-y-2">
-      <Label className="text-sm text-gray-600 flex items-center gap-2">
-        <Icon className="w-4 h-4 text-gray-400" />
-        {label}
-      </Label>
-      <Input className="rounded-xl" {...inputProps} />
-    </div>
-  );
-}
 
 type RoomBadgeProps = {
   label: string;
@@ -828,21 +668,73 @@ type MediaItemCardProps = {
 
 function MediaItemCard({ asset, isEditing = false, onRemove }: MediaItemCardProps) {
   const Icon = asset.type === 'video' ? Video : Images;
+  const isVideo = asset.type === 'video' && Boolean(asset.sourceUrl);
+  const previewSrc = asset.sourceUrl ?? asset.thumbnailUrl;
+
   return (
     <div className="border border-gray-100 rounded-2xl overflow-hidden">
-      <div
-        className="h-32 bg-cover bg-center"
-        style={{ backgroundImage: `url(${asset.thumbnailUrl})` }}
-      />
+      <Dialog>
+        <DialogTrigger asChild>
+          <button
+            type="button"
+            className="relative flex w-full items-center justify-center bg-gray-900 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500"
+            style={{ aspectRatio: '9 / 16', minHeight: '270px', maxHeight: '380px' }}
+          >
+            {isVideo ? (
+              <video
+                className="h-full w-full object-cover"
+                controls={false}
+                muted
+                autoPlay
+                loop
+                playsInline
+                preload="auto"
+                poster={asset.thumbnailUrl}
+                src={asset.sourceUrl ?? undefined}
+              />
+            ) : (
+              <img src={asset.thumbnailUrl} alt={asset.label} className="h-full w-full object-cover" />
+            )}
+            <span className="absolute top-3 right-3 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white shadow-lg shadow-black/30">
+              Prévisualiser
+            </span>
+          </button>
+        </DialogTrigger>
+        <DialogContent className="w-[min(90vw,900px)] max-w-[900px] border-none bg-transparent p-0">
+          <div className="w-full rounded-2xl bg-black p-4 flex items-center justify-center">
+            {isVideo ? (
+              <video
+                src={asset.sourceUrl ?? undefined}
+                poster={asset.thumbnailUrl}
+                controls
+                autoPlay
+                className="max-h-[80vh] w-full max-w-full object-contain"
+              />
+            ) : (
+              <img src={previewSrc} alt={asset.label} className="max-h-[80vh] w-full max-w-full object-contain" />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       <div className="p-4 space-y-1.5">
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <Icon className="w-4 h-4" />
-          {asset.type === 'video' ? 'Vidéo' : 'Photo'}
+          {isVideo ? 'Vidéo' : 'Photo'}
           {asset.room && <Badge variant="secondary">{asset.room}</Badge>}
         </div>
         <p className="font-medium text-gray-900">{asset.label}</p>
         {asset.durationSeconds && (
           <p className="text-xs text-gray-500">Durée {formatDuration(asset.durationSeconds)}</p>
+        )}
+        {asset.sourceUrl && !isVideo && (
+          <a
+            href={asset.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-emerald-600 hover:text-emerald-700"
+          >
+            Ouvrir le média
+          </a>
         )}
         {isEditing && onRemove && (
           <div className="pt-3">

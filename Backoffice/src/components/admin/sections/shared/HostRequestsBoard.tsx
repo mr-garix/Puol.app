@@ -19,17 +19,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import {
-  Search,
-  Filter,
-  MapPin,
-  Phone,
-  CheckCircle2,
-  Clock3,
-  AlertTriangle,
-  ArrowLeft,
-} from 'lucide-react';
+import { Search, MapPin, Phone, CheckCircle2, Clock3, AlertTriangle, ArrowLeft } from 'lucide-react';
 import type { HostRequest, HostRequestStatus } from '../../UsersManagement';
+import { approveHostApplication, rejectHostApplication } from '@/lib/services/hosts';
 
 type HostRequestsBoardProps = {
   requests: HostRequest[];
@@ -59,14 +51,20 @@ export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
   const [cityFilter, setCityFilter] = useState<'all' | string>('all');
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, HostRequestStatus>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingAction, setProcessingAction] = useState<'approve' | 'reject' | null>(null);
+
+  const getStatus = (request: HostRequest) => statusOverrides[request.id] ?? request.status;
 
   const stats = useMemo(
     () =>
       (['pending', 'approved', 'rejected'] as HostRequestStatus[]).map((status) => ({
         status,
-        count: requests.filter((request) => request.status === status).length,
+        count: requests.filter((request) => getStatus(request) === status).length,
       })),
-    [requests],
+    [requests, statusOverrides],
   );
 
   const cities = useMemo(
@@ -76,20 +74,69 @@ export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
 
   const filteredRequests = useMemo(() => {
     return requests.filter((request) => {
+      const effectiveStatus = getStatus(request);
       const matchesSearch =
         request.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         request.phone.toLowerCase().includes(searchQuery.toLowerCase()) ||
         request.city.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesStatus = statusFilter === 'all' || request.status === statusFilter;
+      const matchesStatus = statusFilter === 'all' || effectiveStatus === statusFilter;
       const matchesCity = cityFilter === 'all' || request.city === cityFilter;
       return matchesSearch && matchesStatus && matchesCity;
     });
-  }, [requests, searchQuery, statusFilter, cityFilter]);
+  }, [requests, searchQuery, statusFilter, cityFilter, statusOverrides]);
 
   const selectedRequest = useMemo(
     () => requests.find((request) => request.id === selectedRequestId) ?? null,
     [requests, selectedRequestId],
   );
+
+  const handleApprove = async (request: HostRequest) => {
+    if (!request || !request.profileId) {
+      setActionError('Impossible de valider : profil lié manquant.');
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingAction('approve');
+    setActionError(null);
+    try {
+      const ok = await approveHostApplication(request.id, request.profileId);
+      if (!ok) {
+        setActionError("Échec de l'approbation sur Supabase.");
+        return;
+      }
+      setStatusOverrides((prev) => ({ ...prev, [request.id]: 'approved' }));
+    } catch (error) {
+      console.warn('[HostRequestsBoard] approve failed', error);
+      setActionError("Une erreur est survenue lors de l'approbation.");
+    } finally {
+      setIsProcessing(false);
+      setProcessingAction(null);
+    }
+  };
+
+  const handleReject = async (request: HostRequest) => {
+    if (!request || !request.profileId) {
+      setActionError('Impossible de refuser : profil lié manquant.');
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingAction('reject');
+    setActionError(null);
+    try {
+      const ok = await rejectHostApplication(request.id, request.profileId);
+      if (!ok) {
+        setActionError("Échec du refus sur Supabase.");
+        return;
+      }
+      setStatusOverrides((prev) => ({ ...prev, [request.id]: 'rejected' }));
+    } catch (error) {
+      console.warn('[HostRequestsBoard] reject failed', error);
+      setActionError("Une erreur est survenue lors du refus.");
+    } finally {
+      setIsProcessing(false);
+      setProcessingAction(null);
+    }
+  };
 
   const handleViewRequest = (requestId: string) => {
     setSelectedRequestId(requestId);
@@ -101,10 +148,17 @@ export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
   };
 
   if (viewMode === 'detail' && selectedRequest) {
+    const status = getStatus(selectedRequest);
     return (
       <HostRequestDetailView
         request={selectedRequest}
         onBack={handleBackToList}
+        onApprove={handleApprove}
+        onReject={handleReject}
+        isProcessing={isProcessing}
+        processingAction={processingAction}
+        actionError={actionError}
+        status={status}
         statusLabels={statusLabels}
         statusBadgeStyles={statusBadgeStyles}
         statusIcons={statusIcons}
@@ -172,69 +226,79 @@ export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
                   <TableHead>Date</TableHead>
                   <TableHead>Candidat</TableHead>
                   <TableHead>Contact</TableHead>
-                  <TableHead>Expérience</TableHead>
+                  <TableHead>Portefeuille</TableHead>
                   <TableHead>Statut</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredRequests.map((request) => (
-                  <TableRow key={request.id} className="hover:bg-gray-50/80">
-                    <TableCell className="text-sm text-gray-500">{request.submittedAt}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar className="border border-gray-100">
-                          <AvatarImage src={request.avatarUrl} alt={request.fullName} />
-                          <AvatarFallback>
-                            {request.firstName.charAt(0)}
-                            {request.lastName.charAt(0)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">{request.fullName}</p>
-                          <p className="text-xs text-gray-500 flex items-center gap-1">
-                            <MapPin className="w-3 h-3" />
-                            {request.city}
-                          </p>
+                {filteredRequests.map((request) => {
+                  const effectiveStatus = getStatus(request);
+                  return (
+                    <TableRow key={request.id} className="hover:bg-gray-50/80">
+                      <TableCell className="text-sm text-gray-500">{request.submittedAt}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <Avatar className="border border-gray-100">
+                            <AvatarImage src={request.avatarUrl} alt={request.fullName} />
+                            <AvatarFallback>
+                              {request.firstName.charAt(0)}
+                              {request.lastName.charAt(0)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{request.fullName}</p>
+                            <p className="text-xs text-gray-500 flex items-center gap-1">
+                              <MapPin className="w-3 h-3" />
+                              {request.city}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="text-xs text-gray-500 flex items-center gap-1">
-                        <Phone className="w-3 h-3" />
-                        {request.phone}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-900">
-                      {request.experienceYears} ans · {request.listingsHosted} annonces
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={`rounded-full gap-1 ${statusBadgeStyles[request.status]}`}>
-                        {statusIcons[request.status]}
-                        {statusLabels[request.status]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="rounded-lg"
-                        onClick={() => handleViewRequest(request.id)}
-                      >
-                        Voir la candidature
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-xs text-gray-500 flex items-center gap-1">
+                          <Phone className="w-3 h-3" />
+                          {request.phone}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-900">
+                        <div className="space-y-1">
+                          <span>{request.unitsPortfolio} unités</span>
+                          {request.propertyTypes.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {request.propertyTypes.map((type) => (
+                                <Badge key={type} variant="secondary" className="rounded-full px-2 py-0.5 text-xs">
+                                  {type}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={`rounded-full gap-1 ${statusBadgeStyles[effectiveStatus]}`}>
+                          {statusIcons[effectiveStatus]}
+                          {statusLabels[effectiveStatus]}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-lg"
+                          onClick={() => handleViewRequest(request.id)}
+                        >
+                          Voir la candidature
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
 
             {filteredRequests.length === 0 && (
-              <div className="py-12 text-center space-y-2">
-                <Filter className="w-10 h-10 text-gray-300 mx-auto" />
-                <p className="text-gray-600">Aucune demande ne correspond à ces critères.</p>
-                <p className="text-sm text-gray-400">Ajustez les filtres ou réinitialisez la recherche.</p>
-              </div>
+              <div className="p-6 text-sm text-gray-500">Aucune candidature trouvée.</div>
             )}
           </div>
         </CardContent>
@@ -243,9 +307,15 @@ export function HostRequestsBoard({ requests }: HostRequestsBoardProps) {
   );
 }
 
-type HostRequestDetailViewProps = {
+interface HostRequestDetailViewProps {
   request: HostRequest;
   onBack: () => void;
+  onApprove: (request: HostRequest) => void;
+  onReject: (request: HostRequest) => void;
+  isProcessing: boolean;
+  processingAction: 'approve' | 'reject' | null;
+  actionError: string | null;
+  status: HostRequestStatus;
   statusLabels: Record<HostRequestStatus, string>;
   statusBadgeStyles: Record<HostRequestStatus, string>;
   statusIcons: Record<HostRequestStatus, ReactNode>;
@@ -254,6 +324,12 @@ type HostRequestDetailViewProps = {
 function HostRequestDetailView({
   request,
   onBack,
+  onApprove,
+  onReject,
+  isProcessing,
+  processingAction,
+  actionError,
+  status,
   statusLabels,
   statusBadgeStyles,
   statusIcons,
@@ -265,10 +341,25 @@ function HostRequestDetailView({
           <ArrowLeft className="w-4 h-4 mr-2" />
           Retour aux demandes
         </Button>
+        {status !== 'approved' && (
+          <Button
+            className="rounded-full"
+            disabled={isProcessing}
+            onClick={() => onApprove(request)}
+          >
+            {isProcessing ? 'Approbation...' : 'Approuver la demande'}
+          </Button>
+        )}
         <Badge variant="outline" className="rounded-full text-xs">
           Demande #{request.id}
         </Badge>
       </div>
+
+      {actionError ? (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="text-red-700 text-sm py-3">{actionError}</CardContent>
+        </Card>
+      ) : null}
 
       <div className="rounded-3xl bg-gradient-to-br from-indigo-900 via-indigo-800 to-indigo-700 text-white p-8">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -289,9 +380,9 @@ function HostRequestDetailView({
               </p>
             </div>
           </div>
-          <Badge className={`rounded-full gap-1 px-4 py-1.5 text-base ${statusBadgeStyles[request.status]}`}>
-            {statusIcons[request.status]}
-            {statusLabels[request.status]}
+          <Badge className={`rounded-full gap-1 px-4 py-1.5 text-base ${statusBadgeStyles[status]}`}>
+            {statusIcons[status]}
+            {statusLabels[status]}
           </Badge>
         </div>
       </div>
@@ -301,19 +392,28 @@ function HostRequestDetailView({
           <CardContent className="p-6 space-y-6">
             <div>
               <p className="text-sm text-gray-500 uppercase">Résumé de la candidature</p>
-              <h2 className="text-2xl text-gray-900">Motivation & ambitions</h2>
             </div>
-            <p className="text-base leading-relaxed text-gray-700">{request.motivation}</p>
+            {request.motivation.trim().length > 0 ? (
+              <p className="text-base leading-relaxed text-gray-700">{request.motivation}</p>
+            ) : null}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="rounded-2xl border border-gray-100 p-4">
-                <p className="text-xs text-gray-500 uppercase">Expérience</p>
-                <p className="text-2xl font-semibold text-gray-900">{request.experienceYears} ans</p>
+                <p className="text-xs text-gray-500 uppercase">Portefeuille</p>
+                <p className="text-2xl font-semibold text-gray-900">{request.unitsPortfolio} unités</p>
               </div>
               <div className="rounded-2xl border border-gray-100 p-4">
-                <p className="text-xs text-gray-500 uppercase">Annonces actives</p>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {request.listingsHosted} biens
-                </p>
+                <p className="text-xs text-gray-500 uppercase">Types de biens</p>
+                {request.propertyTypes.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {request.propertyTypes.map((type) => (
+                      <Badge key={type} variant="secondary" className="rounded-lg">
+                        {type}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-lg text-gray-400 mt-2">—</p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -345,14 +445,30 @@ function HostRequestDetailView({
             </div>
 
             <div className="space-y-3">
-              <Button variant="outline" className="w-full rounded-xl">
-                Demander des pièces complémentaires
-              </Button>
               <div className="flex gap-3">
-                <Button variant="destructive" className="flex-1 rounded-xl">
-                  Refuser
+                <Button
+                  variant="destructive"
+                  className="flex-1 rounded-xl"
+                  disabled={isProcessing || status === 'rejected'}
+                  onClick={() => onReject(request)}
+                >
+                  {processingAction === 'reject'
+                    ? 'Refus...'
+                    : status === 'rejected'
+                      ? 'Déjà refusé'
+                      : 'Refuser'}
                 </Button>
-                <Button className="flex-1 rounded-xl">Approuver</Button>
+                <Button
+                  className="flex-1 rounded-xl"
+                  disabled={isProcessing || status === 'approved'}
+                  onClick={() => onApprove(request)}
+                >
+                  {processingAction === 'approve'
+                    ? 'Approbation...'
+                    : status === 'approved'
+                      ? 'Déjà approuvé'
+                      : 'Approuver'}
+                </Button>
               </div>
             </div>
           </CardContent>

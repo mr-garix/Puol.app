@@ -15,21 +15,44 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { PolicyModal } from '../../../components/ui/PolicyModal';
+import { createPaymentAndEarning } from '../../../lib/services/payments';
+import { markBookingPaid, cancelBookingAfterPaymentFailure } from '@/src/features/bookings/services';
+import { supabase } from '@/src/supabaseClient';
 
 interface PaymentModalProps {
   visible: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: () => void | Promise<void>;
   amount: number;
   title: string;
   description: string;
   onBack?: () => void;
   infoMessage?: string;
+  // Nouveaux props pour la logique de paiement
+  purpose?: 'visit' | 'booking';
+  payerProfileId?: string;
+  hostProfileId?: string;
+  relatedId?: string;
+  customerPrice?: number; // Prix payé par le client (pour les réservations)
 }
 
 type PaymentMethod = 'orange' | 'mtn' | 'card';
 
-export const PaymentModal: React.FC<PaymentModalProps> = ({ visible, onClose, onSuccess, amount, title, description, onBack, infoMessage }) => {
+export const PaymentModal: React.FC<PaymentModalProps> = ({ 
+  visible, 
+  onClose, 
+  onSuccess, 
+  amount, 
+  title, 
+  description, 
+  onBack, 
+  infoMessage,
+  purpose,
+  payerProfileId,
+  hostProfileId,
+  relatedId,
+  customerPrice
+}) => {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('orange');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [cardNumber, setCardNumber] = useState('');
@@ -138,9 +161,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ visible, onClose, on
     onClose();
   };
 
-  const handlePayment = () => {
+  const handlePayment = async () => {
+    console.log('[PaymentModal] Début handlePayment');
     const error = validatePayment();
     if (error) {
+      console.log('[PaymentModal] Erreur validation:', error);
       if (!acceptedPolicy) {
         setShowPolicyError(true);
       }
@@ -148,14 +173,156 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ visible, onClose, on
       return;
     }
 
+    console.log('[PaymentModal] Validation OK, début traitement paiement');
     setShowPolicyError(false);
     setIsProcessing(true);
 
-    setTimeout(() => {
+    try {
+      // Mapper le provider pour la base de données
+      const providerMap = {
+        orange: 'orange_money',
+        mtn: 'mtn_momo',
+        card: 'card'
+      } as const;
+
+      const dbProvider = providerMap[paymentMethod];
+
+      // Si on a les informations nécessaires, créer le paiement dans Supabase
+      if (purpose && payerProfileId) {
+        let finalHostProfileId = hostProfileId;
+        
+        // Si hostProfileId n'est pas fourni, tenter de le récupérer depuis la réservation/listing
+        if (!finalHostProfileId && relatedId) {
+          console.log('[PaymentModal] hostProfileId manquant, tentative de récupération via booking/listing');
+          try {
+            const { data: bookingRow, error: bookingError } = await supabase
+              .from('bookings')
+              .select('listing:listing_id(host_id)')
+              .eq('id', relatedId)
+              .maybeSingle();
+
+            if (bookingError) {
+              console.error('[PaymentModal] Erreur fetch booking pour host_profile_id', bookingError);
+            }
+
+            finalHostProfileId = (bookingRow as any)?.listing?.host_id ?? finalHostProfileId;
+
+            // Si toujours rien, tenter via listing directement (si relatedId est un listing_id)
+            if (!finalHostProfileId) {
+              const { data: listingRow, error: listingError } = await supabase
+                .from('listings')
+                .select('host_id')
+                .eq('id', relatedId)
+                .maybeSingle();
+
+              if (listingError) {
+                console.error('[PaymentModal] Erreur fetch listing pour host_id', listingError);
+              }
+
+              finalHostProfileId = (listingRow as any)?.host_id ?? finalHostProfileId;
+            }
+          } catch (err) {
+            console.error('[PaymentModal] Exception récupération host_profile_id', err);
+          }
+        }
+        
+        if (!finalHostProfileId) {
+          console.error('[PaymentModal] hostProfileId toujours manquant après fetch');
+          setIsProcessing(false);
+          Alert.alert(
+            'Paiement impossible',
+            'Impossible de récupérer le propriétaire du logement. Réessayez plus tard ou contactez le support.'
+          );
+          return;
+        }
+        
+        console.log('[PaymentModal] Appel de createPaymentAndEarning avec:', {
+          purpose,
+          payerProfileId,
+          hostProfileId: finalHostProfileId,
+          relatedId,
+          provider: dbProvider,
+          customerPrice: purpose === 'booking' ? customerPrice : undefined,
+        });
+        
+        await createPaymentAndEarning({
+          payerProfileId,
+          hostProfileId: finalHostProfileId,
+          purpose,
+          relatedId,
+          provider: dbProvider,
+          customerPrice: purpose === 'booking' ? customerPrice : undefined,
+        });
+        
+        // Pour les bookings : valider la réservation après paiement
+        if (purpose === 'booking' && relatedId) {
+          await markBookingPaid(relatedId);
+        }
+        
+        console.log('[PaymentModal] Paiement créé avec succès');
+      } else {
+        console.warn('[PaymentModal] Informations manquantes:', {
+          purpose,
+          payerProfileId,
+          hostProfileId,
+        });
+        setIsProcessing(false);
+        Alert.alert(
+          'Paiement impossible',
+          'Informations de paiement incomplètes. Veuillez réessayer plus tard.'
+        );
+        return;
+      }
+
+      // Simuler un délai pour l'UX
+      console.log('[PaymentModal] Simulation délai UX...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      console.log('[PaymentModal] Fin traitement, appel onSuccess');
       setIsProcessing(false);
-      handleClose();
-      onSuccess();
-    }, 2000);
+      
+      try {
+        console.log('[PaymentModal] Appel onSuccess callback...');
+        const result = await onSuccess();
+        console.log('[PaymentModal] onSuccess callback retourné:', result);
+        console.log('[PaymentModal] onSuccess callback exécuté avec succès');
+        // Le parent gère la fermeture via onSuccess
+      } catch (callbackError) {
+        console.error('[PaymentModal] Erreur dans onSuccess callback:', callbackError);
+        console.error('[PaymentModal] Stack trace callback:', callbackError instanceof Error ? callbackError.stack : 'No stack');
+        // Fermer en cas d'erreur callback pour éviter le figement
+        handleClose();
+      }
+    } catch (error) {
+      // En cas d'échec paiement, annuler le booking et libérer les dates
+      if (purpose === 'booking' && relatedId) {
+        try {
+          await cancelBookingAfterPaymentFailure(relatedId);
+        } catch (cleanupError) {
+          console.error('[PaymentModal] Échec cleanup booking après erreur paiement:', cleanupError);
+        }
+      }
+
+      const serializedError = (() => {
+        try {
+          return JSON.stringify(error);
+        } catch {
+          return String(error);
+        }
+      })();
+
+      console.error('[PaymentModal] Erreur lors du paiement:', error);
+      console.error('[PaymentModal] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      console.error('[PaymentModal] Détails sérialisés:', serializedError);
+
+      Alert.alert(
+        'Erreur de paiement',
+        "Une erreur est survenue lors du traitement de votre paiement. Veuillez réessayer. Si le problème persiste, revenez en arrière puis relancez le paiement."
+      );
+    } finally {
+      // Réactiver l'UI (handleClose est déjà appelé dans les branches try/catch)
+      setIsProcessing(false);
+    }
   };
 
   const paymentMethodButton = (

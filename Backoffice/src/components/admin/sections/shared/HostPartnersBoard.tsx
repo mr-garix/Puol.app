@@ -19,7 +19,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Users, MapPin, Filter, Calendar, ArrowUpRight } from 'lucide-react';
-import { hostProfiles, type HostProfile } from '../../UsersManagement';
+import { type HostProfile } from '../../UsersManagement';
 
 const segmentLabels: Record<HostProfile['segment'], string> = {
   premium: 'Premium',
@@ -37,29 +37,30 @@ const periodLabels: Record<PeriodRange, string> = {
 };
 
 type HostPartnersBoardProps = {
+  hosts?: HostProfile[];
   onViewProfile?: (hostId: string) => void;
 };
 
-export function HostPartnersBoard({ onViewProfile }: HostPartnersBoardProps) {
+export function HostPartnersBoard({ hosts = [], onViewProfile }: HostPartnersBoardProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all');
   const [periodRange, setPeriodRange] = useState<PeriodRange>('12m');
 
   const summary = useMemo(() => {
-    const totalStays = hostProfiles.reduce((sum, host) => sum + host.staysHosted, 0);
-    const totalGuests = hostProfiles.reduce((sum, host) => sum + host.guestsSupported, 0);
-    const totalRevenue = hostProfiles.reduce((sum, host) => sum + host.revenueShare, 0);
+    const totalStays = hosts.reduce((sum, host) => sum + (host.staysHosted ?? 0), 0);
+    const totalGuests = hosts.reduce((sum, host) => sum + (host.guestsSupported ?? 0), 0);
+    const totalRevenue = hosts.reduce((sum, host) => sum + (host.revenueShare ?? 0), 0);
 
     return {
       totalStays,
       totalGuests,
       totalRevenue,
-      totalHosts: hostProfiles.length,
+      totalHosts: hosts.length,
     };
-  }, []);
+  }, [hosts]);
 
   const filteredHosts = useMemo(() => {
-    return hostProfiles.filter((host) => {
+    return hosts.filter((host) => {
       const matchesSearch =
         host.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         host.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -71,7 +72,7 @@ export function HostPartnersBoard({ onViewProfile }: HostPartnersBoardProps) {
 
       return matchesSearch && matchesSegment;
     });
-  }, [searchQuery, segmentFilter]);
+  }, [hosts, searchQuery, segmentFilter]);
 
   return (
     <div className="space-y-6">
@@ -129,7 +130,7 @@ export function HostPartnersBoard({ onViewProfile }: HostPartnersBoardProps) {
         <Card>
           <CardContent className="p-6 space-y-2">
             <p className="text-sm text-gray-500 uppercase">Revenus hôtes</p>
-            <p className="text-3xl text-gray-900">{(summary.totalRevenue / 1_000_000).toFixed(1)}M</p>
+            <p className="text-3xl text-gray-900">{summary.totalRevenue >= 1_000_000 ? `${(summary.totalRevenue / 1_000_000).toFixed(1)}M` : `${summary.totalRevenue.toLocaleString('fr-FR')} FCFA`}</p>
             <p className="text-xs text-[#2ECC71] flex items-center gap-1">
               <ArrowUpRight className="w-3.5 h-3.5" />
               +14% vs N-1
@@ -187,29 +188,41 @@ export function HostPartnersBoard({ onViewProfile }: HostPartnersBoardProps) {
                 {filteredHosts.map((host) => (
                   <TableRow key={host.id} className="hover:bg-gray-50/80">
                     <TableCell>
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                          {host.name}
-                          <Badge variant="secondary" className="text-xs capitalize">
-                            {segmentLabels[host.segment]}
-                          </Badge>
-                        </p>
-                        <p className="text-xs text-gray-500">{host.username}</p>
-                        <p className="text-xs text-gray-500 flex items-center gap-1">
-                          <MapPin className="w-3.5 h-3.5" />
-                          {host.city}
-                        </p>
+                      <div className="space-y-1 flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center overflow-hidden text-sm font-semibold text-gray-600 shrink-0">
+                          {host.avatarUrl ? (
+                            <img src={host.avatarUrl} alt={host.name} className="h-full w-full object-cover" />
+                          ) : (
+                            host.name.slice(0, 2).toUpperCase()
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                            {host.name}
+                            <Badge variant="secondary" className="text-xs capitalize">
+                              {segmentLabels[host.segment]}
+                            </Badge>
+                          </p>
+                          <p className="text-xs text-gray-500">{host.username}</p>
+                          <p className="text-xs text-gray-500 flex items-center gap-1">
+                            <MapPin className="w-3.5 h-3.5" />
+                            {host.city}
+                          </p>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-wrap gap-2">
-                        {host.propertyTags.map((tag) => (
-                          <Badge key={tag} variant="secondary" className="rounded-full text-xs">
+                      <div className="grid grid-cols-2 gap-2 max-w-sm">
+                        {host.propertyTags.map((tag, index) => (
+                          <Badge
+                            key={`${host.id}-${tag}-${index}`}
+                            variant="secondary"
+                            className="rounded-full text-xs whitespace-nowrap text-center"
+                          >
                             {tag}
                           </Badge>
                         ))}
                       </div>
-                      <p className="text-xs text-gray-500 mt-2">Compte #{host.id} · Depuis {host.joinedAt}</p>
                     </TableCell>
                     <TableCell className="text-sm text-gray-900">
                       {host.staysHosted} séjours · {host.listingsActive} annonces

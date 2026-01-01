@@ -24,11 +24,9 @@ import {
   Wallet,
   MessageSquare,
   ShieldCheck,
-  Users,
   Sparkles,
   Heart,
   Eye,
-  Clock4,
   Calendar,
   Pin,
   CheckCircle2,
@@ -138,7 +136,10 @@ export function ClientProfileView({ client, onBack }: ClientProfileViewProps) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
           <HeroStat label="Visites réservées" value={client.stats.visits.toString()} />
           <HeroStat label="Baux signés" value={client.stats.leases.toString()} />
-          <HeroStat label="Satisfaction" value={`${client.stats.satisfaction.toFixed(1)}/5`} />
+          <HeroStat
+            label="Satisfaction"
+            value={`${client.stats.satisfaction.toFixed(1)}/5 · ${client.stats.reviewsCount} avis`}
+          />
           <HeroStat label="Dépenses cumulées" value={`${client.stats.spend.toLocaleString('fr-FR')} FCFA`} />
         </div>
       </div>
@@ -148,7 +149,7 @@ export function ClientProfileView({ client, onBack }: ClientProfileViewProps) {
           <Card className="rounded-2xl border-gray-100">
             <CardContent className="p-6 space-y-4">
               <SectionHeader title="Statistiques comportementales" description="Inspiré de la vue mobile PUOL" />
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
                 <EngagementStat
                   icon={<Calendar className="w-4 h-4" />}
                   label="Séjours"
@@ -157,25 +158,11 @@ export function ClientProfileView({ client, onBack }: ClientProfileViewProps) {
                   valueClass="text-emerald-700"
                 />
                 <EngagementStat
-                  icon={<Clock4 className="w-4 h-4" />}
-                  label="Nuits totales"
-                  value={`${client.stats.nights} nuits`}
-                  accent="from-[#FFF5E8] to-[#FFE4C9]"
-                  valueClass="text-amber-700"
-                />
-                <EngagementStat
                   icon={<Heart className="w-4 h-4" />}
                   label="Engagement social"
                   value={`${client.stats.likes} likes · ${client.stats.comments} commentaires`}
                   accent="from-[#FFE8F2] to-[#FFCDE2]"
                   valueClass="text-rose-700"
-                />
-                <EngagementStat
-                  icon={<Users className="w-4 h-4" />}
-                  label="Followers"
-                  value={`${client.stats.followers} connexions`}
-                  accent="from-[#E8F4FF] to-[#D4E7FF]"
-                  valueClass="text-sky-700"
                 />
               </div>
             </CardContent>

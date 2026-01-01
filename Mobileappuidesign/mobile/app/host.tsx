@@ -20,6 +20,7 @@ import { useNavigation, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 
@@ -43,6 +44,7 @@ import {
   resetPhoneConfirmation,
 } from '@/src/features/auth/phoneAuthService';
 import { firebaseConfig } from '@/src/firebaseClient';
+import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 const PUOL_GREEN = '#2ECC71';
 const PUOL_GREEN_LIGHT = 'rgba(46, 204, 113, 0.12)';
@@ -121,8 +123,10 @@ export default function BecomeHostScreen() {
   const pendingPhoneRef = useRef<string | null>(null);
   const pendingProfileRef = useRef<SupabaseProfile | null>(null);
   const hasRedirectedRef = useRef(false);
+  const justCompletedRef = useRef(false);
   const backNavigationInFlightRef = useRef(false);
   const [isSubmittingApplication, setIsSubmittingApplication] = useState(false);
+  const [hasHostCompletionFlag, setHasHostCompletionFlag] = useState(false);
 
   const isAuthenticated = Boolean(user);
   const hasPrefilledIdentity = Boolean(user?.first_name && user?.last_name && user?.phone);
@@ -320,11 +324,56 @@ export default function BecomeHostScreen() {
     }
 
     const currentStatus = user.host_status ?? 'none';
-    if (currentStatus === 'pending' || currentStatus === 'approved' || user.role === 'host') {
+    if (currentStatus === 'approved') {
       hasRedirectedRef.current = true;
       router.replace('/(tabs)' as never);
     }
   }, [modalStep, router, user]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ensureFlagMatchesStatus = async () => {
+      if (!user) return;
+      const status = user.host_status ?? 'none';
+      if (status !== 'none') return;
+      try {
+        const flag = await AsyncStorage.getItem(STORAGE_KEYS.HOST_APPLICATION_COMPLETED);
+        if (cancelled) return;
+        if (flag === 'true') {
+          await AsyncStorage.setItem(STORAGE_KEYS.HOST_APPLICATION_COMPLETED, 'false');
+          setHasHostCompletionFlag(false);
+        }
+      } catch (error) {
+        console.warn('[BecomeHost] reset HOST_APPLICATION_COMPLETED failed', error);
+      }
+    };
+    ensureFlagMatchesStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  useEffect(() => {
+    let mounted = true;
+    const checkCompletionFlag = async () => {
+      try {
+        const flag = await AsyncStorage.getItem(STORAGE_KEYS.HOST_APPLICATION_COMPLETED);
+        if (!mounted) return;
+        const completed = flag === 'true';
+        setHasHostCompletionFlag(completed);
+        if (completed && !hasRedirectedRef.current && modalStep !== 'success' && !justCompletedRef.current) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        }
+      } catch (error) {
+        console.warn('[BecomeHost] read HOST_APPLICATION_COMPLETED failed', error);
+      }
+    };
+    checkCompletionFlag();
+    return () => {
+      mounted = false;
+    };
+  }, [modalStep, router]);
 
   const startResendCountdown = useCallback(() => {
     setResendCooldown(RESEND_COOLDOWN_SECONDS);
@@ -381,6 +430,15 @@ export default function BecomeHostScreen() {
     }
   }, []);
 
+  const markHostCompletion = useCallback(async () => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.HOST_APPLICATION_COMPLETED, 'true');
+      setHasHostCompletionFlag(true);
+    } catch (error) {
+      console.warn('[BecomeHost] persist completion flag failed', error);
+    }
+  }, []);
+
   const submitHostApplication = useCallback(
     async (profileId: string, normalizedPhoneNumber: string) => {
       await ensureHostApplication(profileId);
@@ -402,6 +460,7 @@ export default function BecomeHostScreen() {
       }
 
       await refreshProfile().catch((err) => console.warn('[BecomeHost] refreshProfile warning', err));
+      await markHostCompletion();
 
       const messageLines = [
         'Nouvelle demande hôte PUOL',
@@ -449,14 +508,26 @@ export default function BecomeHostScreen() {
     }
 
     if (shouldLockIdentity && user?.id) {
+      const alreadyCompleted = hasHostCompletionFlag;
       setIsSubmittingApplication(true);
       setVerificationError(null);
 
       try {
+        if (!alreadyCompleted) {
+          justCompletedRef.current = true;
+        } else {
+          justCompletedRef.current = false;
+        }
         await submitHostApplication(user.id, e164Phone);
         setBlockInfo(null);
-        setModalStep('success');
         clearVerificationState();
+        if (alreadyCompleted) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        } else {
+          justCompletedRef.current = true;
+          setModalStep('success');
+        }
       } catch (error) {
         console.error('[BecomeHost] direct submit error', error);
         setVerificationError("Impossible d'envoyer la demande. Réessaie ou contacte le support.");
@@ -498,7 +569,9 @@ export default function BecomeHostScreen() {
     canSubmit,
     clearVerificationState,
     evaluateBlockInfo,
+    hasHostCompletionFlag,
     normalizedPhone,
+    router,
     shouldLockIdentity,
     startResendCountdown,
     submitHostApplication,
@@ -543,11 +616,23 @@ export default function BecomeHostScreen() {
           pendingProfileRef.current = created;
         }
 
+        const alreadyCompleted = hasHostCompletionFlag;
+        if (!alreadyCompleted) {
+          justCompletedRef.current = true;
+        } else {
+          justCompletedRef.current = false;
+        }
         await submitHostApplication(profileId, normalizedPhone);
 
         setBlockInfo(null);
-        setModalStep('success');
         clearVerificationState();
+        if (alreadyCompleted) {
+          hasRedirectedRef.current = true;
+          router.replace('/(tabs)' as never);
+        } else {
+          justCompletedRef.current = true;
+          setModalStep('success');
+        }
       } catch (error) {
         console.error('[BecomeHost] OTP verification error', error);
         const errorCode = (error as { code?: string })?.code;
@@ -568,7 +653,9 @@ export default function BecomeHostScreen() {
       clearVerificationState,
       firstName,
       inventory,
+      hasHostCompletionFlag,
       lastName,
+      router,
       selectedTypes,
       submitHostApplication,
       user,
@@ -602,9 +689,9 @@ export default function BecomeHostScreen() {
 
   const handleCloseSuccess = useCallback(() => {
     clearVerificationState();
+    justCompletedRef.current = false;
     setModalStep(null);
-    router.replace('/(tabs)' as never);
-  }, [clearVerificationState, router]);
+  }, [clearVerificationState]);
 
   const handleBack = useCallback(() => {
     if (backNavigationInFlightRef.current) {

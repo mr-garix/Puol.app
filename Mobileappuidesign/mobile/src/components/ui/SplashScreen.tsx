@@ -1,5 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Dimensions, Image, StatusBar, StyleSheet, Text, View } from 'react-native';
+
+import { scaleFont } from '../../theme/typography';
 
 interface SplashScreenProps {
   onFinish: () => void;
@@ -8,12 +10,16 @@ interface SplashScreenProps {
 const SPLASH_DURATION = 4500; // 4.5s total
 const LOGO_SIZE = 192;
 const { width } = Dimensions.get('window');
+const BASE_SLOGAN_SIZE = scaleFont(18);
+const MIN_SLOGAN_SIZE = Math.max(Math.round(BASE_SLOGAN_SIZE * 0.8), 12);
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
   const logoOpacity = useRef(new Animated.Value(0)).current;
   const logoTranslateY = useRef(new Animated.Value(20)).current;
   const textOpacity = useRef(new Animated.Value(0)).current;
   const screenOpacity = useRef(new Animated.Value(1)).current;
+  const [sloganSize, setSloganSize] = useState(BASE_SLOGAN_SIZE);
+  const [allowWrap, setAllowWrap] = useState(false);
 
   useEffect(() => {
     StatusBar.setHidden(true);
@@ -77,7 +83,29 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
           />
         </Animated.View>
 
-        <Animated.Text style={[styles.slogan, { opacity: textOpacity }]}>
+        <Animated.Text
+          numberOfLines={allowWrap ? undefined : 1}
+          onTextLayout={(e) => {
+            const lines = e.nativeEvent.lines?.length ?? 1;
+            if (lines > 1 && !allowWrap) {
+              setSloganSize((current) => {
+                if (current > MIN_SLOGAN_SIZE) {
+                  return Math.max(MIN_SLOGAN_SIZE, current - 1);
+                }
+                setAllowWrap(true);
+                return current;
+              });
+            }
+          }}
+          style={[
+            styles.slogan,
+            {
+              opacity: textOpacity,
+              fontSize: sloganSize,
+              lineHeight: Math.round(sloganSize * 1.2),
+            },
+          ]}
+        >
           Ton prochain chez-toi commence ici.
         </Animated.Text>
       </View>
@@ -123,7 +151,6 @@ const styles = StyleSheet.create({
   },
   slogan: {
     fontFamily: 'Manrope',
-    fontSize: 18,
     color: '#FFFFFF',
     textAlign: 'center',
     letterSpacing: 0.5,

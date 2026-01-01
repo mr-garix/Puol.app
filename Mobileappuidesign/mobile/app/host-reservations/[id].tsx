@@ -16,15 +16,16 @@ import {
   StatusBar as RNStatusBar,
 } from 'react-native';
 import { Asset } from 'expo-asset';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '@/src/supabaseClient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 
 import { useHostBookings } from '@/src/features/host/hooks';
-import { requestRemainingPayment } from '@/src/features/bookings/services';
+import { requestRemainingPayment, fetchHostBookingById } from '@/src/features/bookings/services';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { supabase } from '@/src/supabaseClient';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -50,6 +51,7 @@ export default function HostReservationDetailsScreen() {
   const params = useLocalSearchParams<{ id?: string }>();
   const insets = useSafeAreaInsets();
   const isAndroid = Platform.OS === 'android';
+  const { supabaseProfile } = useAuth();
   const { getBookingById, fetchBooking, isLoading } = useHostBookings();
   const [isFetching, setIsFetching] = useState(false);
   const [isRequestingPayment, setIsRequestingPayment] = useState(false);
@@ -79,6 +81,45 @@ export default function HostReservationDetailsScreen() {
       mounted = false;
     };
   }, [params.id, fetchBooking]);
+
+  // Subscription Realtime pour les mises à jour du booking en temps réel
+  useEffect(() => {
+    if (!params.id || !supabaseProfile) {
+      return;
+    }
+
+    let mounted = true;
+    const bookingId = params.id;
+
+    console.log('[HostReservationDetails] Setting up realtime subscription for booking:', bookingId);
+    
+    const channel = supabase
+      .channel(`booking-${bookingId}`)
+      .on('postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookings',
+          filter: `id=eq.${bookingId}`,
+        },
+        async (payload: any) => {
+          console.log('[HostReservationDetails] Booking changed:', payload);
+          
+          // Rafraîchir les données du booking
+          if (mounted) {
+            await fetchBooking(bookingId);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('[HostReservationDetails] Realtime subscription status:', status);
+      });
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [params.id, supabaseProfile, fetchBooking]);
 
   const stayRange = useMemo(() => {
     if (!booking) {
@@ -218,7 +259,8 @@ export default function HostReservationDetailsScreen() {
     }
     
     const status = booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined;
-    if (status === 'requested' || status === 'paid' || isCancelled) {
+    // Le bouton ne doit être désactivé que si le solde est payé ou la réservation est annulée
+    if (status === 'paid' || isCancelled) {
       console.log('[HostReservation] Payment already processed or cancelled:', { status, isCancelled });
       return;
     }
@@ -426,7 +468,7 @@ export default function HostReservationDetailsScreen() {
                 onPress={handleRequestPayment}
                 disabled={
                   isRequestingPayment ||
-                  (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) !== 'idle' ||
+                  (booking.remainingPaymentStatus as 'idle' | 'requested' | 'paid' | undefined) === 'paid' ||
                   isCancelled
                 }
               >

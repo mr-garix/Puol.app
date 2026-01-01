@@ -19,6 +19,7 @@ import {
   formatE164PhoneNumber,
   sanitizeNationalNumber,
 } from '../phoneCountries';
+import { scaleFont } from '../../../theme/typography';
 
 const furnitureOptions = ['Chambre meublée', 'Studio meublé', 'Appartement meublé', 'Maison meublée'];
 const inventoryOptions = ['1', '2 à 5', '5 et plus'];
@@ -252,15 +253,27 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
   scrollContent: { padding: 20, paddingBottom: 40 },
   header: { alignItems: 'center', marginBottom: 32 },
-  title: { fontFamily: 'Manrope', fontSize: 28, fontWeight: '700', color: '#0F172A', marginBottom: 8 },
-  subtitle: { fontFamily: 'Manrope', fontSize: 16, color: '#6B7280', textAlign: 'center', lineHeight: 24 },
+  title: {
+    fontFamily: 'Manrope',
+    fontSize: scaleFont(28),
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontFamily: 'Manrope',
+    fontSize: scaleFont(16),
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: scaleFont(24),
+  },
   form: { gap: 20 },
   row: { flexDirection: 'row' },
   inputContainer: { gap: 8 },
-  label: { fontFamily: 'Manrope', fontSize: 14, fontWeight: '600', color: '#374151' },
+  label: { fontFamily: 'Manrope', fontSize: scaleFont(14), fontWeight: '600', color: '#374151' },
   input: {
     fontFamily: 'Manrope',
-    fontSize: 16,
+    fontSize: scaleFont(16),
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
     borderWidth: 1,
@@ -280,8 +293,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  countryCode: { fontFamily: 'Manrope', fontSize: 16, color: '#6B7280', marginRight: 8 },
-  phoneField: { flex: 1, fontFamily: 'Manrope', fontSize: 16, color: '#0F172A' },
+  countryCode: { fontFamily: 'Manrope', fontSize: scaleFont(16), color: '#6B7280', marginRight: 8 },
+  phoneField: { flex: 1, fontFamily: 'Manrope', fontSize: scaleFont(16), color: '#0F172A' },
   optionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   optionChip: {
     paddingHorizontal: 16,
@@ -293,7 +306,7 @@ const styles = StyleSheet.create({
   },
   optionChipSelected: { backgroundColor: PUOL_GREEN_LIGHT, borderColor: PUOL_GREEN },
   disabledChip: { opacity: 0.5 },
-  optionText: { fontFamily: 'Manrope', fontSize: 13, color: '#374151' },
+  optionText: { fontFamily: 'Manrope', fontSize: scaleFont(13), color: '#374151' },
   optionTextSelected: { color: PUOL_GREEN, fontWeight: '600' },
   optionsRow: { flexDirection: 'row', gap: 8 },
   inventoryChip: {
@@ -314,7 +327,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   submitButtonEnabled: { backgroundColor: PUOL_GREEN },
-  submitButtonText: { fontFamily: 'Manrope', fontSize: 16, fontWeight: '600', color: '#9CA3AF' },
+  submitButtonText: { fontFamily: 'Manrope', fontSize: scaleFont(16), fontWeight: '600', color: '#9CA3AF' },
   submitButtonTextEnabled: { color: '#FFFFFF' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   pickerContainer: {
@@ -331,9 +344,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
   },
-  pickerTitle: { fontFamily: 'Manrope', fontSize: 18, fontWeight: '700', color: '#0F172A' },
+  pickerTitle: { fontFamily: 'Manrope', fontSize: scaleFont(18), fontWeight: '700', color: '#0F172A' },
   pickerScroll: { flex: 1 },
   countryOption: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   countryOptionSelected: { backgroundColor: PUOL_GREEN_LIGHT },
-  countryOptionText: { fontFamily: 'Manrope', fontSize: 16, color: '#0F172A' },
+  countryOptionText: { fontFamily: 'Manrope', fontSize: scaleFont(16), color: '#0F172A' },
 });

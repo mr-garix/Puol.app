@@ -1,4 +1,4 @@
-import { useMemo, useState, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,105 +31,42 @@ import {
   XCircle,
   ArrowLeft,
 } from 'lucide-react';
+import { fetchHostReservations, type HostReservationRecord } from '@/lib/services/hosts';
 
 type HostReservation = {
   id: string;
   property: string;
-  propertyType?: string;
-  propertyImage?: string;
+  propertyType?: string | null;
+  propertyImage?: string | null;
   host: string;
+  hostPhone?: string | null;
   tenant: string;
-  phone: string;
-  city: string;
-  checkIn: string;
-  checkOut: string;
+  phone?: string | null;
+  city?: string | null;
+  addressText?: string | null;
+  district?: string | null;
+  checkIn?: string | null;
+  checkOut?: string | null;
   nights: number;
-  pricePerNight: number;
+  pricePerNight?: number | null;
   deposit: number;
   total: number;
+  discount: number;
   balance: number;
   status: 'pending' | 'confirmed' | 'cancelled';
+  timelineStatus: 'upcoming' | 'ongoing' | 'finished';
 };
-
-const hostReservations: HostReservation[] = [
-  {
-    id: 'HOST-RES-201',
-    property: 'Loft Kribi vue mer',
-    propertyType: 'Loft premium',
-    propertyImage: 'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=900&q=80',
-    host: 'Linda K.',
-    tenant: 'Thierry N.',
-    phone: '+237 6XX XX XX XX',
-    city: 'Kribi',
-    checkIn: '18 Déc 2025',
-    checkOut: '22 Déc 2025',
-    nights: 4,
-    pricePerNight: 95000,
-    deposit: 95000,
-    total: 380000,
-    balance: 285000,
-    status: 'pending',
-  },
-  {
-    id: 'HOST-RES-202',
-    property: 'Appartement Bastos',
-    propertyType: 'Appartement',
-    propertyImage: 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=900&q=80',
-    host: 'Pierre T.',
-    tenant: 'Sonia F.',
-    phone: '+237 6YY YY YY YY',
-    city: 'Yaoundé',
-    checkIn: '20 Déc 2025',
-    checkOut: '05 Jan 2026',
-    nights: 16,
-    pricePerNight: 65000,
-    deposit: 130000,
-    total: 1040000,
-    balance: 910000,
-    status: 'confirmed',
-  },
-  {
-    id: 'HOST-RES-203',
-    property: 'Studio Bonamoussadi',
-    propertyType: 'Studio',
-    propertyImage: 'https://images.unsplash.com/photo-1484100356142-db6ab6244067?auto=format&fit=crop&w=900&q=80',
-    host: 'Marc L.',
-    tenant: 'Eric D.',
-    phone: '+237 6ZZ ZZ ZZ ZZ',
-    city: 'Douala',
-    checkIn: '12 Déc 2025',
-    checkOut: '19 Déc 2025',
-    nights: 7,
-    pricePerNight: 28000,
-    deposit: 28000,
-    total: 196000,
-    balance: 168000,
-    status: 'confirmed',
-  },
-  {
-    id: 'HOST-RES-204',
-    property: 'Chambre Akwa business',
-    propertyType: 'Chambre',
-    propertyImage: 'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=900&q=80',
-    host: 'Sandra P.',
-    tenant: 'Michel B.',
-    phone: '+237 6AA AA AA AA',
-    city: 'Douala',
-    checkIn: '08 Déc 2025',
-    checkOut: '10 Déc 2025',
-    nights: 2,
-    pricePerNight: 32000,
-    deposit: 32000,
-    total: 64000,
-    balance: 0,
-    status: 'cancelled',
-  },
-];
 
 const statusVariants = {
   pending: { label: 'En attente', className: 'bg-orange-100 text-orange-700' },
   confirmed: { label: 'Confirmée', className: 'bg-green-100 text-green-700' },
   cancelled: { label: 'Annulée', className: 'bg-red-100 text-red-700' },
+};
+
+const timelineVariants: Record<HostReservation['timelineStatus'], { label: string; className: string }> = {
+  upcoming: { label: 'À venir', className: 'bg-blue-100 text-blue-700' },
+  ongoing: { label: 'En cours', className: 'bg-emerald-100 text-emerald-700' },
+  finished: { label: 'Terminé', className: 'bg-gray-200 text-gray-700' },
 };
 
 const currencyFormatter = new Intl.NumberFormat('fr-FR', {
@@ -146,6 +83,7 @@ type HostReservationDetailViewProps = {
 
 function HostReservationDetailView({ reservation, onBack, onConfirm, onCancel }: HostReservationDetailViewProps) {
   const statusBadge = statusVariants[reservation.status];
+  const timelineBadge = timelineVariants[reservation.timelineStatus];
   const canConfirm = reservation.status !== 'confirmed';
   const canCancel = reservation.status !== 'cancelled';
 
@@ -172,23 +110,32 @@ function HostReservationDetailView({ reservation, onBack, onConfirm, onCancel }:
                 {reservation.propertyType ?? 'Séjour'} · {reservation.city}
               </p>
             </div>
-            <Badge className={`${statusBadge.className} px-4 py-1.5 text-sm`}>{statusBadge.label}</Badge>
+            <div className="flex gap-2">
+              <Badge className={`${statusBadge.className} px-4 py-1.5 text-sm`}>{statusBadge.label}</Badge>
+              <Badge className={`${timelineBadge.className} px-4 py-1.5 text-sm`}>{timelineBadge.label}</Badge>
+            </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-4">
             <DetailCard
               icon={CalendarDays}
               label="Période"
               primary={`${reservation.checkIn} → ${reservation.checkOut}`}
               secondary={`${reservation.nights} nuits`}
             />
-            <DetailCard icon={MapPin} label="Localisation" primary={reservation.city} secondary="Séjour confirmé" />
+            <DetailCard
+              icon={MapPin}
+              label="Localisation"
+              primary={reservation.city ?? reservation.addressText ?? '—'}
+              secondary={reservation.addressText ?? reservation.district ?? '—'}
+            />
             <DetailCard
               icon={DollarSign}
               label="Montant total"
               primary={currencyFormatter.format(reservation.total)}
-              secondary={`Prix nuit ${currencyFormatter.format(reservation.pricePerNight)}`}
+              secondary={`Prix nuit ${reservation.pricePerNight != null ? currencyFormatter.format(reservation.pricePerNight) : '—'}`}
             />
+            <DetailCard icon={DollarSign} label="Réduction" primary={currencyFormatter.format(reservation.discount)} />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
@@ -249,6 +196,35 @@ function HostReservationDetailView({ reservation, onBack, onConfirm, onCancel }:
   );
 }
 
+function mapReservationRecordToHostReservation(record: HostReservationRecord): HostReservation {
+  const deposit = Number.isFinite(record.deposit) ? record.deposit : 0;
+  const total = Number.isFinite(record.total) ? record.total : 0;
+  const balance = Number.isFinite(record.balance) ? record.balance : Math.max(total - deposit, 0);
+  return {
+    id: record.id,
+    property: record.property,
+    propertyType: record.propertyType ?? undefined,
+    propertyImage: record.propertyImage ?? undefined,
+    host: record.hostName,
+    hostPhone: record.hostPhone ?? undefined,
+    tenant: record.tenant,
+    phone: record.phone ?? undefined,
+    city: record.city ?? undefined,
+    addressText: record.addressText ?? undefined,
+    district: record.district ?? undefined,
+    checkIn: record.checkIn ?? undefined,
+    checkOut: record.checkOut ?? undefined,
+    nights: record.nights ?? 0,
+    pricePerNight: record.pricePerNight ?? undefined,
+    deposit,
+    total,
+    discount: record.discount ?? 0,
+    balance,
+    status: record.status,
+    timelineStatus: record.timelineStatus,
+  };
+}
+
 function DetailCard({
   icon: Icon,
   label,
@@ -272,7 +248,7 @@ function DetailCard({
   );
 }
 
-function ContactCard({ name, phone }: { name: string; phone: string }) {
+function ContactCard({ name, phone }: { name: string; phone?: string | null }) {
   return (
     <div className="rounded-2xl border border-gray-100 p-4 space-y-3">
       <div className="flex items-center gap-3">
@@ -286,7 +262,7 @@ function ContactCard({ name, phone }: { name: string; phone: string }) {
       </div>
       <div className="flex items-center gap-2 text-sm text-gray-600">
         <Phone className="w-4 h-4 text-gray-400" />
-        {phone}
+        {phone ?? '—'}
       </div>
     </div>
   );
@@ -303,8 +279,33 @@ function InfoRow({ label, value, alignRight = false }: { label: string; value: s
 
 export function HostReservationsBoard() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [reservations, setReservations] = useState(hostReservations);
+  const [reservations, setReservations] = useState<HostReservation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [focusedReservation, setFocusedReservation] = useState<HostReservation | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const records = await fetchHostReservations();
+        if (cancelled) return;
+        const mapped: HostReservation[] = records.map(mapReservationRecordToHostReservation);
+        setReservations(mapped);
+      } catch (err) {
+        console.warn('[HostReservationsBoard] unable to load reservations', err);
+        if (!cancelled) setError("Impossible de charger les réservations.");
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const { filteredReservations, pendingCount, confirmedCount, totalRevenue } = useMemo(() => {
     const filtered = reservations.filter((reservation) =>
@@ -362,6 +363,12 @@ export function HostReservationsBoard() {
         <h2 className="text-2xl text-gray-900">Réservations hôtes</h2>
         <p className="text-gray-500">Même expérience que l’onglet Gestion pour monitorer les flux hôtes</p>
       </div>
+
+      {error ? (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="p-4 text-red-700 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
@@ -441,6 +448,7 @@ export function HostReservationsBoard() {
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   className="pl-10 rounded-xl"
+                  disabled={isLoading}
                 />
               </div>
             </CardContent>
@@ -459,102 +467,124 @@ export function HostReservationsBoard() {
                   <TableHead>Avance</TableHead>
                   <TableHead>Reste</TableHead>
                   <TableHead>Statut</TableHead>
+                  <TableHead>Progression</TableHead>
                   <TableHead>Détail</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredReservations.map((reservation) => {
-                  const statusBadge = statusVariants[reservation.status];
-                  return (
-                    <TableRow key={reservation.id} className="hover:bg-gray-50">
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <div className="w-16 h-16 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center">
-                            {reservation.propertyImage ? (
-                              <img
-                                src={reservation.propertyImage}
-                                alt={reservation.property}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <MapPin className="w-5 h-5 text-gray-400" />
-                            )}
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={11} className="text-center text-sm text-gray-500">
+                      Chargement des réservations…
+                    </TableCell>
+                  </TableRow>
+                ) : filteredReservations.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={11} className="text-center text-sm text-gray-500">
+                      Aucune réservation trouvée.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredReservations.map((reservation) => {
+                    const statusBadge = statusVariants[reservation.status];
+                    const timelineBadge = timelineVariants[reservation.timelineStatus];
+                    return (
+                      <TableRow key={reservation.id} className="hover:bg-gray-50">
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <div className="w-16 h-16 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center">
+                              {reservation.propertyImage ? (
+                                <img
+                                  src={reservation.propertyImage}
+                                  alt={reservation.property}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <MapPin className="w-5 h-5 text-gray-400" />
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-gray-900">{reservation.property}</p>
+                              <p className="text-xs text-gray-500">
+                                {reservation.propertyType ?? 'Séjour'} · {reservation.city ?? '—'}
+                              </p>
+                            </div>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm text-gray-900">{reservation.host}</div>
+                          <div className="text-xs text-gray-500">{reservation.hostPhone ?? '—'}</div>
+                        </TableCell>
+                        <TableCell>
                           <div>
-                            <p className="text-sm font-semibold text-gray-900">{reservation.property}</p>
-                            <p className="text-xs text-gray-500">
-                              {reservation.propertyType ?? 'Séjour'} · {reservation.city}
-                            </p>
+                            <p className="text-sm text-gray-900">{reservation.tenant}</p>
+                            <p className="text-xs text-gray-500">{reservation.phone ?? '—'}</p>
                           </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-900">{reservation.host}</TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="text-sm text-gray-900">{reservation.tenant}</p>
-                          <p className="text-xs text-gray-500">{reservation.phone}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="text-sm text-gray-900">{reservation.checkIn}</p>
-                          <p className="text-xs text-gray-500">→ {reservation.checkOut}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-600">{reservation.nights}</TableCell>
-                      <TableCell className="text-sm text-gray-900">
-                        {currencyFormatter.format(reservation.pricePerNight)}
-                      </TableCell>
-                      <TableCell className="text-sm text-green-600">
-                        {currencyFormatter.format(reservation.deposit)}
-                      </TableCell>
-                      <TableCell className="text-sm text-orange-600">
-                        {currencyFormatter.format(reservation.balance)}
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={statusBadge.className}>{statusBadge.label}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="rounded-lg"
-                          onClick={() => handleViewReservation(reservation)}
-                        >
-                          Voir le détail
-                        </Button>
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm" className="rounded-lg">
-                              <MoreVertical className="w-4 h-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => handleViewReservation(reservation)}>
-                              <Eye className="w-4 h-4 mr-2" />
-                              Voir détails
-                            </DropdownMenuItem>
-                            {reservation.status === 'pending' && (
-                              <>
-                                <DropdownMenuItem className="text-green-600" onClick={() => handleConfirmReservation(reservation)}>
-                                  <CheckCircle className="w-4 h-4 mr-2" />
-                                  Confirmer
-                                </DropdownMenuItem>
-                                <DropdownMenuItem className="text-red-600" onClick={() => handleCancelReservation(reservation)}>
-                                  <XCircle className="w-4 h-4 mr-2" />
-                                  Annuler
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                        </TableCell>
+                        <TableCell>
+                          <div>
+                            <p className="text-sm text-gray-900">{reservation.checkIn ?? '—'}</p>
+                            <p className="text-xs text-gray-500">→ {reservation.checkOut ?? '—'}</p>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-gray-600">{reservation.nights}</TableCell>
+                        <TableCell className="text-sm text-gray-900">
+                          {reservation.pricePerNight != null ? currencyFormatter.format(reservation.pricePerNight) : '—'}
+                        </TableCell>
+                        <TableCell className="text-sm text-green-600">
+                          {currencyFormatter.format(reservation.deposit)}
+                        </TableCell>
+                        <TableCell className="text-sm text-orange-600">
+                          {currencyFormatter.format(reservation.balance)}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={statusBadge.className}>{statusBadge.label}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={timelineBadge.className}>{timelineBadge.label}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-lg"
+                            onClick={() => handleViewReservation(reservation)}
+                          >
+                            Voir le détail
+                          </Button>
+                        </TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="rounded-lg">
+                                <MoreVertical className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleViewReservation(reservation)}>
+                                <Eye className="w-4 h-4 mr-2" />
+                                Voir détails
+                              </DropdownMenuItem>
+                              {reservation.status === 'pending' && (
+                                <>
+                                  <DropdownMenuItem className="text-green-600" onClick={() => handleConfirmReservation(reservation)}>
+                                    <CheckCircle className="w-4 h-4 mr-2" />
+                                    Confirmer
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem className="text-red-600" onClick={() => handleCancelReservation(reservation)}>
+                                    <XCircle className="w-4 h-4 mr-2" />
+                                    Annuler
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
               </TableBody>
             </Table>
           </Card>

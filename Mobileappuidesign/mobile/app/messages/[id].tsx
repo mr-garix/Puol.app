@@ -31,6 +31,113 @@ const DARK = '#111827';
 const MUTED = '#6B7280';
 const BORDER = '#E5E7EB';
 const CHAT_VISIT_PRICE_FCFA = 5000;
+const MAX_FILE_SIZE_MB = 12;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+const normalizeText = (value?: string | null) =>
+  (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+const detectVisitIntentFromContent = (content?: string | null): boolean => {
+  const text = normalizeText(content);
+  if (!text) return false;
+
+  const visitKeywords = [
+    'visite',
+    'visiter',
+    'visit',
+    'rendez vous',
+    'rdv',
+    'rendez-vous',
+    'programme',
+    'programmer',
+    'planifie',
+    'planifier',
+    'planification',
+    'creneau',
+    'créneau',
+    'horaire',
+    'heure',
+    'date',
+  ];
+
+  const intentPhrases = [
+    'je souhaite visiter',
+    'je voudrais visiter',
+    'jaimerais visiter',
+    'j aimerais visiter',
+    'peux tu programmer',
+    'peux tu planifier',
+    'on peut planifier une visite',
+    'programmer une visite',
+    'planifier une visite',
+    'prendre un rendez vous',
+    'prendre un rdv',
+    'bloquer un creneau',
+    'bloquer un créneau',
+    'quel jour te convient',
+    'quelle heure te convient',
+    'quand souhaites tu visiter',
+    'quand souhaites-tu visiter',
+    'quand souhaitez vous visiter',
+    'quand souhaitez-vous visiter',
+    'quelle date souhaitez vous',
+    'quelle date souhaitez-vous',
+    'choisis une date',
+    'choisis un horaire',
+    'fixer une visite',
+    'bloquer la visite',
+  ];
+
+  const timeRegex = /\b(\d{1,2}\s*h(\s*\d{2})?)\b/; // ex: 18h, 18 h 30
+  const dayRegex = /\b(demain|apres demain|après demain|aujourdhui|aujourd hui|semaine prochaine|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/;
+
+  const mentionsVisit = visitKeywords.some((keyword) => text.includes(keyword));
+  const mentionsDateOrTime =
+    timeRegex.test(text) ||
+    dayRegex.test(text) ||
+    text.includes('quelle heure') ||
+    text.includes('quel jour') ||
+    text.includes('quelle date') ||
+    text.includes('a quelle heure') ||
+    text.includes('a quelle date') ||
+    text.includes('a quel jour');
+
+  // On considère l'intention visite seulement si le message mentionne explicitement la visite
+  // (ou une phrase type), pas uniquement une date/heure générique.
+  return intentPhrases.some((phrase) => text.includes(phrase)) || mentionsVisit;
+};
+
+const detectVisitScheduleQuestionFromContent = (content?: string | null): boolean => {
+  const text = normalizeText(content);
+  if (!text) return false;
+
+  const questionPhrases = [
+    'quel jour',
+    'quelle jour',
+    'quel date',
+    'quelle date',
+    'a quel jour',
+    'a quelle date',
+    'quelle heure',
+    'quel heure',
+    'a quelle heure',
+    'quel horaire',
+    'quelle horaire',
+    'quel creneau',
+    'quel créneau',
+    'quel horaire te convient',
+    'quel horaire vous convient',
+    'quand souhaites tu',
+    'quand souhaites-tu',
+    'quand souhaitez vous',
+    'quand souhaitez-vous',
+  ];
+
+  return questionPhrases.some((phrase) => text.includes(phrase));
+};
 
 export default function ConversationScreen() {
   const router = useRouter();
@@ -588,8 +695,27 @@ export default function ConversationScreen() {
               ? (metadataRecord.intent as Record<string, any>).value
               : null
           : null;
-    const normalizedIntent = intentCandidate ?? (metadataRecord?.visitSuggestion === true ? 'ui:visit_schedule' : null);
-    const visitSuggestion = normalizedIntent === 'ui:visit_schedule' && isAiMessage && viewerRole === 'guest';
+    const detectedIntentFromContent = detectVisitIntentFromContent(message.content);
+    const asksScheduleQuestion = isAiMessage && detectVisitScheduleQuestionFromContent(message.content);
+    const visitSuggestion =
+      viewerRole === 'guest' &&
+      isAiMessage &&
+      (metadataRecord?.visitSuggestion === true || (detectedIntentFromContent && asksScheduleQuestion));
+
+    console.debug('[ConversationScreen][visit-btn]', {
+      messageId: message.id,
+      normalizedIntent:
+        intentCandidate ??
+        (metadataRecord?.visitSuggestion === true ? 'ui:visit_schedule' : null) ??
+        (detectedIntentFromContent ? 'ui:visit_schedule' : null),
+      isAiMessage,
+      viewerRole,
+      intentCandidate,
+      metadataVisitSuggestion: metadataRecord?.visitSuggestion,
+      detectedIntentFromContent,
+      asksScheduleQuestion,
+      metadataIntent: metadataRecord?.intent,
+    });
 
     const authorDisplayName = impersonatedHost
       ? hostDisplayName
@@ -658,7 +784,7 @@ export default function ConversationScreen() {
                 ) : (
                   <>
                     <Feather name="calendar" size={14} color="#FFFFFF" />
-                    <Text style={styles.visitCtaText}>Planifier une visite</Text>
+                    <Text style={styles.visitCtaText}>Choisir une date de visite</Text>
                   </>
                 )}
               </TouchableOpacity>

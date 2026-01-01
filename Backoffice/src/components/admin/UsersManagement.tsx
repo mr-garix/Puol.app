@@ -35,6 +35,7 @@ import {
   Search,
 } from 'lucide-react';
 import { VisitsBoard, type VisitRecord } from './VisitsManagement';
+import { SupervisorsBoard } from './sections/shared/SupervisorsBoard';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,25 +51,28 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/components/ui/utils';
 
-type RoleKey = 'landlord' | 'host' | 'client';
+type RoleKey = 'landlord' | 'host' | 'client' | 'supervisor';
 
 const roleTabs: Record<RoleKey, { label: string; description: string; accent: string; icon: typeof Users }> = {
   landlord: { label: 'Bailleurs', description: 'Bailleurs officiant via Esppo', accent: 'text-emerald-600', icon: Shield },
   host: { label: 'Hôtes', description: 'Gestionnaires d’annonces et d’opérations', accent: 'text-blue-600', icon: Home },
   client: { label: 'Clients', description: 'Locataires / acheteurs', accent: 'text-purple-600', icon: Users },
+  supervisor: { label: 'Superviseurs', description: 'Membres du staff et administrateurs', accent: 'text-orange-600', icon: Shield },
 };
 
 export type HostRequestStatus = LandlordRequestStatus;
 
 export type HostRequest = {
   id: string;
+  profileId: string;
   fullName: string;
   firstName: string;
   lastName: string;
+  email: string;
   phone: string;
   city: string;
-  experienceYears: number;
-  listingsHosted: number;
+  unitsPortfolio: number;
+  propertyTypes: string[];
   submittedAt: string;
   motivation: string;
   documents: string[];
@@ -79,13 +83,15 @@ export type HostRequest = {
 export const hostRequests: HostRequest[] = [
   {
     id: 'HOST-REQ-301',
+    profileId: 'PROFILE-HT-301',
     fullName: 'Linda K.',
     firstName: 'Linda',
     lastName: 'K.',
+    email: 'linda.k@example.com',
     phone: '+237 699 11 22 33',
     city: 'Kribi',
-    experienceYears: 5,
-    listingsHosted: 4,
+    unitsPortfolio: 4,
+    propertyTypes: ['Villas', 'Lofts'],
     submittedAt: '18 déc 2025',
     motivation: 'Étendre le parc PUOL+ sur Kribi avec deux lofts premium et bénéficier du support opérations.',
     documents: ['CNI', 'Contrat PUOL+', 'Plan hygiène'],
@@ -94,13 +100,15 @@ export const hostRequests: HostRequest[] = [
   },
   {
     id: 'HOST-REQ-302',
+    profileId: 'PROFILE-HT-302',
     fullName: 'Pierre T.',
     firstName: 'Pierre',
     lastName: 'T.',
+    email: 'pierre.t@example.com',
     phone: '+237 677 44 55 66',
     city: 'Yaoundé',
-    experienceYears: 3,
-    listingsHosted: 3,
+    unitsPortfolio: 3,
+    propertyTypes: ['Studios', 'Appartements'],
     submittedAt: '16 déc 2025',
     motivation: 'Souhaite basculer trois appartements Bastos vers une gestion 100% PUOL avec visites virtuelles.',
     documents: ['CNI', 'Justif. fiscal'],
@@ -109,13 +117,15 @@ export const hostRequests: HostRequest[] = [
   },
   {
     id: 'HOST-REQ-303',
+    profileId: 'PROFILE-HT-303',
     fullName: 'Nadia S.',
     firstName: 'Nadia',
     lastName: 'S.',
+    email: 'nadia.s@example.com',
     phone: '+237 690 77 33 55',
     city: 'Douala',
-    experienceYears: 1,
-    listingsHosted: 1,
+    unitsPortfolio: 1,
+    propertyTypes: ['Maisons'],
     submittedAt: '12 déc 2025',
     motivation: 'Lancer une première villa opérée par PUOL et obtenir la certification PUOL+ dès janvier.',
     documents: ['CNI', 'Titre foncier'],
@@ -142,110 +152,8 @@ export type ClientProfileRecord = {
   avatarUrl: string;
 };
 
-export const clientProfiles: ClientProfileRecord[] = [
-  {
-    id: 'CL-201',
-    fullName: 'Sarah Nkomo',
-    username: '@sarah_nk',
-    segment: 'premium',
-    city: 'Douala',
-    phone: '+237 699 88 45 11',
-    reservations: 9,
-    nights: 42,
-    spend: 2850000,
-    satisfaction: 4.9,
-    lastStay: '12 déc 2025',
-    status: 'actif',
-    visitsBooked: 6,
-    leasesSigned: 2,
-    avatarUrl: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: 'CL-202',
-    fullName: 'Ibrahim Akoa',
-    username: '@ibraakoa',
-    segment: 'core',
-    city: 'Yaoundé',
-    phone: '+237 677 21 90 54',
-    reservations: 6,
-    nights: 24,
-    spend: 1380000,
-    satisfaction: 4.5,
-    lastStay: '05 déc 2025',
-    status: 'actif',
-    visitsBooked: 4,
-    leasesSigned: 1,
-    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: 'CL-203',
-    fullName: 'Liliane Fotso',
-    username: '@lili_fotso',
-    segment: 'premium',
-    city: 'Kribi',
-    phone: '+237 690 11 22 33',
-    reservations: 4,
-    nights: 18,
-    spend: 980000,
-    satisfaction: 4.8,
-    lastStay: '28 nov 2025',
-    status: 'à risque',
-    visitsBooked: 5,
-    leasesSigned: 1,
-    avatarUrl: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: 'CL-204',
-    fullName: 'Ghislain Talla',
-    username: '@ghis_talla',
-    segment: 'core',
-    city: 'Bafoussam',
-    phone: '+237 652 77 31 40',
-    reservations: 3,
-    nights: 12,
-    spend: 460000,
-    satisfaction: 4.2,
-    lastStay: '22 nov 2025',
-    status: 'actif',
-    visitsBooked: 2,
-    leasesSigned: 0,
-    avatarUrl: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: 'CL-205',
-    fullName: 'Mireille Tchoumi',
-    username: '@mimi_tc',
-    segment: 'lite',
-    city: 'Douala',
-    phone: '+237 651 00 44 89',
-    reservations: 2,
-    nights: 7,
-    spend: 210000,
-    satisfaction: 3.9,
-    lastStay: '14 nov 2025',
-    status: 'suspendu',
-    visitsBooked: 1,
-    leasesSigned: 0,
-    avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: 'CL-206',
-    fullName: 'Valery Tchouassi',
-    username: '@valery_tc',
-    segment: 'core',
-    city: 'Limbe',
-    phone: '+237 699 12 77 33',
-    reservations: 5,
-    nights: 20,
-    spend: 760000,
-    satisfaction: 4.6,
-    lastStay: '02 nov 2025',
-    status: 'actif',
-    visitsBooked: 3,
-    leasesSigned: 1,
-    avatarUrl: 'https://images.unsplash.com/photo-1511367461989-f85a21fda167?auto=format&fit=facearea&w=200&h=200',
-  },
-];
+// Données réelles uniquement : pas de mocks côté Clients.
+export const clientProfiles: ClientProfileRecord[] = [];
 
 export type ClientVisitStatus = 'confirmée' | 'en attente' | 'terminée';
 export type ClientLeaseStatus = 'signé' | 'en cours' | 'clos';
@@ -294,6 +202,7 @@ export type ClientProfileDetail = ClientProfileRecord & {
     visits: number;
     leases: number;
     satisfaction: number;
+    reviewsCount: number;
     comments: number;
     likes: number;
     followers: number;
@@ -304,489 +213,8 @@ export type ClientProfileDetail = ClientProfileRecord & {
   timeline: ClientTimelineEvent[];
 };
 
-export const clientProfileDetails: Record<string, ClientProfileDetail> = {
-  'CL-201': {
-    ...clientProfiles[0],
-    joinedAt: '2019',
-    verified: true,
-    loyaltyTier: 'elite',
-    preferences: ['Visites virtuelles', 'Conciergerie premium', 'Locations > 1 mois'],
-    lifestyleTags: ['Nomade digital', 'Corporate', 'PUOL+'],
-    notes: 'Prépare un déménagement sur Kribi pour Q1 2026, apprécie les visites immersives disponibles sous 24h.',
-    stats: {
-      reservations: 9,
-      nights: 42,
-      spend: 2_850_000,
-      visits: 6,
-      leases: 2,
-      satisfaction: 4.9,
-      comments: 18,
-      likes: 32,
-      followers: 210,
-      favoriteCities: 3,
-    },
-    visitsHistory: [
-      {
-        id: 'CL201-V1',
-        property: 'Villa Kribi Signature',
-        city: 'Kribi',
-        date: '18 déc 2025',
-        hour: '10:00',
-        status: 'confirmée',
-        agent: 'Kelly',
-        notes: 'Souhaite tester la fibre avant validation.',
-      },
-      {
-        id: 'CL201-V2',
-        property: 'Loft Bonapriso Horizon',
-        city: 'Douala',
-        date: '06 déc 2025',
-        hour: '15:30',
-        status: 'terminée',
-        agent: 'Jason',
-        notes: 'Feedback très positif, demande d’offre corporate.',
-      },
-      {
-        id: 'CL201-V3',
-        property: 'Résidence Marina PUOL',
-        city: 'Kribi',
-        date: '28 nov 2025',
-        hour: '11:00',
-        status: 'terminée',
-        agent: 'Kelly',
-        notes: 'Veut pack ménage hebdo inclus.',
-      },
-    ],
-    leasesHistory: [
-      {
-        id: 'CL201-L1',
-        property: 'Loft Kribi Vue Mer',
-        landlord: 'Linda K.',
-        startDate: '15 jan 2025',
-        endDate: '15 avr 2025',
-        value: '1,8 M FCFA',
-        status: 'clos',
-      },
-      {
-        id: 'CL201-L2',
-        property: 'Penthouse Bonapriso',
-        landlord: 'Pierre T.',
-        startDate: '03 mai 2024',
-        endDate: '03 oct 2024',
-        value: '3,2 M FCFA',
-        status: 'clos',
-      },
-    ],
-    timeline: [
-      {
-        id: 'CL201-T1',
-        date: '19 déc',
-        type: 'support',
-        label: 'Ticket résolu',
-        detail: 'Accès visite immersive Kribi restauré en 18 min.',
-      },
-      {
-        id: 'CL201-T2',
-        date: '12 déc',
-        type: 'reservation',
-        label: 'Séjour confirmé',
-        detail: 'Villa Kribi Signature du 05 au 20 jan.',
-      },
-      {
-        id: 'CL201-T3',
-        date: '05 déc',
-        type: 'payment',
-        label: 'Acompte validé',
-        detail: 'Transfert 600 000 FCFA via mobile money.',
-      },
-      {
-        id: 'CL201-T4',
-        date: '28 nov',
-        type: 'visit',
-        label: 'Visite guidée',
-        detail: 'Résidence Marina avec concierge Kelly.',
-      },
-    ],
-  },
-  'CL-202': {
-    ...clientProfiles[1],
-    joinedAt: '2021',
-    verified: true,
-    loyaltyTier: 'prime',
-    preferences: ['Studios business', 'Accès auto check-in', 'Proximité transport'],
-    lifestyleTags: ['Consultant IT', 'City Break'],
-    notes: 'Recherche systématiquement des options avec générateur et assistance ménage.',
-    stats: {
-      reservations: 6,
-      nights: 24,
-      spend: 1_380_000,
-      visits: 4,
-      leases: 1,
-      satisfaction: 4.5,
-      comments: 9,
-      likes: 15,
-      followers: 92,
-      favoriteCities: 2,
-    },
-    visitsHistory: [
-      {
-        id: 'CL202-V1',
-        property: 'Colocation Akwa',
-        city: 'Douala',
-        date: '21 déc 2025',
-        hour: '09:30',
-        status: 'confirmée',
-        agent: 'Marion',
-        notes: 'Souhaite vérifier salle de réunion.',
-      },
-      {
-        id: 'CL202-V2',
-        property: 'Studio Bastos Pro',
-        city: 'Yaoundé',
-        date: '10 déc 2025',
-        hour: '18:00',
-        status: 'terminée',
-        agent: 'Armel',
-        notes: 'A demandé ajout écran 32".',
-      },
-      {
-        id: 'CL202-V3',
-        property: 'Résidence Plateau',
-        city: 'Yaoundé',
-        date: '24 nov 2025',
-        hour: '14:00',
-        status: 'en attente',
-        agent: 'Armel',
-        notes: 'Planification à confirmer selon vol retour.',
-      },
-    ],
-    leasesHistory: [
-      {
-        id: 'CL202-L1',
-        property: 'Studio Bastos Pro',
-        landlord: 'Pierre T.',
-        startDate: '10 jan 2025',
-        endDate: '10 mar 2025',
-        value: '900 000 FCFA',
-        status: 'clos',
-      },
-    ],
-    timeline: [
-      {
-        id: 'CL202-T1',
-        date: '20 déc',
-        type: 'support',
-        label: 'Ticket facturation',
-        detail: 'Confirmation acompte Colocation Akwa envoyée.',
-      },
-      {
-        id: 'CL202-T2',
-        date: '12 déc',
-        type: 'reservation',
-        label: 'Séjour confirmé',
-        detail: 'Duplex Bonamoussadi du 05 au 09 jan.',
-      },
-      {
-        id: 'CL202-T3',
-        date: '06 déc',
-        type: 'visit',
-        label: 'Visite Studio Bastos',
-        detail: 'Essai domotique avec agent Armel.',
-      },
-    ],
-  },
-  'CL-203': {
-    ...clientProfiles[2],
-    joinedAt: '2020',
-    verified: false,
-    loyaltyTier: 'prime',
-    preferences: ['Biens proches mer', 'Décoration contemporaine', 'Services photo'],
-    lifestyleTags: ['Créatrice contenu', 'Voyages weekend'],
-    notes: 'Profil à surveiller : statut “à risque” suite à deux annulations tardives en 2024.',
-    stats: {
-      reservations: 4,
-      nights: 18,
-      spend: 980_000,
-      visits: 5,
-      leases: 1,
-      satisfaction: 4.8,
-      comments: 14,
-      likes: 41,
-      followers: 420,
-      favoriteCities: 2,
-    },
-    visitsHistory: [
-      {
-        id: 'CL203-V1',
-        property: 'Maison dôme Kribi',
-        city: 'Kribi',
-        date: '17 déc 2025',
-        hour: '16:00',
-        status: 'terminée',
-        agent: 'Kelly',
-        notes: 'Veut shooting photo sur rooftop.',
-      },
-      {
-        id: 'CL203-V2',
-        property: 'Duplex Bali',
-        city: 'Douala',
-        date: '05 déc 2025',
-        hour: '13:30',
-        status: 'confirmée',
-        agent: 'Jason',
-        notes: 'Demande info sur lumière naturelle.',
-      },
-      {
-        id: 'CL203-V3',
-        property: 'Suite lagon PUOL',
-        city: 'Kribi',
-        date: '26 nov 2025',
-        hour: '11:30',
-        status: 'terminée',
-        agent: 'Kelly',
-        notes: 'A demandé inclusion créateur contenu local.',
-      },
-    ],
-    leasesHistory: [
-      {
-        id: 'CL203-L1',
-        property: 'Suite Lagune Kribi',
-        landlord: 'Nadia S.',
-        startDate: '01 août 2024',
-        endDate: '01 sept 2024',
-        value: '620 000 FCFA',
-        status: 'clos',
-      },
-    ],
-    timeline: [
-      {
-        id: 'CL203-T1',
-        date: '18 déc',
-        type: 'support',
-        label: 'Ticket vérification',
-        detail: 'Confirmation identité relancée, en attente documents.',
-      },
-      {
-        id: 'CL203-T2',
-        date: '10 déc',
-        type: 'visit',
-        label: 'Visite Duplex Bali',
-        detail: 'Note 5/5, veut option décoratrice.',
-      },
-      {
-        id: 'CL203-T3',
-        date: '30 nov',
-        type: 'reservation',
-        label: 'Séjour pending',
-        detail: 'Maison dôme Kribi (besoin acompte).',
-      },
-    ],
-  },
-  'CL-204': {
-    ...clientProfiles[3],
-    joinedAt: '2022',
-    verified: true,
-    loyaltyTier: 'core',
-    preferences: ['Studios coliving', 'Paiement mensuel', 'Visites week-end'],
-    lifestyleTags: ['Jeune actif', 'Tech'],
-    notes: 'Intérêt pour offres coliving avec espaces gaming.',
-    stats: {
-      reservations: 3,
-      nights: 12,
-      spend: 460_000,
-      visits: 2,
-      leases: 0,
-      satisfaction: 4.2,
-      comments: 4,
-      likes: 9,
-      followers: 34,
-      favoriteCities: 1,
-    },
-    visitsHistory: [
-      {
-        id: 'CL204-V1',
-        property: 'Colocation Akwa',
-        city: 'Douala',
-        date: '12 déc 2025',
-        hour: '18:30',
-        status: 'terminée',
-        agent: 'Marion',
-        notes: 'A demandé espace bureau partagé.',
-      },
-      {
-        id: 'CL204-V2',
-        property: 'Studio Makepe Nova',
-        city: 'Douala',
-        date: '03 déc 2025',
-        hour: '08:00',
-        status: 'confirmée',
-        agent: 'Marion',
-        notes: 'Veut tester matelas avant décision.',
-      },
-    ],
-    leasesHistory: [],
-    timeline: [
-      {
-        id: 'CL204-T1',
-        date: '15 déc',
-        type: 'payment',
-        label: 'Acompte en attente',
-        detail: 'Studio Makepe Nova (paiement partiel reçu).',
-      },
-      {
-        id: 'CL204-T2',
-        date: '07 déc',
-        type: 'visit',
-        label: 'Visite Colocation Akwa',
-        detail: 'Préférence chambre 3 côté cour.',
-      },
-      {
-        id: 'CL204-T3',
-        date: '01 déc',
-        type: 'support',
-        label: 'Demande assistance',
-        detail: 'Souhaite facture pro format.',
-      },
-    ],
-  },
-  'CL-205': {
-    ...clientProfiles[4],
-    joinedAt: '2020',
-    verified: false,
-    loyaltyTier: 'core',
-    preferences: ['Mini studios', 'Budget serré', 'Paiement mobile money'],
-    lifestyleTags: ['Solo travel', 'Artisanat'],
-    notes: 'Compte suspendu – vérifier conformité pièces identité.',
-    stats: {
-      reservations: 2,
-      nights: 7,
-      spend: 210_000,
-      visits: 1,
-      leases: 0,
-      satisfaction: 3.9,
-      comments: 2,
-      likes: 6,
-      followers: 15,
-      favoriteCities: 1,
-    },
-    visitsHistory: [
-      {
-        id: 'CL205-V1',
-        property: 'Mini studio Bonamoussadi',
-        city: 'Douala',
-        date: '14 nov 2025',
-        hour: '17:00',
-        status: 'terminée',
-        agent: 'Sophie',
-        notes: 'A demandé remise -10% longue durée.',
-      },
-    ],
-    leasesHistory: [],
-    timeline: [
-      {
-        id: 'CL205-T1',
-        date: '16 nov',
-        type: 'support',
-        label: 'Suspension',
-        detail: 'En attente revalidation identité (CNI expirée).',
-      },
-      {
-        id: 'CL205-T2',
-        date: '12 nov',
-        type: 'payment',
-        label: 'Remboursement partiel',
-        detail: 'Séjour annulé par client (Mini studio).',
-      },
-    ],
-  },
-  'CL-206': {
-    ...clientProfiles[5],
-    joinedAt: '2023',
-    verified: true,
-    loyaltyTier: 'prime',
-    preferences: ['Maisons familiales', 'Piscine', 'Séjours week-end'],
-    lifestyleTags: ['Chef d’entreprise', 'Family trips'],
-    notes: 'Prépare une tournée commerciale à Limbe avec équipe (4 personnes).',
-    stats: {
-      reservations: 5,
-      nights: 20,
-      spend: 760_000,
-      visits: 3,
-      leases: 1,
-      satisfaction: 4.6,
-      comments: 11,
-      likes: 22,
-      followers: 138,
-      favoriteCities: 2,
-    },
-    visitsHistory: [
-      {
-        id: 'CL206-V1',
-        property: 'Villa Golf Limbe',
-        city: 'Limbe',
-        date: '08 déc 2025',
-        hour: '09:00',
-        status: 'terminée',
-        agent: 'Patrick',
-        notes: 'A exigé générateur 20kVA.',
-      },
-      {
-        id: 'CL206-V2',
-        property: 'Maison Bonapriso Palm',
-        city: 'Douala',
-        date: '25 nov 2025',
-        hour: '15:00',
-        status: 'terminée',
-        agent: 'Jason',
-        notes: 'Souhaite agrandir terrasse avant séjour.',
-      },
-      {
-        id: 'CL206-V3',
-        property: 'Résidence Limbe Ocean',
-        city: 'Limbe',
-        date: '19 oct 2025',
-        hour: '11:30',
-        status: 'en attente',
-        agent: 'Patrick',
-        notes: 'Doit confirmer selon planning usine.',
-      },
-    ],
-    leasesHistory: [
-      {
-        id: 'CL206-L1',
-        property: 'Maison Bonapriso Palm',
-        landlord: 'Linda K.',
-        startDate: '01 mar 2024',
-        endDate: '01 avr 2024',
-        value: '1,1 M FCFA',
-        status: 'clos',
-      },
-    ],
-    timeline: [
-      {
-        id: 'CL206-T1',
-        date: '18 déc',
-        type: 'reservation',
-        label: 'Séjour confirmé',
-        detail: 'Villa Golf Limbe (28 déc - 03 jan).',
-      },
-      {
-        id: 'CL206-T2',
-        date: '10 déc',
-        type: 'payment',
-        label: 'Acompte reçu',
-        detail: 'Versement 450 000 FCFA via virement bancaire.',
-      },
-      {
-        id: 'CL206-T3',
-        date: '26 nov',
-        type: 'visit',
-        label: 'Visite Maison Bonapriso',
-        detail: 'Validation pièces communes avec équipe.',
-      },
-    ],
-  },
-};
+// Détails mock retirés : on s’appuie uniquement sur les données Supabase.
+export const clientProfileDetails: Record<string, ClientProfileDetail> = {};
 
 type ListingStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 
@@ -799,6 +227,7 @@ export type ListingRecord = {
   price: number;
   priceType: 'jour' | 'mois';
   status: ListingStatus;
+  statusLabel?: string;
   owner: string;
   ownerLabel: string;
   images: number;
@@ -1154,6 +583,7 @@ export type LandlordMediaAsset = {
   label: string;
   room?: string | null;
   thumbnailUrl: string;
+  sourceUrl?: string | null;
   durationSeconds?: number;
   muted?: boolean;
 };
@@ -1164,10 +594,12 @@ export type LandlordListingDetail = ListingRecord & {
   description: string;
   occupancy: number;
   viewsCount: number;
+  likesCount?: number;
   commentsCount: number;
   visits: number;
   bookings: number;
-  rating?: number;
+  reviewsCount?: number;
+  rating?: number | null;
   amenities: string[];
   ownerPhone: string;
   ownerUsername: string;
@@ -1207,72 +639,23 @@ export type HostProfile = {
   revenueShare: number;
   joinedAt: string;
   propertyTags: string[];
+  avatarUrl: string | null;
 };
 
-export const hostProfiles: HostProfile[] = [
-  {
-    id: 'HT-201',
-    name: 'Linda K.',
-    username: '@lindak',
-    segment: 'premium',
-    city: 'Douala',
-    staysHosted: 128,
-    listingsActive: 6,
-    guestsSupported: 420,
-    revenueShare: 2_800_000,
-    joinedAt: '2023',
-    propertyTags: ['Villas', 'Lofts', 'Studios'],
-  },
-  {
-    id: 'HT-178',
-    name: 'Pierre T.',
-    username: '@pierret',
-    segment: 'core',
-    city: 'Yaoundé',
-    staysHosted: 86,
-    listingsActive: 4,
-    guestsSupported: 265,
-    revenueShare: 1_650_000,
-    joinedAt: '2022',
-    propertyTags: ['Appartements', 'Studios', 'Duplex'],
-  },
-  {
-    id: 'HT-156',
-    name: 'Amelia D.',
-    username: '@ameliad',
-    segment: 'premium',
-    city: 'Kribi',
-    staysHosted: 142,
-    listingsActive: 5,
-    guestsSupported: 512,
-    revenueShare: 3_150_000,
-    joinedAt: '2021',
-    propertyTags: ['Villas', 'Resorts', 'Bungalows'],
-  },
-  {
-    id: 'HT-089',
-    name: 'Loïc M.',
-    username: '@loicm',
-    segment: 'lite',
-    city: 'Bafoussam',
-    staysHosted: 41,
-    listingsActive: 3,
-    guestsSupported: 118,
-    revenueShare: 740_000,
-    joinedAt: '2020',
-    propertyTags: ['Colivings', 'Studios', 'Chambres'],
-  },
-];
+// Données réelles uniquement : pas de mocks côté Hôtes.
+export const hostProfiles: HostProfile[] = [];
 
 export type HostListingHighlight = {
   id: string;
   title: string;
   city: string;
   type: string;
-  occupancy: number;
-  rating: number;
   coverUrl: string;
   revenue: string;
+  views?: number;
+  likes?: number;
+  reviews?: number;
+  comments?: number;
 };
 
 export type HostReservationSummary = {
@@ -1281,6 +664,15 @@ export type HostReservationSummary = {
   stay: string;
   amount: string;
   status: 'à confirmer' | 'confirmée' | 'en litige';
+};
+
+export type HostVisitSummary = {
+  id: string;
+  guest: string;
+  date: string;
+  period: string;
+  amount: string;
+  status: 'pending' | 'confirmed' | 'cancelled';
 };
 
 export type HostTimelineEvent = {
@@ -1301,6 +693,7 @@ export type HostProfileDetail = HostProfile & {
   acceptanceRate: number;
   notes: string;
   tags: string[];
+  reviewsCount: number;
   stats: {
     guests: number;
     nights: number;
@@ -1314,367 +707,27 @@ export type HostProfileDetail = HostProfile & {
   };
   listings: HostListingHighlight[];
   reservations: HostReservationSummary[];
+  visits: HostVisitSummary[];
   timeline: HostTimelineEvent[];
 };
 
-export const hostProfileDetails: Record<string, HostProfileDetail> = {
-  'HT-201': {
-    ...hostProfiles[0],
-    avatarUrl: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=facearea&w=200&h=200',
-    email: 'Disponible via la ligne concierge',
-    phone: '+237 699 22 55 11',
-    address: 'Kribi · Littoral',
-    responseTime: '21 min',
-    satisfactionScore: 4.9,
-    acceptanceRate: 96,
-    notes: 'Experte séjours premium mer. Besoin d’un suivi shootings trimestriels.',
-    tags: ['PUOL+', 'Conciergerie', 'Premium'],
-    stats: {
-      guests: 420,
-      nights: 1180,
-      rating: 4.92,
-      payout: '12.4 M FCFA',
-    },
-    engagement: {
-      views: 4820,
-      likes: 318,
-      comments: 126,
-    },
-    listings: [
-      {
-        id: 'HOST-AN-21',
-        title: 'Loft Kribi vue mer',
-        city: 'Kribi',
-        type: 'Loft',
-        occupancy: 87,
-        rating: 4.95,
-        coverUrl: 'https://images.unsplash.com/photo-1507089947368-19c1da9775ae?auto=format&fit=crop&w=600&q=80',
-        revenue: '3.2 M FCFA',
-      },
-      {
-        id: 'HOST-AN-27',
-        title: 'Villa Mbambe',
-        city: 'Kribi',
-        type: 'Villa',
-        occupancy: 91,
-        rating: 4.9,
-        coverUrl: 'https://images.unsplash.com/photo-1523217582562-09d0def993a6?auto=format&fit=crop&w=600&q=80',
-        revenue: '4.5 M FCFA',
-      },
-    ],
-    reservations: [
-      { id: 'RES-440', guest: 'Sali A.', stay: '18-21 déc', amount: '420 000 FCFA', status: 'à confirmer' },
-      { id: 'RES-438', guest: 'Marc L.', stay: '15-17 déc', amount: '280 000 FCFA', status: 'confirmée' },
-      { id: 'RES-431', guest: 'Company X', stay: '05-12 jan', amount: '980 000 FCFA', status: 'confirmée' },
-    ],
-    timeline: [
-      { id: 'HT-TL-01', date: '19 déc', label: 'Demande de payout', detail: 'Virement 980 000 FCFA déclenché', type: 'payout' },
-      { id: 'HT-TL-02', date: '18 déc', label: 'Réservation corporate', detail: 'Séjour 7 nuits confirmé', type: 'reservation' },
-      { id: 'HT-TL-03', date: '17 déc', label: 'Avis 5★', detail: 'Séjour Loft Kribi noté 5/5', type: 'quality' },
-    ],
-  },
-  'HT-178': {
-    ...hostProfiles[1],
-    avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=facearea&w=200&h=200',
-    email: 'Coordination via success manager',
-    phone: '+237 677 44 55 66',
-    address: 'Yaoundé · Bastos',
-    responseTime: '35 min',
-    satisfactionScore: 4.6,
-    acceptanceRate: 89,
-    notes: 'Souhaite automatiser l’onboarding voyageurs business.',
-    tags: ['Business', 'Check-in autonome'],
-    stats: {
-      guests: 265,
-      nights: 760,
-      rating: 4.72,
-      payout: '7.8 M FCFA',
-    },
-    engagement: {
-      views: 3390,
-      likes: 188,
-      comments: 72,
-    },
-    listings: [
-      {
-        id: 'HOST-AN-22',
-        title: 'Chambre Bonamoussadi',
-        city: 'Douala',
-        type: 'Chambre',
-        occupancy: 78,
-        rating: 4.7,
-        coverUrl: 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=600&q=80',
-        revenue: '1.9 M FCFA',
-      },
-      {
-        id: 'HOST-AN-30',
-        title: 'Studio Bastos',
-        city: 'Yaoundé',
-        type: 'Studio',
-        occupancy: 83,
-        rating: 4.8,
-        coverUrl: 'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=600&q=80',
-        revenue: '2.4 M FCFA',
-      },
-    ],
-    reservations: [
-      { id: 'RES-420', guest: 'Clarisse N.', stay: '20-23 déc', amount: '180 000 FCFA', status: 'confirmée' },
-      { id: 'RES-414', guest: 'Entreprise Y', stay: '02-05 jan', amount: '320 000 FCFA', status: 'à confirmer' },
-    ],
-    timeline: [
-      { id: 'HT-TL-11', date: '18 déc', label: 'Incident résolu', detail: 'Check-in autonome rétabli', type: 'quality' },
-      { id: 'HT-TL-12', date: '16 déc', label: 'Payout traité', detail: 'Versement 520 000 FCFA', type: 'payout' },
-    ],
-  },
-};
+// Détails mock retirés : on s’appuie uniquement sur les données Supabase.
+export const hostProfileDetails: Record<string, HostProfileDetail> = {};
 
-export const landlordListingDetails: Record<string, LandlordListingDetail> = {
-  'LD-AN-01': {
-    ...landlordListings[0],
-    coverUrl: 'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=1600&q=80',
-    gallery: [
-      'https://images.unsplash.com/photo-1493666438817-866a91353ca9?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1567016376408-0226e4d0c1ea?auto=format&fit=crop&w=800&q=80',
-    ],
-    description:
-      'Villa haut de gamme entièrement meublée avec jardin privatif et service de conciergerie PUOL. Idéale pour des séjours longue durée corporate.',
-    occupancy: 88,
-    viewsCount: 1420,
-    commentsCount: 36,
-    visits: 42,
-    bookings: 9,
-    amenities: ['Piscine', 'Générateur', 'Conciergerie 24/7', 'Wifi Fibre', 'Sécurité privée'],
-    ownerPhone: '+237 699 11 22 33',
-    ownerUsername: '@lindak',
-    ownerProfileId: 'BY-201',
-    currentTenant: 'Société AfricInvest',
-    currentLeaseStart: '2025-01-01',
-    currentLeaseEnd: '2025-12-31',
-    notes: 'Prévoir retouche photo de la chambre principale avant republication.',
-    depositAmount: 1100000,
-    minLeaseMonths: 12,
-    guestCapacity: 6,
-    propertyType: 'Villa',
-    isAvailable: true,
-    surfaceArea: 420,
-    addressText: 'Rue Tokoto, Bonapriso, Douala',
-    googleAddress: 'Rue Tokoto, Douala, Cameroun',
-    formattedAddress: 'Rue Tokoto, Bonapriso, Douala',
-    placeId: 'plc_ld01',
-    latitude: 4.051056,
-    longitude: 9.767869,
-    roomBreakdown: {
-      livingRoom: 2,
-      bedrooms: 4,
-      kitchens: 1,
-      bathrooms: 3,
-      diningRooms: 1,
-      toilets: 4,
-    },
-    mediaAssets: [
-      {
-        id: 'LD-AN-01-media-1',
-        type: 'photo',
-        label: 'Façade & jardin',
-        room: null,
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-01-media-2',
-        type: 'photo',
-        label: 'Salon principal',
-        room: 'Salon',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-01-media-3',
-        type: 'photo',
-        label: 'Suite parentale',
-        room: 'Chambre',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1493666438817-866a91353ca9?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-01-media-4',
-        type: 'video',
-        label: 'Visite 4K',
-        room: null,
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=600&q=80',
-        durationSeconds: 95,
-        muted: false,
-      },
-    ],
-  },
-  'LD-AN-02': {
-    ...landlordListings[1],
-    coverUrl: 'https://images.unsplash.com/photo-1484100356142-db6ab6244067?auto=format&fit=crop&w=1600&q=80',
-    gallery: [
-      'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=800&q=80',
-    ],
-    description:
-      'Studio moderne au cœur de Makepe. Cuisine équipée, wifi illimité et sécurité connectée. Cible idéale : jeunes actifs, couples en transition.',
-    occupancy: 76,
-    viewsCount: 980,
-    commentsCount: 21,
-    visits: 51,
-    bookings: 12,
-    amenities: ['Cuisine équipée', 'Climatisation', 'Wifi', 'Parking', 'Self Check-in'],
-    ownerPhone: '+237 677 88 99 00',
-    ownerUsername: '@pierret',
-    ownerProfileId: 'BY-178',
-    currentTenant: null,
-    currentLeaseStart: null,
-    currentLeaseEnd: null,
-    notes: 'Le bailleur souhaite activer l’option ménage hebdomadaire payant.',
-    depositAmount: 120000,
-    minLeaseMonths: 6,
-    guestCapacity: 2,
-    propertyType: 'Studio',
-    isAvailable: false,
-    surfaceArea: 58,
-    addressText: 'Impasse Safari, Makepe, Douala',
-    googleAddress: 'Impasse Safari, Douala, Cameroun',
-    formattedAddress: 'Impasse Safari, Makepe, Douala',
-    placeId: 'plc_ld02',
-    latitude: 4.097996,
-    longitude: 9.734752,
-    roomBreakdown: {
-      livingRoom: 1,
-      bedrooms: 1,
-      kitchens: 1,
-      bathrooms: 1,
-      diningRooms: 0,
-      toilets: 1,
-    },
-    mediaAssets: [
-      {
-        id: 'LD-AN-02-media-1',
-        type: 'photo',
-        label: 'Pièce à vivre',
-        room: 'Salon',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1484100356142-db6ab6244067?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-02-media-2',
-        type: 'photo',
-        label: 'Coin nuit',
-        room: 'Chambre',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-02-media-3',
-        type: 'video',
-        label: 'Visite express',
-        room: null,
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=600&q=80',
-        durationSeconds: 47,
-        muted: true,
-      },
-    ],
-  },
-  'LD-AN-03': {
-    ...landlordListings[2],
-    coverUrl: 'https://images.unsplash.com/photo-1523217582562-09d0def993a6?auto=format&fit=crop&w=1600&q=80',
-    gallery: [
-      'https://images.unsplash.com/photo-1493666438817-866a91353ca9?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=800&q=80',
-    ],
-    description:
-      'Appartement lumineux situé à Bastos avec double séjour, balcon et vue dégagée. Partenariat avec entreprises minières pour bail longue durée.',
-    occupancy: 91,
-    viewsCount: 1575,
-    commentsCount: 48,
-    visits: 34,
-    bookings: 7,
-    amenities: ['Balcon', 'Office privé', 'Parking sécurisé', 'Fibre optique', 'Service ménage'],
-    ownerPhone: '+237 650 12 54 10',
-    ownerUsername: '@nadias',
-    ownerProfileId: 'BY-098',
-    currentTenant: 'Total Energies - équipe RH',
-    currentLeaseStart: '2024-03-15',
-    currentLeaseEnd: null,
-    notes: 'Installer un détecteur de fumée connecté avant prochaine publication.',
-    depositAmount: 500000,
-    minLeaseMonths: 9,
-    guestCapacity: 4,
-    propertyType: 'Appartement',
-    isAvailable: true,
-    surfaceArea: 185,
-    addressText: 'Avenue Rosa Parks, Bastos, Yaoundé',
-    googleAddress: 'Avenue Rosa Parks, Yaoundé, Cameroun',
-    formattedAddress: 'Avenue Rosa Parks, Bastos, Yaoundé',
-    placeId: 'plc_ld03',
-    latitude: 3.873179,
-    longitude: 11.515889,
-    roomBreakdown: {
-      livingRoom: 1,
-      bedrooms: 3,
-      kitchens: 1,
-      bathrooms: 2,
-      diningRooms: 1,
-      toilets: 2,
-    },
-    mediaAssets: [
-      {
-        id: 'LD-AN-03-media-1',
-        type: 'photo',
-        label: 'Séjour lumineux',
-        room: 'Salon',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1523217582562-09d0def993a6?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-03-media-2',
-        type: 'photo',
-        label: 'Cuisine équipée',
-        room: 'Cuisine',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1567016376408-0226e4d0c1ea?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-03-media-3',
-        type: 'photo',
-        label: 'Suite principale',
-        room: 'Chambre',
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=600&q=80',
-      },
-      {
-        id: 'LD-AN-03-media-4',
-        type: 'video',
-        label: 'Balcon & vue',
-        room: null,
-        thumbnailUrl:
-          'https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=600&q=80',
-        durationSeconds: 62,
-        muted: false,
-      },
-    ],
-  },
-};
 
 export type LandlordRequestStatus = 'pending' | 'approved' | 'rejected';
 
 export type LandlordRequest = {
   id: string;
+  profileId?: string | null;
   fullName: string;
   firstName: string;
   lastName: string;
   email: string;
   phone: string;
   city: string;
-  experienceYears: number;
   unitsPortfolio: number;
+  propertyTypes: string[];
   submittedAt: string;
   motivation: string;
   documents: string[];
@@ -1691,12 +744,12 @@ export const landlordRequests: LandlordRequest[] = [
     email: 'brice.nguema@example.com',
     phone: '+237 699 20 11 45',
     city: 'Douala',
-    experienceYears: 4,
     unitsPortfolio: 3,
+    propertyTypes: ['Appartement meublé', 'Studio meublé'],
     submittedAt: '14 déc 2025',
     motivation: 'Souhaite déléguer la gestion de trois unités premium à Bonapriso et Bonamoussadi.',
     documents: ['CNI', 'RCCM', 'Titre foncier'],
-    avatarUrl: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=facearea&w=200&h=200',
+    avatarUrl: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=400&q=80',
     status: 'pending',
   },
   {
@@ -1704,47 +757,47 @@ export const landlordRequests: LandlordRequest[] = [
     fullName: 'Nadine Kouassi',
     firstName: 'Nadine',
     lastName: 'Kouassi',
-    email: 'nadine.kouassi@example.com',
+    email: 'marie.ntolo@example.com',
     phone: '+237 651 44 55 66',
     city: 'Yaoundé',
-    experienceYears: 6,
     unitsPortfolio: 5,
+    propertyTypes: ['Appartement meublé', 'Maison meublée'],
     submittedAt: '12 déc 2025',
     motivation: 'Recherche un partenaire pour digitaliser la location de cinq appartements corporate à Bastos.',
     documents: ['CNI', 'Justificatif de domicile'],
-    avatarUrl: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=facearea&w=200&h=200',
-    status: 'pending',
+    avatarUrl: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=400&q=80',
+    status: 'approved',
   },
   {
     id: 'REQ-205',
     fullName: 'Sylvain Mebenga',
     firstName: 'Sylvain',
     lastName: 'Mebenga',
-    email: 'sylvain.mebenga@example.com',
+    email: 'kevin.moudio@example.com',
     phone: '+237 677 02 03 04',
     city: 'Douala',
-    experienceYears: 2,
     unitsPortfolio: 2,
+    propertyTypes: ['Studio meublé'],
     submittedAt: '10 déc 2025',
     motivation: 'Veut confier ses deux studios meublés à un opérateur fiable pour assurer le taux d’occupation.',
     documents: ['CNI'],
-    avatarUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=facearea&w=200&h=200',
-    status: 'approved',
+    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80',
+    status: 'pending',
   },
   {
     id: 'REQ-206',
     fullName: 'Clarisse Ndongo',
     firstName: 'Clarisse',
     lastName: 'Ndongo',
-    email: 'clarisse.ndongo@example.com',
+    email: 'pauline.mendouga@example.com',
     phone: '+237 690 77 88 11',
     city: 'Kribi',
-    experienceYears: 1,
     unitsPortfolio: 1,
+    propertyTypes: ['Maison meublée'],
     submittedAt: '09 déc 2025',
     motivation: 'Prépare l’ouverture d’un duplex balnéaire et souhaite bénéficier de la distribution PUOL.',
     documents: ['CNI', 'Titre foncier'],
-    avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=facearea&w=200&h=200',
+    avatarUrl: 'https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?auto=format&fit=crop&w=400&q=80',
     status: 'rejected',
   },
 ];
@@ -2267,104 +1320,7 @@ export type ClientMessageThread = {
   }[];
 };
 
-export const clientMessages: ClientMessageThread[] = [
-  {
-    id: 'CL-MSG-501',
-    clientName: 'Sarah Nkomo',
-    clientUsername: '@sarah_nk',
-    subject: 'Accès visite immersive Kribi',
-    city: 'Douala',
-    phone: '+237 699 88 45 11',
-    priority: 'high',
-    status: 'open',
-    unreadCount: 2,
-    lastMessageAt: 'Aujourd’hui · 11:42',
-    preview: 'Je n’arrive pas à lancer la visite virtuelle réservée hier.',
-    avatarUrl: clientProfiles[0].avatarUrl,
-    messages: [
-      {
-        id: 'CL-MSG-501-1',
-        sender: 'client',
-        content: 'Bonjour, la visite virtuelle pour la villa Kribi ne se lance pas côté application.',
-        timestamp: 'Aujourd’hui · 11:18',
-      },
-      {
-        id: 'CL-MSG-501-2',
-        sender: 'support',
-        content: 'Merci Sarah, on vérifie le flux vidéo et on revient vers vous.',
-        timestamp: 'Aujourd’hui · 11:32',
-      },
-      {
-        id: 'CL-MSG-501-3',
-        sender: 'client',
-        content: 'Ok parfait, j’attends votre confirmation.',
-        timestamp: 'Aujourd’hui · 11:42',
-      },
-    ],
-  },
-  {
-    id: 'CL-MSG-502',
-    clientName: 'Ibrahim Akoa',
-    clientUsername: '@ibraakoa',
-    subject: 'Facturation acompte Colocation Akwa',
-    city: 'Yaoundé',
-    phone: '+237 677 21 90 54',
-    priority: 'medium',
-    status: 'waiting',
-    unreadCount: 0,
-    lastMessageAt: 'Hier · 19:05',
-    preview: 'Je veux vérifier que l’acompte a bien été reçu avant la visite.',
-    avatarUrl: clientProfiles[1].avatarUrl,
-    messages: [
-      {
-        id: 'CL-MSG-502-1',
-        sender: 'client',
-        content: 'Pouvez-vous confirmer la réception de mon acompte pour la colocation Akwa ?',
-        timestamp: 'Hier · 18:32',
-      },
-      {
-        id: 'CL-MSG-502-2',
-        sender: 'support',
-        content: 'Oui Ibrahim, le paiement est bien enregistré, la visite reste confirmée pour 10h.',
-        timestamp: 'Hier · 19:05',
-      },
-    ],
-  },
-  {
-    id: 'CL-MSG-503',
-    clientName: 'Liliane Fotso',
-    clientUsername: '@lili_fotso',
-    subject: 'Signature bail Bastos',
-    city: 'Kribi',
-    phone: '+237 690 11 22 33',
-    priority: 'low',
-    status: 'resolved',
-    unreadCount: 0,
-    lastMessageAt: '16 déc · 15:10',
-    preview: 'Merci pour l’envoi du bail, j’ai pu le signer électroniquement.',
-    avatarUrl: clientProfiles[2].avatarUrl,
-    messages: [
-      {
-        id: 'CL-MSG-503-1',
-        sender: 'client',
-        content: 'Hello PUOL, je n’ai pas reçu le lien de signature du bail Bastos.',
-        timestamp: '16 déc · 14:28',
-      },
-      {
-        id: 'CL-MSG-503-2',
-        sender: 'support',
-        content: 'On vous renvoie immédiatement le lien sécurisé par SMS.',
-        timestamp: '16 déc · 14:44',
-      },
-      {
-        id: 'CL-MSG-503-3',
-        sender: 'client',
-        content: 'Lien reçu et bail signé, merci beaucoup !',
-        timestamp: '16 déc · 15:10',
-      },
-    ],
-  },
-];
+export const clientMessages: ClientMessageThread[] = [];
 
 export const landlordSubtabs = [
   { id: 'buyers', label: 'Bailleurs', description: 'Liste maîtres et performance portefeuille', icon: Users },
@@ -2386,6 +1342,11 @@ export const hostSubtabs = [
 export const clientSubtabs = [
   { id: 'clients', label: 'Clients', description: 'Profils et activité clients', icon: Users },
   { id: 'support', label: 'Support', description: 'Messagerie client ↔ back-office', icon: Mail },
+];
+
+export const supervisorSubtabs = [
+  { id: 'supervisors', label: 'Superviseurs', description: 'Membres du staff et administrateurs', icon: Shield },
+  { id: 'permissions', label: 'Permissions', description: 'Droits et accès par rôle', icon: Users },
 ];
 
 const getListingStatusBadge = (status: ListingStatus) => {
@@ -2631,6 +1592,7 @@ export function UsersManagement() {
     landlord: 'annonces',
     host: 'annonces',
     client: 'reservations',
+    supervisor: 'supervisors',
   });
   const [landlordListingFilters, setLandlordListingFilters] = useState<ListingFilters>({
     search: '',
@@ -2704,8 +1666,6 @@ export function UsersManagement() {
         return (
           <VisitsBoard
             visits={landlordVisits}
-            feeLabel="Frais bailleurs"
-            feeAmount="5 000 FCFA"
             searchPlaceholder="Filtrer par bien, client ou ville..."
           />
         );
@@ -2727,6 +1687,22 @@ export function UsersManagement() {
               </Card>
             ))}
           </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderSupervisorSubtab = (tab: string) => {
+    switch (tab) {
+      case 'supervisors':
+        return <SupervisorsBoard />;
+      case 'permissions':
+        return (
+          <Card className="p-8 text-center text-gray-500">
+            <Shield className="w-8 h-8 mx-auto text-blue-500 mb-3" />
+            <p>Gestion des permissions à implémenter</p>
+          </Card>
         );
       default:
         return null;
@@ -2785,8 +1761,6 @@ export function UsersManagement() {
         return (
           <VisitsBoard
             visits={hostVisits}
-            feeLabel="Frais hôtes"
-            feeAmount="5 000 FCFA"
             searchPlaceholder="Rechercher par propriété, client, ville..."
           />
         );
@@ -2877,7 +1851,13 @@ export function UsersManagement() {
   const renderRolePanel = (role: RoleKey) => {
     const roleMeta = roleTabs[role];
     const subtabs =
-      role === 'landlord' ? landlordSubtabs : role === 'host' ? hostSubtabs : clientSubtabs;
+      role === 'landlord' 
+        ? landlordSubtabs 
+        : role === 'host' 
+        ? hostSubtabs 
+        : role === 'client'
+        ? clientSubtabs
+        : supervisorSubtabs;
     const activeSubtab = activeSubtabByRole[role];
 
     return (
@@ -2930,6 +1910,7 @@ export function UsersManagement() {
               {role === 'landlord' && renderLandlordSubtab(tab.id)}
               {role === 'host' && renderHostSubtab(tab.id)}
               {role === 'client' && renderClientSubtab(tab.id)}
+              {role === 'supervisor' && renderSupervisorSubtab(tab.id)}
             </TabsContent>
           ))}
         </Tabs>
@@ -2984,6 +1965,9 @@ export function UsersManagement() {
         </TabsContent>
         <TabsContent value="client" className="mt-6">
           {renderRolePanel('client')}
+        </TabsContent>
+        <TabsContent value="supervisor" className="mt-6">
+          {renderRolePanel('supervisor')}
         </TabsContent>
       </Tabs>
     </div>

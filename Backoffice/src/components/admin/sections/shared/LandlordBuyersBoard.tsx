@@ -288,17 +288,30 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
                       return (
                         <TableRow key={profile.id} className="hover:bg-gray-50/80">
                           <TableCell>
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                                {profile.fullName}
-                                <Badge variant="secondary" className="text-xs capitalize">
-                                  {segmentLabels[profile.segment]}
-                                </Badge>
-                              </p>
-                              {profile.username && <p className="text-xs text-gray-500">{profile.username}</p>}
-                              <p className="text-[11px] text-emerald-600 font-medium capitalize">
-                                {profile.landlordStatus ?? 'actif'}
-                              </p>
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-gray-100 overflow-hidden flex items-center justify-center text-xs font-semibold text-gray-500">
+                                {profile.avatarUrl ? (
+                                  <img
+                                    src={profile.avatarUrl}
+                                    alt={profile.fullName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  profile.fullName.slice(0, 2).toUpperCase()
+                                )}
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                                  {profile.fullName}
+                                  <Badge variant="secondary" className="text-xs capitalize">
+                                    {segmentLabels[profile.segment]}
+                                  </Badge>
+                                </p>
+                                {profile.username && <p className="text-xs text-gray-500">{profile.username}</p>}
+                                <p className="text-[11px] text-emerald-600 font-medium capitalize">
+                                  {profile.landlordStatus ?? 'actif'}
+                                </p>
+                              </div>
                             </div>
                           </TableCell>
                           <TableCell>

@@ -1,6 +1,8 @@
 import React from 'react';
 import { TextInput, Text, View, StyleSheet, ViewStyle, TextInputProps } from 'react-native';
 
+import { scaleFont } from '../../theme/typography';
+
 interface InputProps extends TextInputProps {
   label?: string;
   error?: string;
@@ -27,13 +29,13 @@ const styles = StyleSheet.create({
   },
   label: {
     fontFamily: 'Manrope',
-    fontSize: 14,
+    fontSize: scaleFont(14),
     fontWeight: '600',
     color: '#374151',
   },
   input: {
     fontFamily: 'Manrope',
-    fontSize: 16,
+    fontSize: scaleFont(16),
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
     borderWidth: 1,
@@ -47,7 +49,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontFamily: 'Manrope',
-    fontSize: 12,
+    fontSize: scaleFont(12),
     color: '#EF4444',
   },
 });

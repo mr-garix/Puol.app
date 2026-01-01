@@ -49,6 +49,7 @@ import { ChatbotPopup } from '@/src/components/ui/ChatbotPopup';
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { AuthUser } from '@/src/contexts/AuthContext';
 import { useVisits } from '@/src/contexts/VisitsContext';
+import { createRentalVisit, cancelRentalVisit } from '@/src/features/rental-visits/services';
 import { useReservations, type NewReservationInput } from '@/src/contexts/ReservationContext';
 import { computeUpfrontPayment } from '@/src/utils/reservationPayment';
 import { buildListingShareUrl } from '@/src/utils/helpers';
@@ -63,6 +64,7 @@ import { addViewedListing } from '@/src/features/listings/viewHistoryStorage';
 import { firebaseAuth } from '@/src/firebaseClient';
 import { syncSupabaseSession } from '@/src/features/auth/supabaseSession';
 import { supabase } from '@/src/supabaseClient';
+import { createBooking } from '@/src/features/bookings/services';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HERO_HEIGHT = SCREEN_HEIGHT * 0.58;
@@ -561,6 +563,7 @@ const PropertyProfileScreen = () => {
 
   const { addVisit, updateVisit, getVisitByPropertyId, fetchLatestVisitForListing, refreshVisits } = useVisits();
   const { reservations, addReservation, refreshReservations } = useReservations();
+  const [reservationBookingId, setReservationBookingId] = useState<string | null>(null);
 
   const existingReservation = useMemo(() => {
     if (!property?.id) {
@@ -671,6 +674,21 @@ const PropertyProfileScreen = () => {
   useEffect(() => {
     setCurrentImageIndex(0);
   }, [mediaItems.length]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        // Fermer toutes les modales bloquantes quand on quitte l'écran
+        setShowPaymentModal(false);
+        setShowReservationModal(false);
+        setShowPaymentSuccessModal(false);
+        setShowVisitPaymentDialog(false);
+        setShowVisitPaymentModal(false);
+        setShowVisitScheduleModal(false);
+        setShowVisitSuccessModal(false);
+      };
+    }, []),
+  );
 
   useEffect(() => {
     setShowAllFeatures(false);
@@ -1521,11 +1539,38 @@ const PropertyProfileScreen = () => {
     router.push('/visits' as never);
   };
 
-  const handlePaymentSuccess = () => {
+  const handlePaymentSuccess = async (summaryOverride?: typeof reservationSummary) => {
+    console.log('[PropertyProfileScreen] handlePaymentSuccess appelé');
     if (!property) {
+      console.log('[PropertyProfileScreen] Pas de property, arrêt');
       return;
     }
 
+    // Cas où la réservation a déjà été créée avant paiement (flow ReservationModal)
+    if (reservationBookingId) {
+      try {
+        await refreshReservations();
+      } catch (error) {
+        console.error('[PropertyProfileScreen] refreshReservations error', error);
+      }
+      // Ne pas fermer ReservationModal ici - il se ferme lui-même via handleClose()
+      // Fermer seulement le PaymentModal externe (si utilisé)
+      setShowPaymentModal(false);
+      setReservationBookingId(null);
+      // Afficher le modal de succès après un court délai pour laisser les autres modals se fermer
+      setTimeout(() => {
+        setShowPaymentSuccessModal(true);
+      }, 100);
+      return;
+    }
+
+    const summary = summaryOverride ?? reservationSummary;
+    if (!summary) {
+      console.log('[PropertyProfileScreen] Pas de reservationSummary, arrêt');
+      return;
+    }
+
+    console.log('[PropertyProfileScreen] Création du payload de réservation (post-paiement)');
     const payload: NewReservationInput = {
       propertyId: property.id,
       propertyTitle: property.title,
@@ -1539,50 +1584,75 @@ const PropertyProfileScreen = () => {
       hostId: property.landlord.id,
       hostPhone: property.phoneNumber ?? FALLBACK_PHONE,
       hostEmail: 'support@puol.cm',
-      checkInDate: reservationSummary.checkIn.toISOString(),
-      checkOutDate: reservationSummary.checkOut.toISOString(),
-      nights: reservationSummary.nights,
-      totalPrice: reservationSummary.total,
+      checkInDate: summary.checkIn.toISOString(),
+      checkOutDate: summary.checkOut.toISOString(),
+      nights: summary.nights,
+      totalPrice: summary.total,
       pricePerNight:
-        reservationSummary.nights > 0
-          ? Math.round(reservationSummary.total / Math.max(reservationSummary.nights, 1))
-          : pricePerNightValue || reservationSummary.total,
+        summary.nights > 0
+          ? Math.round(summary.total / Math.max(summary.nights, 1))
+          : pricePerNightValue || summary.total,
       amountPaid:
-        reservationSummary.amountDueNow > 0 ? reservationSummary.amountDueNow : reservationSummary.total,
-      amountRemaining: reservationSummary.remainingAmount,
-      paymentScheme: reservationSummary.paymentScheme,
-      originalTotal: reservationSummary.originalTotal || reservationSummary.total,
-      discountAmount: reservationSummary.discountAmount,
-      discountPercent: reservationSummary.discountPercent,
+        summary.amountDueNow > 0 ? summary.amountDueNow : summary.total,
+      amountRemaining: summary.remainingAmount,
+      paymentScheme: summary.paymentScheme,
+      originalTotal: summary.originalTotal || summary.total,
+      discountAmount: summary.discountAmount,
+      discountPercent: summary.discountPercent,
       updatedAt: new Date().toISOString(),
     } as const;
 
-    addReservation(payload)
-      .then(async () => {
-        setShowPaymentModal(false);
-        setShowPaymentSuccessModal(true);
-        try {
-          await refreshReservations();
-        } catch (error) {
-          console.error('[PropertyProfileScreen] refreshReservations error', error);
-        }
-      })
-      .catch((error) => {
-        console.error('[PropertyProfileScreen] addReservation error', error);
-        Alert.alert(
-          'Réservation non enregistrée',
-          'Nous n’avons pas pu sauvegarder votre réservation. Vérifiez votre connexion puis réessayez.',
-        );
-      });
+    console.log('[PropertyProfileScreen] Payload créé:', payload);
+    console.log('[PropertyProfileScreen] Fermeture de la modal de paiement');
+    setShowPaymentModal(false);
+    setShowReservationModal(false);
+
+    try {
+      console.log('[PropertyProfileScreen] Appel addReservation...');
+      const reservation = await addReservation(payload);
+      console.log('[PropertyProfileScreen] addReservation réussi, résultat:', reservation);
+      
+      try {
+        console.log('[PropertyProfileScreen] Rafraîchissement des réservations...');
+        await refreshReservations();
+        console.log('[PropertyProfileScreen] refreshReservations réussi');
+      } catch (error) {
+        console.error('[PropertyProfileScreen] refreshReservations error', error);
+      }
+      
+      console.log('[PropertyProfileScreen] Affichage modal de succès...');
+      setShowPaymentSuccessModal(true);
+      console.log('[PropertyProfileScreen] Modal de succès affichée');
+    } catch (error) {
+      console.error('[PropertyProfileScreen] addReservation error', error);
+      console.error('[PropertyProfileScreen] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      Alert.alert(
+        'Réservation non enregistrée',
+        "Nous n'avons pas pu sauvegarder votre réservation. Vérifiez votre connexion puis réessayez.",
+      );
+    }
   };
 
-  const handleReservationConfirm = (checkIn: Date, checkOut: Date, nights: number, total: number) => {
+  const handleReservationConfirm = async (
+    checkIn: Date,
+    checkOut: Date,
+    nights: number,
+    total: number
+  ) => {
+    console.log('[PropertyProfileScreen] handleReservationConfirm appelé', { checkIn, checkOut, nights, total });
+
+    if (!supabaseProfile?.id) {
+      Alert.alert('Connexion requise', 'Veuillez vous connecter pour réserver.');
+      return;
+    }
+
     const baseTotal = nights * pricePerNightValue;
     const discountRatio = baseTotal > 0 ? Math.min(1, Math.max(0, total / baseTotal)) : 1;
     const effectivePricePerNight = pricePerNightValue * discountRatio;
     const paymentInfo = computeUpfrontPayment(nights, effectivePricePerNight);
     const discountAmount = Math.max(baseTotal - total, 0);
     const discountPercent = baseTotal > 0 && discountAmount > 0 ? Math.round((discountAmount / baseTotal) * 100) : null;
+
     setReservationSummary({
       checkIn,
       checkOut,
@@ -1596,8 +1666,34 @@ const PropertyProfileScreen = () => {
       discountPercent,
     });
     setPaymentNotice(paymentInfo.message ?? '');
-    setShowReservationModal(false);
-    setShowPaymentModal(true);
+
+    try {
+      const booking = await createBooking({
+        listingId: property.id,
+        guestProfileId: supabaseProfile.id,
+        checkInDate: checkIn.toISOString(),
+        checkOutDate: checkOut.toISOString(),
+        nights,
+        nightlyPrice: effectivePricePerNight,
+        totalPrice: total,
+        depositAmount: paymentInfo.amountDueNow,
+        remainingAmount: paymentInfo.remainingAmount,
+        discountAmount,
+        discountPercent,
+        hasDiscount: discountAmount > 0,
+        status: 'pending',
+      });
+
+      setReservationBookingId(booking.id);
+      // Ouvrir le PaymentModal externe - exactement comme les visites
+      setShowPaymentModal(true);
+    } catch (error) {
+      console.error('[PropertyProfileScreen] createBooking (pre-paiement) error', error);
+      Alert.alert(
+        'Réservation impossible',
+        "Impossible de créer la réservation avant paiement. Vérifiez votre connexion puis réessayez."
+      );
+    }
   };
 
   const handleVisitPaymentContinue = () => {
@@ -1649,45 +1745,87 @@ const PropertyProfileScreen = () => {
     setShowVisitPaymentModal(true);
   };
 
-  const handleVisitPaymentSuccess = () => {
+  const handleVisitPaymentSuccess = async () => {
+    console.log('[PropertyProfileScreen] handleVisitPaymentSuccess appelé');
     setShowVisitPaymentModal(false);
     const visitDate = visitDetails.date ?? new Date();
+    console.log('[PropertyProfileScreen] Date de visite:', visitDate);
+
+    if (!supabaseProfile?.id) {
+      console.error('[PropertyProfileScreen] Pas de supabaseProfile pour créer la visite (après paiement)');
+      Alert.alert('Connexion requise', 'Veuillez vous reconnecter puis relancer le paiement de la visite.');
+      return;
+    }
+
+    if (!visitDetails.time) {
+      Alert.alert('Heure manquante', 'Veuillez choisir une heure de visite.');
+      return;
+    }
 
     setIsScheduling(true);
     setSchedulingError(null);
 
-    addVisit({
-      propertyId: property.id,
-      propertyTitle: property.title,
-      propertyImage: property.images[0],
-      propertyLocation: propertyLocationLabel,
-      propertyBedrooms: property.bedrooms,
-      propertyKitchens: property.kitchens,
-      propertyLivingRooms: property.livingRooms,
-      propertyType: property.type,
-      propertySurfaceArea: property.surfaceArea,
-      propertyIsRoadside: isRoadsideShop,
-      visitDate,
-      visitTime: visitDetails.time,
-      amount: VISIT_PRICE_FCFA,
-    })
-      .then(() => {
-        setVisitSuccessCopy({
-          title: 'Visite programmée !',
-          message: 'Votre visite a été programmée. Elle sera confirmée automatiquement sous peu.',
-          buttonLabel: 'Voir ma visite',
-        });
-        setShowVisitSuccessModal(true);
-        void refreshVisits();
-      })
-      .catch((error) => {
-        console.error('[PropertyProfileScreen] addVisit error', error);
-        Alert.alert('Visite non programmée', "Nous n'avons pas pu sauvegarder votre visite. Vérifiez votre connexion puis réessayez.");
-        setSchedulingError("Nous n'avons pas pu programmer la visite. Réessayez.");
-      })
-      .finally(() => {
-        setIsScheduling(false);
+    try {
+      console.log('[PropertyProfileScreen] Appel createRentalVisit (post-paiement)...');
+      console.log('[PropertyProfileScreen] Payload visite:', {
+        listingId: property.id,
+        guestProfileId: supabaseProfile.id,
+        visitDate: visitDate.toISOString(),
+        visitTime: visitDetails.time,
       });
+      const createdVisit = await createRentalVisit({
+        listingId: property.id,
+        guestProfileId: supabaseProfile.id,
+        visitDate,
+        visitTime: visitDetails.time,
+        source: 'mobile_guest',
+        notes: null,
+      });
+      console.log('[PropertyProfileScreen] createRentalVisit réussi:', createdVisit.id);
+
+      // Lier le paiement à la visite créée
+      try {
+        const { data: latestPayment } = await supabase
+          .from('payments')
+          .select('id')
+          .eq('purpose', 'visit')
+          .eq('payer_profile_id', supabaseProfile.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestPayment?.id) {
+          await supabase
+            .from('payments')
+            .update({ related_id: createdVisit.id })
+            .eq('id', latestPayment.id);
+        } else {
+          console.warn('[PropertyProfileScreen] Aucun paiement visit trouvé pour rattacher related_id');
+        }
+      } catch (linkError) {
+        console.error('[PropertyProfileScreen] Impossible de lier le paiement à la visite:', linkError);
+      }
+
+      setVisitSuccessCopy({
+        title: 'Visite programmée !',
+        message: 'Votre visite a été programmée. Elle sera confirmée automatiquement sous peu.',
+        buttonLabel: 'Voir ma visite',
+      });
+      setShowVisitSuccessModal(true);
+      void refreshVisits();
+      console.log('[PropertyProfileScreen] Modal de succès de visite affichée');
+    } catch (error) {
+      console.error('[PropertyProfileScreen] createRentalVisit error', error);
+      console.error('[PropertyProfileScreen] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      const reason =
+        (error as any)?.message ||
+        (error as any)?.details ||
+        "Nous n'avons pas pu sauvegarder votre visite. Vérifiez votre connexion puis réessayez.";
+      Alert.alert('Visite non programmée', reason);
+      setSchedulingError("Nous n'avons pas pu programmer la visite. Réessayez.");
+    } finally {
+      setIsScheduling(false);
+    }
   };
 
   const handleLoginAuthenticated = () => {
@@ -2211,11 +2349,26 @@ const PropertyProfileScreen = () => {
       <PaymentModal
         visible={showPaymentModal}
         onClose={() => setShowPaymentModal(false)}
-        onSuccess={handlePaymentSuccess}
+        onSuccess={async () => {
+          console.log('[PropertyProfileScreen] PaymentModal onSuccess - réservation');
+          setShowPaymentModal(false);
+          try {
+            await refreshReservations();
+          } catch (error) {
+            console.error('[PropertyProfileScreen] refreshReservations error', error);
+          }
+          setReservationBookingId(null);
+          setShowPaymentSuccessModal(true);
+        }}
         amount={reservationSummary.amountDueNow || reservationSummary.total}
         title="Paiement de la réservation"
         description={property.title}
         infoMessage={paymentNotice}
+        purpose="booking"
+        payerProfileId={supabaseProfile?.id}
+        hostProfileId={property.landlord?.id ?? property.id ?? ''}
+        relatedId={reservationBookingId ?? undefined}
+        customerPrice={reservationSummary.amountDueNow || reservationSummary.total}
         onBack={() => {
           setShowPaymentModal(false);
           setShowReservationModal(true);
@@ -2240,6 +2393,7 @@ const PropertyProfileScreen = () => {
         onClose={() => setShowVisitScheduleModal(false)}
         onConfirm={handleVisitScheduleConfirm}
         listingId={property.id}
+        hostProfileId={property.landlord?.id ?? property.id ?? ''}
         initialDate={visitDetails.date}
         initialTime={visitDetails.time}
       />
@@ -2247,12 +2401,25 @@ const PropertyProfileScreen = () => {
       <PaymentModal
         visible={showVisitPaymentModal}
         onClose={() => setShowVisitPaymentModal(false)}
-        onSuccess={handleVisitPaymentSuccess}
+        onSuccess={async () => {
+          console.log('[PropertyProfileScreen] onSuccess reçu depuis PaymentModal (visit)');
+          try {
+            await handleVisitPaymentSuccess();
+            console.log('[PropertyProfileScreen] handleVisitPaymentSuccess terminé avec succès');
+          } catch (error) {
+            console.error('[PropertyProfileScreen] Erreur dans handleVisitPaymentSuccess:', error);
+            console.error('[PropertyProfileScreen] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+          }
+        }}
         amount={VISIT_PRICE_FCFA}
         title="Paiement de la visite"
         description={visitDetails.date
           ? `Visite le ${visitDetails.date.toLocaleDateString('fr-FR')} à ${visitDetails.time}`
           : 'Paiement de votre visite'}
+        purpose="visit"
+        payerProfileId={supabaseProfile?.id}
+        hostProfileId={property.landlord?.id ?? property.id ?? ''}
+        relatedId={undefined}
         onBack={() => {
           setShowVisitPaymentModal(false);
           setShowVisitScheduleModal(true);

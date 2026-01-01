@@ -1,4 +1,4 @@
-import { useMemo, useState, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { fetchLandlordVisits } from '@/lib/services/landlords';
 
 export type VisitStatus = 'pending' | 'confirmed' | 'cancelled';
 export type VisitPaymentStatus = 'paid' | 'pending' | 'refunded';
@@ -41,78 +42,39 @@ export type VisitRecord = {
   amount: string;
   phone: string;
   city: string;
+  landlordName?: string;
+  landlordPhone?: string;
+  landlordId?: string;
+  landlordCity?: string;
+  landlordUsername?: string;
 };
 
 interface VisitsBoardProps {
   visits: VisitRecord[];
-  feeLabel?: string;
-  feeAmount?: string;
   searchPlaceholder?: string;
   onViewVisit?: (visit: VisitRecord) => void;
-  onConfirmVisit?: (visit: VisitRecord) => void;
   onCancelVisit?: (visit: VisitRecord) => void;
 }
 
-const defaultVisits: VisitRecord[] = [
-  {
-    id: 'VIS-301',
-    property: 'Studio moderne - Bonanjo',
-    propertyImage: 'https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=400&q=80',
-    propertyType: 'Studio',
-    visitor: 'Isabelle Ndongo',
-    date: '18 Déc 2025',
-    time: '10:00',
-    status: 'confirmed',
-    paymentStatus: 'paid',
-    amount: '5 000 FCFA',
-    phone: '+237 6XX XX XX XX',
-    city: 'Douala',
-  },
-  {
-    id: 'VIS-302',
-    property: 'Appartement 2 pièces - Bastos',
-    propertyImage: 'https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=400&q=80',
-    propertyType: 'Appartement',
-    visitor: 'Lydie Kamdem',
-    date: '20 Déc 2025',
-    time: '14:30',
-    status: 'pending',
-    paymentStatus: 'paid',
-    amount: '5 000 FCFA',
-    phone: '+237 6YY YY YY YY',
-    city: 'Yaoundé',
-  },
-  {
-    id: 'VIS-303',
-    property: 'Villa 4 chambres - Bonapriso',
-    propertyImage: 'https://images.unsplash.com/photo-1523217582562-09d0def993a6?auto=format&fit=crop&w=400&q=80',
-    propertyType: 'Villa',
-    visitor: 'Emmanuel Talla',
-    date: '22 Déc 2025',
-    time: '11:00',
-    status: 'confirmed',
-    paymentStatus: 'paid',
-    amount: '5 000 FCFA',
-    phone: '+237 6ZZ ZZ ZZ ZZ',
-    city: 'Douala',
-  },
-  {
-    id: 'VIS-304',
-    property: 'Chambre meublée - Akwa',
-    propertyImage: 'https://images.unsplash.com/photo-1493666438817-866a91353ca9?auto=format&fit=crop&w=400&q=80',
-    propertyType: 'Chambre',
-    visitor: 'Brice Kom',
-    date: '17 Déc 2025',
-    time: '15:00',
-    status: 'cancelled',
-    paymentStatus: 'paid',
-    amount: '2 500 FCFA',
-    phone: '+237 6AA AA AA AA',
-    city: 'Douala',
-  },
-];
-
 export function VisitsManagement() {
+  const [visits, setVisits] = useState<VisitRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadVisits = async () => {
+      try {
+        const data = await fetchLandlordVisits();
+        setVisits(data);
+      } catch (error) {
+        console.error('Erreur lors du chargement des visites:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadVisits();
+  }, []);
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -122,7 +84,11 @@ export function VisitsManagement() {
         </p>
       </div>
 
-      <VisitsBoard visits={defaultVisits} />
+      {loading ? (
+        <div className="p-8 text-center text-sm text-gray-500">Chargement des visites...</div>
+      ) : (
+        <VisitsBoard visits={visits} />
+      )}
     </div>
   );
 }
@@ -130,13 +96,10 @@ export function VisitsManagement() {
 type VisitDetailViewProps = {
   visit: VisitRecord;
   onBack: () => void;
-  onConfirm: () => void;
   onCancel: () => void;
-  feeLabel: string;
-  feeAmount: string;
 };
 
-function VisitDetailView({ visit, onBack, onConfirm, onCancel, feeLabel, feeAmount }: VisitDetailViewProps) {
+function VisitDetailView({ visit, onBack, onCancel }: VisitDetailViewProps) {
   const paymentLabel = 'Payé';
   const paymentAccent = 'text-emerald-600';
 
@@ -172,26 +135,7 @@ function VisitDetailView({ visit, onBack, onConfirm, onCancel, feeLabel, feeAmou
             <DetailCard icon={FileText} label="Paiement" primary={visit.amount} secondary={paymentLabel} />
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-            <div className="space-y-4">
-              <h2 className="text-sm uppercase tracking-wide text-gray-500">Résumé opérationnel</h2>
-              <div className="rounded-2xl border border-gray-100 p-4 space-y-3">
-                <p className="text-sm text-gray-600">
-                  Toutes les informations nécessaires pour assurer le suivi de la visite (statut, paiement, contacts).
-                  Une fois connecté au backend, confirmer la visite pourra déclencher la création de bail et la mise hors
-                  ligne de l’annonce.
-                </p>
-                <div className="grid grid-cols-2 gap-3 text-sm text-gray-600">
-                  <span>Statut</span>
-                  <span className="text-right font-semibold">{getStatusBadge(visit.status).label}</span>
-                  <span>Référence</span>
-                  <span className="text-right">{visit.id}</span>
-                  <span>{feeLabel}</span>
-                  <span className="text-right">{feeAmount}</span>
-                </div>
-              </div>
-            </div>
-
+          <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-3">
               <h2 className="text-sm uppercase tracking-wide text-gray-500">Client</h2>
               <div className="rounded-2xl border border-gray-100 p-4 space-y-3">
@@ -214,16 +158,40 @@ function VisitDetailView({ visit, onBack, onConfirm, onCancel, feeLabel, feeAmou
                 </div>
               </div>
             </div>
+
+            <div className="space-y-3">
+              <h2 className="text-sm uppercase tracking-wide text-gray-500">Hôte</h2>
+              <div className="rounded-2xl border border-gray-100 p-4 space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-semibold">
+                    {(visit.landlordName ?? 'Hôte PUOL').slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">{visit.landlordName ?? 'Hôte PUOL'}</p>
+                    <p className="text-xs text-gray-500">Hôte vérifié</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <Phone className="w-4 h-4 text-gray-400" />
+                  {visit.landlordPhone && visit.landlordPhone.trim().length > 0 ? visit.landlordPhone : '—'}
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <User className="w-4 h-4 text-gray-400" />
+                  @{visit.landlordUsername ?? 'compte hôte'}
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <User className="w-4 h-4 text-gray-400" />
+                  {visit.landlordCity ?? '—'}
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <User className="w-4 h-4 text-gray-400" />
+                  Hôte de : {visit.propertyType ?? 'Logement'}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3 items-center">
-            <Button
-              className="rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-200"
-              disabled={visit.status === 'confirmed'}
-              onClick={onConfirm}
-            >
-              Confirmer la visite
-            </Button>
             <Button
               variant="outline"
               className="rounded-xl border-red-200 text-red-600 hover:bg-red-50 disabled:text-red-300 disabled:border-red-100"
@@ -286,11 +254,8 @@ const getStatusBadge = (status: VisitStatus) => {
 
 export function VisitsBoard({
   visits,
-  feeLabel = 'Frais de visite',
-  feeAmount = '5 000 FCFA',
   searchPlaceholder = 'Rechercher par propriété, visiteur, ville...',
   onViewVisit,
-  onConfirmVisit,
   onCancelVisit,
 }: VisitsBoardProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -314,11 +279,6 @@ export function VisitsBoard({
   const getVisitsForTab = (status: 'all' | VisitStatus) =>
     status === 'all' ? filteredVisits : filteredVisits.filter((visit) => visit.status === status);
 
-  const handleConfirm = (visit: VisitRecord) => {
-    onConfirmVisit?.(visit);
-    setFocusedVisit((prev) => (prev?.id === visit.id ? { ...prev, status: 'confirmed' } : prev));
-  };
-
   const handleCancel = (visit: VisitRecord) => {
     onCancelVisit?.(visit);
     setFocusedVisit((prev) => (prev?.id === visit.id ? { ...prev, status: 'cancelled' } : prev));
@@ -329,10 +289,7 @@ export function VisitsBoard({
       <VisitDetailView
         visit={focusedVisit}
         onBack={() => setFocusedVisit(null)}
-        onConfirm={() => handleConfirm(focusedVisit)}
         onCancel={() => handleCancel(focusedVisit)}
-        feeLabel={feeLabel}
-        feeAmount={feeAmount}
       />
     );
   }
@@ -354,7 +311,6 @@ export function VisitsBoard({
           </TableHeader>
           <TableBody>
             {records.map((visit) => {
-              const canConfirm = visit.status !== 'confirmed';
               const canCancel = visit.status !== 'cancelled';
               return (
                 <TableRow key={visit.id} className="hover:bg-gray-50">
@@ -380,7 +336,6 @@ export function VisitsBoard({
                   <TableCell>
                     <div>
                       <p className="text-sm font-semibold text-gray-900">{visit.visitor}</p>
-                      <p className="text-xs text-gray-500">Client PUOL</p>
                       <p className="text-xs text-gray-500">{visit.phone}</p>
                     </div>
                   </TableCell>
@@ -415,17 +370,6 @@ export function VisitsBoard({
                       </Button>
                       <Button
                         size="sm"
-                        className="rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:bg-emerald-200 disabled:text-white/80 border-0 shadow-sm"
-                        disabled={!canConfirm}
-                        onClick={() => {
-                          if (!canConfirm) return;
-                          handleConfirm(visit);
-                        }}
-                      >
-                        Confirmer
-                      </Button>
-                      <Button
-                        size="sm"
                         className="rounded-lg bg-red-600 text-white hover:bg-red-500 disabled:bg-red-200 disabled:text-white/80 border-0 shadow-sm"
                         disabled={!canCancel}
                         onClick={() => {
@@ -451,7 +395,7 @@ export function VisitsBoard({
   return (
     <div className="space-y-6">
       {/* Stats rapides */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
@@ -488,14 +432,6 @@ export function VisitsBoard({
                 <p className="text-2xl text-gray-900">{cancelledCount}</p>
                 <p className="text-sm text-gray-600">Annulées</p>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-6">
-            <div className="bg-blue-50 p-3 rounded-xl">
-              <p className="text-xs text-blue-900 mb-1">{feeLabel}</p>
-              <p className="text-lg text-blue-900">{feeAmount}</p>
             </div>
           </CardContent>
         </Card>

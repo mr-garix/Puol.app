@@ -1,22 +1,23 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
 import { PaymentModal } from '../../payments/components/PaymentModal';
 import { useAuth } from '@/src/contexts/AuthContext';
 
-interface VisitPaymentDialogProps {
+interface BookingPaymentDialogProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
   hostProfileId: string;
-  visitId?: string;
+  customerPrice: number; // Prix payé par le client (prix affiché)
+  bookingId?: string;
 }
 
-export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
+export const BookingPaymentDialog: React.FC<BookingPaymentDialogProps> = ({
   visible,
   onClose,
   onSuccess,
   hostProfileId,
-  visitId
+  customerPrice,
+  bookingId
 }) => {
   const { supabaseProfile } = useAuth();
 
@@ -25,13 +26,14 @@ export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
       visible={visible}
       onClose={onClose}
       onSuccess={onSuccess}
-      amount={5000} // Prix fixe pour les visites
-      title="Payer la visite"
-      description="Confirmez votre paiement pour la visite"
-      purpose="visit"
+      amount={customerPrice}
+      title="Payer la réservation"
+      description={`Confirmez votre paiement de ${customerPrice.toLocaleString()} FCFA`}
+      purpose="booking"
       payerProfileId={supabaseProfile?.id}
       hostProfileId={hostProfileId}
-      relatedId={undefined}
+      relatedId={bookingId}
+      customerPrice={customerPrice}
     />
   );
 };

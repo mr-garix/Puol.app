@@ -3,8 +3,6 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { supabase } from '../supabaseClient';
 import type { Database } from '../../types/supabase.generated';
-
-const TAKE_RATE = 0.1;
 // Nombre d'annonces à afficher dans les widgets "Top annonces"
 const DEFAULT_TOP_LIMIT = 5;
 const MS_IN_DAY = 24 * 60 * 60 * 1000;
@@ -408,6 +406,70 @@ async function countDailyVisitors(client: typeof supabase, startDate: Date, endD
   return authenticated + anonymous;
 }
 
+async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ gmv: number; revenue: number }> {
+  if (!supabase) {
+    console.warn('[dashboardStats] fetchPaymentTotals skipped: supabase client absent');
+    return { gmv: 0, revenue: 0 };
+  }
+
+  try {
+    const [paymentsRes, visitPaymentsRes, earningsRes] = await Promise.all([
+      supabase
+        .from('payments')
+        .select('amount')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
+      supabase
+        .from('payments')
+        .select('amount')
+        .eq('purpose', 'visit')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
+      supabase
+        .from('host_earnings')
+        .select('platform_fee')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
+    ]);
+
+    if (paymentsRes.error) {
+      console.warn('[dashboardStats] fetchPaymentTotals payments error', paymentsRes.error);
+    }
+    if (visitPaymentsRes.error) {
+      console.warn('[dashboardStats] fetchPaymentTotals visit payments error', visitPaymentsRes.error);
+    }
+    if (earningsRes.error) {
+      console.warn('[dashboardStats] fetchPaymentTotals host_earnings error', earningsRes.error);
+    }
+
+    const paymentsRows = (paymentsRes.data ?? []) as { amount?: number | null }[];
+    const visitPaymentsRows = (visitPaymentsRes.data ?? []) as { amount?: number | null }[];
+    const earningsRows = (earningsRes.data ?? []) as { platform_fee?: number | null }[];
+
+    // GMV = somme de tous les amounts (réservations + visites)
+    const gmv = paymentsRows.reduce((acc, row) => acc + (row.amount ?? 0), 0);
+
+    // CA = platform_fee (réservations) + amounts des visites
+    const reservationRevenue = earningsRows.reduce((acc, row) => acc + (row.platform_fee ?? 0), 0);
+    const visitRevenue = visitPaymentsRows.reduce((acc, row) => acc + (row.amount ?? 0), 0);
+    const revenue = reservationRevenue + visitRevenue;
+
+    console.log('[dashboardStats] fetchPaymentTotals breakdown', {
+      startIso,
+      endIso,
+      gmv,
+      reservationRevenue,
+      visitRevenue,
+      totalRevenue: revenue,
+    });
+
+    return { gmv, revenue };
+  } catch (error) {
+    console.warn('[dashboardStats] fetchPaymentTotals unexpected error', error);
+    return { gmv: 0, revenue: 0 };
+  }
+}
+
 async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
   if (!supabase) {
     return {
@@ -435,8 +497,8 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
     listingsDraft,
     bookingsCurrent,
     bookingsPrevious,
-    gmvCurrent,
-    gmvPrevious,
+    paymentsCurrent,
+    paymentsPrevious,
     visitsCurrent,
     visitsPrevious,
     reviewsCurrent,
@@ -499,8 +561,8 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
         .gte('created_at', prevStart)
         .lt('created_at', prevEnd),
     ),
-    fetchGmv(periodStart, periodEnd),
-    fetchGmv(prevStart, prevEnd),
+    fetchPaymentTotals(periodStart, periodEnd),
+    fetchPaymentTotals(prevStart, prevEnd),
     countRows(
       supabase
         .from('rental_visits')
@@ -564,9 +626,6 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
     typeof averageReviewRating === 'number'
       ? `${averageReviewRating.toFixed(2)} / 5`
       : undefined;
-
-  const revenueCurrent = Math.round(gmvCurrent * TAKE_RATE);
-  const revenuePrevious = Math.round(gmvPrevious * TAKE_RATE);
 
   const propertyStats: PropertyStatusStats = {
     total: totalListings,
@@ -652,25 +711,25 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
       {
         id: 'gmv',
         title: 'GMV (FCFA)',
-        value: gmvCurrent.toLocaleString('fr-FR'),
+        value: paymentsCurrent.gmv.toLocaleString('fr-FR'),
         icon: '💰',
         color: 'bg-blue-500',
         route: 'analytics',
         definition: 'Volume brut (total des réservations)',
-        currentValue: gmvCurrent,
-        previousValue: gmvPrevious,
+        currentValue: paymentsCurrent.gmv,
+        previousValue: paymentsPrevious.gmv,
         visible: true,
       },
       {
         id: 'revenue',
         title: 'CA PUOL (FCFA)',
-        value: revenueCurrent.toLocaleString('fr-FR'),
+        value: paymentsCurrent.revenue.toLocaleString('fr-FR'),
         icon: '💵',
         color: 'bg-[#2ECC71]',
         route: 'payments',
-        definition: 'Revenus estimés (take rate 10%)',
-        currentValue: revenueCurrent,
-        previousValue: revenuePrevious,
+        definition: 'Revenus plateforme (somme des platform_fee)',
+        currentValue: paymentsCurrent.revenue,
+        previousValue: paymentsPrevious.revenue,
         visible: true,
       },
       {
@@ -726,32 +785,6 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
     ],
     propertyStats,
   };
-}
-
-async function fetchGmv(startIso: string, endIso: string) {
-  try {
-    const client = supabase;
-    if (!client) {
-      console.warn('[dashboardStats] fetchGmv skipped: supabase client absent');
-      return 0;
-    }
-
-    const { data, error } = await client
-      .from('bookings')
-      .select('total_price')
-      .gte('created_at', startIso)
-      .lt('created_at', endIso);
-
-    if (error) {
-      console.warn('[dashboardStats] fetchGmv error', error);
-      return 0;
-    }
-
-    return (data ?? []).reduce((total, row) => total + (row.total_price ?? 0), 0);
-  } catch (error) {
-    console.warn('[dashboardStats] fetchGmv unexpected error', error);
-    return 0;
-  }
 }
 
 type MetricType = 'views' | 'bookings' | 'visits';
@@ -849,7 +882,7 @@ async function fetchTopProperties(dateRange: DateRangeInput): Promise<TopPropert
   };
 
   const isFurnishedListing = (listing: ListingDetailsRow) => Boolean(listing.is_furnished);
-  const isUnfurnishedListing = (listing: ListingDetailsRow) => !Boolean(listing.is_furnished);
+  const isUnfurnishedListing = (listing: ListingDetailsRow) => !listing.is_furnished;
 
   return {
     furnished: {

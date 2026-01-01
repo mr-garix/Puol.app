@@ -1,5 +1,6 @@
 import React from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect } from 'react';
 
 interface PaymentSuccessModalProps {
   visible: boolean;
@@ -18,27 +19,92 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
   title = 'Paiement réussi !',
   message = 'Votre réservation a été confirmée. Vous recevrez une notification avec tous les détails.',
 }) => {
+  useEffect(() => {
+    console.log('[PaymentSuccessModal] visible:', visible);
+  }, [visible]);
+
+  const Content = (
+    <View style={styles.modalContent}>
+      <View style={styles.successIcon}>
+        <Text style={styles.successCheckmark}>✓</Text>
+      </View>
+
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.message}>{message}</Text>
+
+      <TouchableOpacity
+        style={styles.primaryButton}
+        onPress={() => {
+          console.log('[PaymentSuccessModal] primary action (Voir ma réservation)');
+          onPrimaryAction();
+        }}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.primaryButtonText}>{primaryButtonLabel}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.secondaryButton}
+        onPress={() => {
+          console.log('[PaymentSuccessModal] secondary action (Fermer)');
+          onClose();
+        }}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.secondaryButtonText}>Fermer</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={styles.modalContent}>
-          <View style={styles.successIcon}>
-            <Text style={styles.successCheckmark}>✓</Text>
-          </View>
-
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.message}>{message}</Text>
-
-          <TouchableOpacity style={styles.primaryButton} onPress={onPrimaryAction} activeOpacity={0.8}>
-            <Text style={styles.primaryButtonText}>{primaryButtonLabel}</Text>
+    <>
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        onRequestClose={onClose}
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+      >
+        <TouchableOpacity
+          style={styles.overlay}
+          activeOpacity={1}
+          onPress={() => {
+            console.log('[PaymentSuccessModal] overlay press -> close');
+            onClose();
+          }}
+        >
+          <TouchableOpacity
+            style={styles.modalWrapper}
+            activeOpacity={1}
+            onPress={() => console.log('[PaymentSuccessModal] modal tapped')}
+          >
+            {Content}
           </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
-          <TouchableOpacity style={styles.secondaryButton} onPress={onClose} activeOpacity={0.8}>
-            <Text style={styles.secondaryButtonText}>Fermer</Text>
+      {visible && (
+        <View style={styles.fallbackOverlay} pointerEvents="auto">
+          <TouchableOpacity
+            style={styles.overlay}
+            activeOpacity={1}
+            onPress={() => {
+              console.log('[PaymentSuccessModal][fallback] overlay press -> close');
+              onClose();
+            }}
+          >
+            <TouchableOpacity
+              style={styles.modalWrapper}
+              activeOpacity={1}
+              onPress={() => console.log('[PaymentSuccessModal][fallback] modal tapped')}
+            >
+              {Content}
+            </TouchableOpacity>
           </TouchableOpacity>
         </View>
-      </View>
-    </Modal>
+      )}
+    </>
   );
 };
 
@@ -49,14 +115,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 24,
+    width: '100%',
+    height: '100%',
+    zIndex: 99999,
+  },
+  fallbackOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 99998,
+    elevation: 50,
+  },
+  modalWrapper: {
+    width: '100%',
+    maxWidth: 400,
   },
   modalContent: {
     backgroundColor: '#FFFFFF',
     borderRadius: 24,
     padding: 32,
-    width: '100%',
-    maxWidth: 400,
     alignItems: 'center',
+    width: '100%',
   },
   successIcon: {
     width: 80,

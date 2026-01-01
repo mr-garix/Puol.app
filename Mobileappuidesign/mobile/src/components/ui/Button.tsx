@@ -1,6 +1,8 @@
 import React from 'react';
 import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle } from 'react-native';
 
+import { scaleFont } from '../../theme/typography';
+
 interface ButtonProps {
   title: string;
   onPress: () => void;
@@ -104,13 +106,13 @@ const styles = StyleSheet.create({
     color: '#2ECC71',
   },
   smallText: {
-    fontSize: 14,
+    fontSize: scaleFont(14),
   },
   mediumText: {
-    fontSize: 16,
+    fontSize: scaleFont(16),
   },
   largeText: {
-    fontSize: 18,
+    fontSize: scaleFont(18),
   },
   disabledText: {
     color: '#9CA3AF',
