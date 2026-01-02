@@ -4,6 +4,7 @@ import * as Localization from 'expo-localization';
 import { supabase } from '@/src/supabaseClient';
 import type { TablesInsert } from '@/src/types/supabase.generated';
 import { trackAnalyticsEvent } from '@/src/infrastructure/analytics';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type ListingViewInsert = TablesInsert<'listing_views'>;
 
@@ -106,6 +107,9 @@ export async function trackListingView(params: TrackListingViewParams): Promise<
       },
     });
     console.log('[ListingView] inserted view', payload);
+
+    // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+    await sendHeartbeat(params.viewer?.id || null, params.viewer?.city);
   } catch (error) {
     console.error('[ListingView] unexpected error', error);
     trackAnalyticsEvent({

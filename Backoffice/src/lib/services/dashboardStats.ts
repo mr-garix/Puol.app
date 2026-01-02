@@ -6,10 +6,6 @@ import type { Database } from '../../types/supabase.generated';
 // Nombre d'annonces à afficher dans les widgets "Top annonces"
 const DEFAULT_TOP_LIMIT = 5;
 const MS_IN_DAY = 24 * 60 * 60 * 1000;
-const UNFURNISHED_REVENUE_MOCK = {
-  current: 1_250_000,
-  previous: 1_050_000,
-};
 
 export type DateRangeInput = {
   startDate: Date;
@@ -206,14 +202,16 @@ async function fetchVisitorStats(dateRange: DateRangeInput): Promise<DashboardVi
   const endIso = toISO(addOneDay(normalizedEnd));
 
   const [authenticatedVisitors, anonymousVisitors] = await Promise.all([
+    // Authentifiés : listing_views avec profile_id (inchangé)
     countDistinctListingViewProfiles(client, startIso, endIso),
+    // Anonymes : visitor_activity_heartbeat sans linked_user_id
     countRows(
-      client
-        .from('listing_views')
-        .select('id', { count: 'exact', head: true })
-        .is('profile_id', null)
-        .gte('viewed_at', startIso)
-        .lt('viewed_at', endIso),
+      (client as any)
+        .from('visitor_activity_heartbeat')
+        .select('visitor_id', { count: 'exact', head: true })
+        .gte('last_activity_at', startIso)
+        .lt('last_activity_at', endIso)
+        .is('linked_user_id', null),
     ),
   ]);
 
@@ -393,14 +391,16 @@ async function countDailyVisitors(client: typeof supabase, startDate: Date, endD
   const startIso = toISO(startDate);
   const endIso = toISO(endDate);
   const [authenticated, anonymous] = await Promise.all([
+    // Authentifiés : listing_views avec profile_id (inchangé)
     countDistinctListingViewProfiles(client, startIso, endIso),
+    // Anonymes : visitor_activity_heartbeat sans linked_user_id
     countRows(
-      client
-        .from('listing_views')
-        .select('id', { count: 'exact', head: true })
-        .is('profile_id', null)
-        .gte('viewed_at', startIso)
-        .lt('viewed_at', endIso),
+      (client as any)
+        .from('visitor_activity_heartbeat')
+        .select('visitor_id', { count: 'exact', head: true })
+        .gte('last_activity_at', startIso)
+        .lt('last_activity_at', endIso)
+        .is('linked_user_id', null),
     ),
   ]);
   return authenticated + anonymous;
@@ -470,6 +470,86 @@ async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ g
   }
 }
 
+async function fetchRentalLeasesMetrics(dateRange: DateRangeInput): Promise<{
+  gmvCurrent: number;
+  gmvPrevious: number;
+  platformFeeCurrent: number;
+  platformFeePrevious: number;
+  unfurnishedRevenueCurrent: number;
+  unfurnishedRevenuePrevious: number;
+}> {
+  if (!supabase) {
+    return {
+      gmvCurrent: 0,
+      gmvPrevious: 0,
+      platformFeeCurrent: 0,
+      platformFeePrevious: 0,
+      unfurnishedRevenueCurrent: 0,
+      unfurnishedRevenuePrevious: 0,
+    };
+  }
+
+  try {
+    const normalizedEnd = clampRangeEnd(dateRange.startDate, dateRange.endDate);
+    const previousRange = buildPreviousRange({ startDate: dateRange.startDate, endDate: normalizedEnd });
+
+    const periodStart = toISO(dateRange.startDate);
+    const periodEnd = toISO(addOneDay(normalizedEnd));
+    const prevStart = toISO(previousRange.startDate);
+    const prevEnd = toISO(addOneDay(previousRange.endDate));
+
+    // Fetch current period
+    const { data: currentLeases, error: currentError } = await supabase
+      .from('rental_leases')
+      .select('total_rent, platform_fee_total')
+      .gte('created_at', periodStart)
+      .lt('created_at', periodEnd);
+
+    // Fetch previous period
+    const { data: previousLeases, error: previousError } = await supabase
+      .from('rental_leases')
+      .select('total_rent, platform_fee_total')
+      .gte('created_at', prevStart)
+      .lt('created_at', prevEnd);
+
+    if (currentError || previousError) {
+      console.warn('[fetchRentalLeasesMetrics] Error fetching rental leases', currentError || previousError);
+      return {
+        gmvCurrent: 0,
+        gmvPrevious: 0,
+        platformFeeCurrent: 0,
+        platformFeePrevious: 0,
+        unfurnishedRevenueCurrent: 0,
+        unfurnishedRevenuePrevious: 0,
+      };
+    }
+
+    const gmvCurrent = (currentLeases ?? []).reduce((sum, lease: any) => sum + (lease.total_rent || 0), 0);
+    const gmvPrevious = (previousLeases ?? []).reduce((sum, lease: any) => sum + (lease.total_rent || 0), 0);
+    const platformFeeCurrent = (currentLeases ?? []).reduce((sum, lease: any) => sum + (lease.platform_fee_total || 0), 0);
+    const platformFeePrevious = (previousLeases ?? []).reduce((sum, lease: any) => sum + (lease.platform_fee_total || 0), 0);
+
+    return {
+      gmvCurrent,
+      gmvPrevious,
+      platformFeeCurrent,
+      platformFeePrevious,
+      unfurnishedRevenueCurrent: platformFeeCurrent,
+      unfurnishedRevenuePrevious: platformFeePrevious,
+    };
+  } catch (error) {
+    console.error('[fetchRentalLeasesMetrics] Exception', error);
+    return {
+      gmvCurrent: 0,
+      gmvPrevious: 0,
+      platformFeeCurrent: 0,
+      platformFeePrevious: 0,
+      unfurnishedRevenueCurrent: 0,
+      unfurnishedRevenuePrevious: 0,
+    };
+  }
+}
+
 async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
   if (!supabase) {
     return {
@@ -507,6 +587,7 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
     likesPrevious,
     viewsCurrent,
     viewsPrevious,
+    rentalLeasesMetrics,
   ] = await Promise.all([
     countDistinctListingViewProfiles(client, periodStart, periodEnd),
     countDistinctListingViewProfiles(client, prevStart, prevEnd),
@@ -619,6 +700,7 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
         .gte('viewed_at', prevStart)
         .lt('viewed_at', prevEnd),
     ),
+    fetchRentalLeasesMetrics(dateRange),
   ]);
 
   const averageReviewRating = await fetchAverageReviewRating();
@@ -711,37 +793,37 @@ async function fetchKpiData(dateRange: DateRangeInput): Promise<KPIResult> {
       {
         id: 'gmv',
         title: 'GMV (FCFA)',
-        value: paymentsCurrent.gmv.toLocaleString('fr-FR'),
+        value: (paymentsCurrent.gmv + rentalLeasesMetrics.gmvCurrent).toLocaleString('fr-FR'),
         icon: '💰',
         color: 'bg-blue-500',
         route: 'analytics',
-        definition: 'Volume brut (total des réservations)',
-        currentValue: paymentsCurrent.gmv,
-        previousValue: paymentsPrevious.gmv,
+        definition: 'Volume brut (réservations meublées + baux non-meublés)',
+        currentValue: paymentsCurrent.gmv + rentalLeasesMetrics.gmvCurrent,
+        previousValue: paymentsPrevious.gmv + rentalLeasesMetrics.gmvPrevious,
         visible: true,
       },
       {
         id: 'revenue',
         title: 'CA PUOL (FCFA)',
-        value: paymentsCurrent.revenue.toLocaleString('fr-FR'),
+        value: (paymentsCurrent.revenue + rentalLeasesMetrics.platformFeeCurrent).toLocaleString('fr-FR'),
         icon: '💵',
         color: 'bg-[#2ECC71]',
         route: 'payments',
-        definition: 'Revenus plateforme (somme des platform_fee)',
-        currentValue: paymentsCurrent.revenue,
-        previousValue: paymentsPrevious.revenue,
+        definition: 'Revenus plateforme (meublés + non-meublés)',
+        currentValue: paymentsCurrent.revenue + rentalLeasesMetrics.platformFeeCurrent,
+        previousValue: paymentsPrevious.revenue + rentalLeasesMetrics.platformFeePrevious,
         visible: true,
       },
       {
         id: 'unfurnished-revenue',
         title: 'Revenu non meublé (FCFA)',
-        value: UNFURNISHED_REVENUE_MOCK.current.toLocaleString('fr-FR'),
+        value: rentalLeasesMetrics.unfurnishedRevenueCurrent.toLocaleString('fr-FR'),
         icon: '🏢',
         color: 'bg-orange-500',
-        route: 'properties?type=unfurnished',
-        definition: 'Commission estimée sur contrats non meublés (mock)',
-        currentValue: UNFURNISHED_REVENUE_MOCK.current,
-        previousValue: UNFURNISHED_REVENUE_MOCK.previous,
+        route: 'landlords',
+        definition: 'Revenus non-meublés (somme des platform_fee_total de rental_leases)',
+        currentValue: rentalLeasesMetrics.unfurnishedRevenueCurrent,
+        previousValue: rentalLeasesMetrics.unfurnishedRevenuePrevious,
         visible: true,
       },
       {

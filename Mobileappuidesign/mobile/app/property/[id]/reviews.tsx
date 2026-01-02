@@ -387,21 +387,57 @@ const ListingReviewsRoute = () => {
     }
     try {
       setIsSubmittingOwnerReply(true);
+      const replyAt = new Date().toISOString();
       const { error } = await supabase
         .from('reviews')
-        .update({ owner_reply: trimmed, owner_reply_at: new Date().toISOString() })
+        .update({ owner_reply: trimmed, owner_reply_at: replyAt })
         .eq('id', ownerReplyState.review.id);
       if (error) {
         throw error;
       }
+
+      // 🔔 Envoyer une notification à l'auteur de l'avis quand le HOST répond
+      if (ownerReplyState.review.authorId && supabaseProfile?.id) {
+        try {
+          const channelName = `review-reply-notifications-${ownerReplyState.review.authorId}`;
+          const preview = trimmed.length > 80 
+            ? `${trimmed.slice(0, 77)}...` 
+            : trimmed;
+
+          console.log('[ListingReviewsRoute] Broadcasting review reply notification to author:', {
+            authorId: ownerReplyState.review.authorId,
+            channelName,
+            reviewId: ownerReplyState.review.id,
+          });
+
+          await supabase.channel(channelName).send({
+            type: 'broadcast',
+            event: 'new_review_reply',
+            payload: {
+              reviewId: ownerReplyState.review.id,
+              listingId: effectiveListingId,
+              hostName: supabaseProfile?.username || 'L\'hôte',
+              content: preview,
+              authorId: ownerReplyState.review.authorId,
+              createdAt: replyAt,
+            }
+          }).catch((err) => {
+            console.error('[ListingReviewsRoute] Error broadcasting review reply notification:', err);
+          });
+        } catch (notificationError) {
+          console.error('[ListingReviewsRoute] Error sending review reply notification:', notificationError);
+          // Ne pas échouer la réponse si la notification échoue
+        }
+      }
+
       closeOwnerReplyModal();
       await refreshReviews();
     } catch (error) {
       console.error('[ListingReviewsRoute] owner reply error', error);
-      setOwnerReplyError('Impossible d’enregistrer la réponse pour le moment.');
+      setOwnerReplyError("Impossible d'enregistrer la réponse pour le moment.");
       setIsSubmittingOwnerReply(false);
     }
-  }, [effectiveListingId, ownerReplyState.review, ownerReplyDraft, refreshReviews, closeOwnerReplyModal]);
+  }, [effectiveListingId, ownerReplyState.review, ownerReplyDraft, refreshReviews, closeOwnerReplyModal, supabaseProfile?.id, supabaseProfile?.username]);
 
   const reviewsListHeader = useMemo(() => {
     const totalReviews = reviewsCount;
@@ -470,9 +506,16 @@ const ListingReviewsRoute = () => {
             ))}
           </View>
         ) : null}
+
+        {canShowReviewCTA && !userReview && reviewsCount > 0 ? (
+          <TouchableOpacity style={styles.reviewsWriteCtaButton} onPress={openReviewForm} activeOpacity={0.85}>
+            <Feather name="edit-3" size={16} color="#FFFFFF" />
+            <Text style={styles.reviewsWriteCtaText}>Écrire un avis</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
-  }, [averageRatingDisplay, ratingBarData, reviewsCount, showSortMenu, sortOption]);
+  }, [averageRatingDisplay, ratingBarData, reviewsCount, showSortMenu, sortOption, canShowReviewCTA, userReview, openReviewForm]);
 
   const reviewsListFooter = useMemo(
     () => (
@@ -1124,6 +1167,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#2ECC71',
   },
   reviewsEmptyCtaText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  reviewsWriteCtaButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    marginTop: 16,
+    borderRadius: 999,
+    backgroundColor: '#2ECC71',
+  },
+  reviewsWriteCtaText: {
     fontSize: 13,
     fontWeight: '600',
     color: '#FFFFFF',

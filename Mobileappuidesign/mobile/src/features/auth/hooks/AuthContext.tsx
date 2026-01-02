@@ -13,6 +13,7 @@ import { firebaseAuth } from '@/src/firebaseClient';
 import { supabase } from '@/src/supabaseClient';
 import type { Tables } from '@/src/types/supabase.generated';
 import { clearSupabaseSession, syncSupabaseSession } from '../supabaseSession';
+import { getOrCreateVisitorId, resetVisitorIdCache, deleteVisitorId } from '@/src/utils/visitorId';
 
 export type SupabaseProfile = Tables<'profiles'>;
 
@@ -69,12 +70,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (user) {
         // Synchroniser la session Supabase pour que les services backend reconnaissent l'utilisateur
         await syncSupabaseSession(user);
+        
+        // Merge du visitor_id au login
+        try {
+          const visitorId = await getOrCreateVisitorId();
+          console.log('[AuthContext] Merging visitor_id:', visitorId, 'with user_id:', user.uid);
+          
+          const { error } = await supabase
+            .from('visitor_activity_heartbeat')
+            .update({
+              linked_user_id: user.uid,
+              merged_at: new Date().toISOString(),
+              last_activity_at: new Date().toISOString(),
+            })
+            .eq('visitor_id', visitorId);
+          
+          if (error) {
+            console.error('[AuthContext] Error merging visitor_id:', error);
+          } else {
+            console.log('[AuthContext] Visitor merged successfully');
+          }
+        } catch (err) {
+          console.error('[AuthContext] Unexpected error during visitor merge:', err);
+        }
+        
         fetchSupabaseProfile(user.uid).finally(() => {
           setIsBootstrapping(false);
         });
       } else {
         await clearSupabaseSession();
         setSupabaseProfile(null);
+        resetVisitorIdCache();
         setIsBootstrapping(false);
       }
     });
@@ -110,6 +136,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       await clearSupabaseSession();
       setSupabaseProfile(null);
       setFirebaseUser(null);
+      // Supprimer le visitor_id pour que l'utilisateur soit traité comme nouveau visiteur
+      await deleteVisitorId();
     }
   }, []);
 

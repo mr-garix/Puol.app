@@ -321,16 +321,22 @@ export default function HostFinancesScreen() {
   };
 
   const filteredTransactions = useMemo(() => {
-    const range = getDateRange(selectedFilter, currentDate);
+    let dateRange;
+    if (dateFilter === 'custom' && customDateRange.start && customDateRange.end) {
+      dateRange = { start: customDateRange.start, end: customDateRange.end };
+    } else {
+      dateRange = getDateRange(selectedFilter, currentDate);
+    }
+
     return transactions.filter((transaction: Transaction) => {
       const txDate = new Date(transaction.date);
       // Comparer en UTC pour éviter les problèmes de fuseau horaire
       const txDateUTC = new Date(txDate.getUTCFullYear(), txDate.getUTCMonth(), txDate.getUTCDate());
-      const rangeStartUTC = new Date(range.start.getUTCFullYear(), range.start.getUTCMonth(), range.start.getUTCDate());
-      const rangeEndUTC = new Date(range.end.getUTCFullYear(), range.end.getUTCMonth(), range.end.getUTCDate(), 23, 59, 59, 999);
+      const rangeStartUTC = new Date(dateRange.start.getUTCFullYear(), dateRange.start.getUTCMonth(), dateRange.start.getUTCDate());
+      const rangeEndUTC = new Date(dateRange.end.getUTCFullYear(), dateRange.end.getUTCMonth(), dateRange.end.getUTCDate(), 23, 59, 59, 999);
       return txDateUTC >= rangeStartUTC && txDateUTC <= rangeEndUTC;
     });
-  }, [selectedFilter, currentDate, transactions]);
+  }, [selectedFilter, currentDate, transactions, dateFilter, customDateRange]);
 
   const summary = useMemo(() => {
     // Déterminer la plage de dates à utiliser
@@ -339,7 +345,7 @@ export default function HostFinancesScreen() {
       // Utiliser la plage personnalisée
       dateRange = { start: customDateRange.start, end: customDateRange.end };
     } else {
-      // Utiliser le filtre sélectionné (par défaut "Ce mois" qui correspond à 30 derniers jours)
+      // Utiliser le filtre sélectionné (par défaut "Ce mois")
       dateRange = getDateRange(selectedFilter, currentDate);
     }
 
@@ -381,7 +387,7 @@ export default function HostFinancesScreen() {
         label: `Prochain virement ${tomorrowLabel}`,
       },
     };
-  }, [currentDate, transactions, availableForPayout, selectedFilter, dateFilter, customDateRange]);
+  }, [currentDate, transactions, availableForPayout, selectedFilter, dateFilter, customDateRange, filteredTransactions]);
 
   const handleBack = () => router.back();
   const handleSupportPress = () => router.push('/support' as never);
@@ -416,7 +422,7 @@ export default function HostFinancesScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.dateFilterRow}>
-          <Text style={styles.sectionTitle}>Filtrer par date personnalisée</Text>
+          <Text style={styles.sectionTitle}>Filtrer par date</Text>
           <TouchableOpacity
             style={[styles.filterPill, dateFilter !== 'all' && styles.filterPillActive]}
             onPress={openDatePicker}

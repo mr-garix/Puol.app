@@ -1,5 +1,6 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T];
 
@@ -289,7 +290,7 @@ export const createRentalVisit = async (input: ScheduleRentalVisitInput): Promis
   });
 
   if (!slotAvailable) {
-    const error = new Error('Cette plage horaire n’est plus disponible.');
+    const error = new Error('Cette plage horaire n\'est plus disponible.');
     (error as Error & { code?: string }).code = 'slot_unavailable';
     throw error;
   }
@@ -312,6 +313,64 @@ export const createRentalVisit = async (input: ScheduleRentalVisitInput): Promis
 
   if (error || !data) {
     throw error ?? new Error('failed_to_create_rental_visit');
+  }
+
+  // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+  await sendHeartbeat(input.guestProfileId || null);
+
+  // 🔔 Envoyer une notification au HOST via Supabase Realtime
+  try {
+    const mappedVisit = mapToGuestVisit(data);
+    const listingData = data.listing as any;
+    
+    console.log('[createRentalVisit] Listing data:', {
+      listingData,
+      isArray: Array.isArray(listingData),
+      length: Array.isArray(listingData) ? listingData.length : 'N/A',
+    });
+    
+    const listing = (Array.isArray(listingData) && listingData.length > 0) 
+      ? listingData[0] 
+      : (listingData && typeof listingData === 'object' ? listingData : null);
+    
+    console.log('[createRentalVisit] Extracted listing:', {
+      listing,
+      hostId: listing?.host_id,
+    });
+    
+    if (listing && listing.host_id) {
+      const channelName = `host-visit-notifications-${listing.host_id}`;
+      console.log('[createRentalVisit] Broadcasting visit notification to host:', {
+        hostId: listing.host_id,
+        channelName,
+        visitId: mappedVisit.id,
+      });
+      
+      // Envoyer un événement broadcast au HOST via Supabase Realtime
+      const result = await supabase.channel(channelName).send({
+        type: 'broadcast',
+        event: 'new_host_visit',
+        payload: {
+          visitId: mappedVisit.id,
+          guestName: mappedVisit.guest?.name || 'Un visiteur',
+          listingTitle: mappedVisit.listingTitle,
+          visitDate: mappedVisit.visitDate,
+          visitTime: mappedVisit.visitTime,
+          hostProfileId: listing.host_id,
+          createdAt: new Date().toISOString(),
+        }
+      });
+      
+      console.log('[createRentalVisit] Broadcast result:', result);
+    } else {
+      console.warn('[createRentalVisit] No listing or host_id found:', {
+        hasListing: !!listing,
+        hostId: listing?.host_id,
+      });
+    }
+  } catch (notificationError) {
+    console.error('[createRentalVisit] Error sending visit notification:', notificationError);
+    // Ne pas échouer la création de visite si la notification échoue
   }
 
   return mapToGuestVisit(data);

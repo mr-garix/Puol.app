@@ -1,5 +1,6 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T];
 export type BookingRow = Tables<'bookings'>['Row'] & {
@@ -769,6 +770,9 @@ export const createBooking = async (input: CreateBookingInput) => {
   console.log('[createBooking] Mapping vers GuestBooking...');
   const mapped = mapToGuestBooking(data as any);
   console.log('[createBooking] Booking créé et mappé avec succès:', mapped);
+
+  // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+  await sendHeartbeat(input.guestProfileId || null);
   
   return mapped;
 };

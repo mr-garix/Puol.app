@@ -2259,7 +2259,23 @@ export default function HostListingEditScreen() {
               </View>
             )}
           </View>
-          <LabeledInput label="Tarif" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
+          <View style={{ marginBottom: 16 }}>
+            <LabeledInput label="Tarif" value={price} onChangeText={setPrice} keyboardType="numeric" error={fieldErrors.price} />
+            {price && !fieldErrors.price && (
+              <View style={styles.commissionInfo}>
+                <Text style={styles.commissionLabel}>Prix affiché :</Text>
+                <Text style={styles.commissionValue}>
+                  {(() => {
+                    const numPrice = Number(price.replace(/[^0-9.,]/g, '').replace(',', '.'));
+                    if (!Number.isFinite(numPrice) || numPrice <= 0) return '—';
+                    const displayPrice = numPrice * 1.1;
+                    return `${displayPrice.toLocaleString('fr-FR')} FCFA`;
+                  })()}
+                </Text>
+                <Text style={styles.commissionNote}>({price.replace(/[^0-9.,]/g, '').replace(',', '.')} + 10% de commission)</Text>
+              </View>
+            )}
+          </View>
           <View style={{ marginBottom: 16 }}>
             <Label text="Quartier, ville" />
             <View style={[styles.addressInputWrapper, styles.addressInputWrapperTop]}>
@@ -3999,5 +4015,34 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope',
     fontSize: 12,
     color: COLORS.muted,
+  },
+  commissionInfo: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(46,204,113,0.1)',
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.accent,
+  },
+  commissionLabel: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.muted,
+    marginBottom: 4,
+  },
+  commissionValue: {
+    fontFamily: 'Manrope',
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.accent,
+    marginBottom: 4,
+  },
+  commissionNote: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    color: COLORS.muted,
+    fontStyle: 'italic',
   },
 });

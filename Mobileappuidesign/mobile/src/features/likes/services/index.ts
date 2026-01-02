@@ -1,6 +1,7 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
 import type { HostLikeActivity, HostLikeSummary } from '../types';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 
@@ -97,6 +98,8 @@ export async function toggleListingLike(listingId: string, profileId: string): P
     }
 
     console.log('[likes] liked', { listingId, profileId });
+    // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+    await sendHeartbeat(profileId || null);
     return true;
   }
 }

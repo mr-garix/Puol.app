@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/src/contexts/AuthContext';
 import {
@@ -23,6 +23,8 @@ export const useLandlordVisits = (): UseLandlordVisitsResult => {
   const [visits, setVisits] = useState<LandlordRentalVisit[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPolledRef = useRef<number>(0);
 
   const refresh = useCallback(async () => {
     if (!isLoggedIn || !supabaseProfile || !isLandlord) {
@@ -48,6 +50,57 @@ export const useLandlordVisits = (): UseLandlordVisitsResult => {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 🔄 Polling intelligent : recharger les visites toutes les 15 secondes
+  useEffect(() => {
+    if (!isLoggedIn || !supabaseProfile || !isLandlord) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      return;
+    }
+
+    console.log('[useLandlordVisits] Starting polling for new visits');
+
+    const pollForNewVisits = async () => {
+      const now = Date.now();
+      if (now - lastPolledRef.current < 15000) {
+        return; // Ne pas poller plus souvent que toutes les 15 secondes
+      }
+
+      lastPolledRef.current = now;
+
+      try {
+        const freshVisits = await fetchLandlordRentalVisits(supabaseProfile.id);
+
+        // Comparer avec les anciennes visites pour détecter les nouvelles
+        const oldVisitIds = new Set(visits.map(v => v.id));
+        const newVisits = freshVisits.filter(v => !oldVisitIds.has(v.id));
+
+        if (newVisits.length > 0) {
+          console.log('[useLandlordVisits] Detected new visits via polling:', newVisits.map(v => v.id));
+        }
+
+        // Mettre à jour l'état avec les visites fraîches
+        setVisits(freshVisits);
+      } catch (err) {
+        console.error('[useLandlordVisits] Polling error:', err);
+      }
+    };
+
+    pollingIntervalRef.current = setInterval(pollForNewVisits, 15000);
+
+    // Faire un premier poll immédiatement
+    pollForNewVisits();
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [isLoggedIn, supabaseProfile, isLandlord, visits]);
 
   const getVisitById = useCallback(
     (id: string) => visits.find((visit) => visit.id === id),

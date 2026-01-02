@@ -1,9 +1,11 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { LandlordProfileDetail } from '../../UsersManagement';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { createRentalLease, updateListingStatus, fetchTenantProfiles, type TenantProfile } from '@/lib/services/landlords';
+import { supabase } from '@/lib/supabaseClient';
 import {
   Table,
   TableBody,
@@ -69,13 +71,6 @@ const timelineColors: Record<
   payment: { bg: 'bg-purple-50', dot: 'bg-purple-500' }
 };
 
-type MockTenantProfile = {
-  id: string;
-  name: string;
-  phone: string;
-  preferredListingId?: string;
-};
-
 type AssignmentPreview = {
   tenantName: string;
   tenantPhone: string;
@@ -83,72 +78,150 @@ type AssignmentPreview = {
   listingCity: string;
   startDate: string;
   endDate?: string;
+  rentMonthly: number;
+  platformFee: number;
+  monthsCount: number;
+  totalRent: number;
 };
 
-const mockTenantProfiles: MockTenantProfile[] = [
-  {
-    id: 'CL-9042',
-    name: 'Amina Kouadio',
-    phone: '+225 07 58 45 12 03',
-    preferredListingId: 'LIST-204',
-  },
-  {
-    id: 'CL-7781',
-    name: 'Jean-Marc Dago',
-    phone: '+225 05 49 11 66 42',
-  },
-  {
-    id: 'CL-6610',
-    name: 'Clarisse Yadé',
-    phone: '+225 01 23 88 90 70',
-    preferredListingId: 'LIST-209',
-  },
-  {
-    id: 'CL-5534',
-    name: 'Fabrice Gnahoré',
-    phone: '+225 07 68 14 52 77',
-  },
-  {
-    id: 'CL-4108',
-    name: 'Prisca Kouamé',
-    phone: '+225 05 20 11 44 01',
-  },
-];
+type RentalLease = {
+  id: string;
+  listing_id: string;
+  tenant_profile_id: string;
+  owner_profile_id: string;
+  start_date: string;
+  end_date: string | null;
+  rent_monthly: number;
+  total_rent: number;
+  status: 'active' | 'terminated' | 'pending';
+  tenant_name?: string;
+  listing_title?: string;
+};
+
+type TenantProfileData = {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  phone: string | null;
+};
+
+type ListingData = {
+  id: string;
+  title: string;
+};
 
 export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewProps) {
   const [tenantSearch, setTenantSearch] = useState('');
-  const [selectedTenant, setSelectedTenant] = useState<MockTenantProfile | null>(null);
+  const [selectedTenant, setSelectedTenant] = useState<TenantProfile | null>(null);
   const [selectedListingId, setSelectedListingId] = useState('');
   const [leaseStartDate, setLeaseStartDate] = useState('');
   const [leaseEndDate, setLeaseEndDate] = useState('');
+  const [rentMonthly, setRentMonthly] = useState('');
+  const [platformFee, setPlatformFee] = useState('');
   const [assignmentPreview, setAssignmentPreview] = useState<AssignmentPreview | null>(null);
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  const [tenantSuggestions, setTenantSuggestions] = useState<TenantProfile[]>([]);
+  const [rentalLeases, setRentalLeases] = useState<RentalLease[]>([]);
+  const [leaseStats, setLeaseStats] = useState({ totalLeases: 0, totalTenants: 0, totalRevenue: 0 });
+  const [tenantProfiles, setTenantProfiles] = useState<Map<string, TenantProfileData>>(new Map());
+  const [listingInfos, setListingInfos] = useState<Map<string, ListingData>>(new Map());
 
-  const tenantSuggestions = useMemo(() => {
-    const normalized = tenantSearch.trim().toLowerCase();
-    if (!normalized) {
-      return [];
-    }
-    return mockTenantProfiles
-      .filter((tenant) =>
-        `${tenant.name} ${tenant.phone}`.toLowerCase().includes(normalized),
-      )
-      .slice(0, 6);
+  useEffect(() => {
+    const loadRentalLeases = async () => {
+      if (!supabase) return;
+      
+      try {
+        const { data: leases, error } = await supabase
+          .from('rental_leases')
+          .select('id, listing_id, tenant_profile_id, owner_profile_id, start_date, end_date, rent_monthly, total_rent, status')
+          .eq('owner_profile_id', landlord.id);
+
+        if (error) {
+          console.warn('[LandlordProfileView] Error fetching leases:', error);
+          return;
+        }
+
+        if (leases) {
+          setRentalLeases(leases as RentalLease[]);
+          
+          // Récupérer les profils des locataires
+          const tenantIds = [...new Set(leases.map(l => l.tenant_profile_id))];
+          if (tenantIds.length > 0) {
+            const { data: tenants, error: tenantError } = await supabase
+              .from('profiles')
+              .select('id, first_name, last_name, phone')
+              .in('id', tenantIds);
+
+            if (!tenantError && tenants) {
+              const tenantsMap = new Map(tenants.map(t => [t.id, t as TenantProfileData]));
+              setTenantProfiles(tenantsMap);
+            }
+          }
+
+          // Récupérer les informations des annonces
+          const listingIds = [...new Set(leases.map(l => l.listing_id))];
+          if (listingIds.length > 0) {
+            const { data: listings, error: listingError } = await supabase
+              .from('listings')
+              .select('id, title')
+              .in('id', listingIds);
+
+            if (!listingError && listings) {
+              const listingsMap = new Map(listings.map(l => [l.id, l as ListingData]));
+              setListingInfos(listingsMap);
+            }
+          }
+          
+          // Calculer les statistiques
+          const uniqueTenants = new Set(leases.map(l => l.tenant_profile_id)).size;
+          const totalRevenue = leases.reduce((sum, l) => sum + (l.total_rent || 0), 0);
+          
+          setLeaseStats({
+            totalLeases: leases.length,
+            totalTenants: uniqueTenants,
+            totalRevenue,
+          });
+        }
+      } catch (error) {
+        console.error('[LandlordProfileView] Error loading rental leases:', error);
+      }
+    };
+
+    loadRentalLeases();
+  }, [landlord.id]);
+
+  useEffect(() => {
+    const loadTenants = async () => {
+      if (tenantSearch.trim().length === 0) {
+        setTenantSuggestions([]);
+        return;
+      }
+      const profiles = await fetchTenantProfiles(tenantSearch);
+      setTenantSuggestions(profiles);
+    };
+
+    const debounceTimer = setTimeout(loadTenants, 300);
+    return () => clearTimeout(debounceTimer);
   }, [tenantSearch]);
 
   const selectedListing = landlord.listings.find((listing) => listing.id === selectedListingId);
   const hasTenantSearch = tenantSearch.trim().length > 0;
 
-  const handleSelectTenant = (tenant: MockTenantProfile) => {
-    setSelectedTenant(tenant);
-    setTenantSearch(tenant.name);
-    if (tenant.preferredListingId && landlord.listings.some((listing) => listing.id === tenant.preferredListingId)) {
-      setSelectedListingId(tenant.preferredListingId);
-    }
+  const calculateMonthsCount = (startDate: string, endDate: string): number => {
+    if (!startDate || !endDate) return 0;
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+    return Math.max(0, months);
   };
 
-  const handleAssignTenant = () => {
-    if (!selectedTenant || !selectedListingId || !leaseStartDate) {
+  const handleSelectTenant = (tenant: TenantProfile) => {
+    setSelectedTenant(tenant);
+    setTenantSearch(`${tenant.firstName} ${tenant.lastName}`);
+  };
+
+  const handleAssignTenant = async () => {
+    if (!selectedTenant || !selectedListingId || !leaseStartDate || !rentMonthly || !platformFee) {
       return;
     }
 
@@ -158,14 +231,63 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
       return;
     }
 
+    const monthsCount = leaseEndDate ? calculateMonthsCount(leaseStartDate, leaseEndDate) : 0;
+    const rentMonthlyNum = parseFloat(rentMonthly) || 0;
+    const totalRent = rentMonthlyNum * monthsCount;
+
     setAssignmentPreview({
-      tenantName: selectedTenant.name,
+      tenantName: `${selectedTenant.firstName} ${selectedTenant.lastName}`,
       tenantPhone: selectedTenant.phone,
       listingTitle: listing.title,
       listingCity: listing.city,
       startDate: leaseStartDate,
       endDate: leaseEndDate || undefined,
+      rentMonthly: rentMonthlyNum,
+      platformFee: parseFloat(platformFee) || 0,
+      monthsCount,
+      totalRent,
     });
+
+    // Save to rental_leases and update listing status
+    try {
+      const result = await createRentalLease({
+        listing_id: selectedListingId,
+        tenant_profile_id: selectedTenant.id,
+        owner_profile_id: landlord.id,
+        start_date: leaseStartDate,
+        end_date: leaseEndDate || undefined,
+        rent_monthly: rentMonthlyNum,
+        platform_fee_total: parseFloat(platformFee) || 0,
+        months_count: monthsCount,
+        total_rent: totalRent,
+        currency: 'XAF',
+        status: 'active',
+      });
+
+      if (result.success) {
+        // Update listing status to draft
+        const statusResult = await updateListingStatus(selectedListingId, 'draft');
+        if (statusResult.success) {
+          console.log('Bail assigné et annonce mise en brouillon');
+        } else {
+          console.error('Erreur lors de la mise à jour du statut:', statusResult.error);
+        }
+        
+        // Reset form after successful assignment
+        setSelectedTenant(null);
+        setTenantSearch('');
+        setSelectedListingId('');
+        setLeaseStartDate('');
+        setLeaseEndDate('');
+        setRentMonthly('');
+        setPlatformFee('');
+        setAssignmentPreview(null);
+      } else {
+        console.error('Erreur lors de l\'assignation du bail:', result.error);
+      }
+    } catch (error) {
+      console.error('Erreur lors de l\'assignation:', error);
+    }
   };
 
   return (
@@ -211,12 +333,12 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-8">
-          <ProfileStat label="Baux signés" value={landlord.leasesSigned.toString()} />
+          <ProfileStat label="Baux signés" value={leaseStats.totalLeases.toString()} />
           <ProfileStat label="Biens gérés" value={landlord.unitsManaged.toString()} />
-          <ProfileStat label="Locataires actifs" value={landlord.tenantsTotal.toString()} />
+          <ProfileStat label="Locataires actifs" value={leaseStats.totalTenants.toString()} />
           <ProfileStat
             label="Revenus générés"
-            value={`${landlord.revenueShare.toLocaleString('fr-FR')} FCFA`}
+            value={`${leaseStats.totalRevenue.toLocaleString('fr-FR')} FCFA`}
           />
         </div>
       </div>
@@ -279,27 +401,48 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
                     <TableHead>Début</TableHead>
                     <TableHead>Durée</TableHead>
                     <TableHead>Valeur</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>Statut</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {landlord.leases.map((lease) => {
-                    const status = leaseStatusStyles[lease.status];
-                    return (
-                      <TableRow key={lease.id}>
-                        <TableCell className="font-medium text-gray-900">{lease.unit}</TableCell>
-                        <TableCell>{lease.tenant}</TableCell>
-                        <TableCell>{lease.startDate}</TableCell>
-                        <TableCell>{lease.duration}</TableCell>
-                        <TableCell>{lease.value}</TableCell>
-                        <TableCell>
-                          <Badge className={cn('text-xs rounded-full px-3 py-1', status.className)}>
-                            {status.label}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
+                  {rentalLeases.length > 0 ? (
+                    rentalLeases.map((lease) => {
+                      const startDate = new Date(lease.start_date);
+                      const endDate = lease.end_date ? new Date(lease.end_date) : null;
+                      const durationMonths = endDate
+                        ? Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24 * 30))
+                        : 0;
+                      const statusKey = lease.status === 'active' ? 'actif' : lease.status === 'terminated' ? 'terminé' : 'en préparation';
+                      const status = leaseStatusStyles[statusKey as keyof typeof leaseStatusStyles];
+                      
+                      const listingInfo = listingInfos.get(lease.listing_id);
+                      const tenantInfo = tenantProfiles.get(lease.tenant_profile_id);
+                      const tenantName = tenantInfo 
+                        ? `${tenantInfo.first_name || ''} ${tenantInfo.last_name || ''}`.trim() 
+                        : 'Locataire inconnu';
+                      
+                      return (
+                        <TableRow key={lease.id}>
+                          <TableCell className="font-medium text-gray-900">{listingInfo?.title || lease.listing_id.slice(0, 8)}</TableCell>
+                          <TableCell>{tenantName}</TableCell>
+                          <TableCell>{startDate.toLocaleDateString('fr-FR')}</TableCell>
+                          <TableCell>{durationMonths} mois</TableCell>
+                          <TableCell>{lease.total_rent.toLocaleString('fr-FR')} FCFA</TableCell>
+                          <TableCell>
+                            <Badge className={cn('text-xs rounded-full px-3 py-1', status.className)}>
+                              {status.label}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-gray-500 py-4">
+                        Aucun bail trouvé
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -441,7 +584,7 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
               )}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
               <div className="space-y-2 xl:col-span-2">
                 <Label className="text-sm text-gray-600" htmlFor="tenant-search">
                   Rechercher un profil locataire
@@ -478,7 +621,7 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
                           >
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <p className="font-medium text-gray-900">{tenant.name}</p>
+                                <p className="font-medium text-gray-900">{tenant.firstName} {tenant.lastName}</p>
                                 <p className="text-xs text-gray-500">{tenant.phone}</p>
                               </div>
                               {isSelected && (
@@ -544,25 +687,49 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
                   className="rounded-xl"
                 />
               </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm text-gray-600" htmlFor="rent-monthly">Loyer mensuel (FCFA)</Label>
+                <Input
+                  id="rent-monthly"
+                  type="number"
+                  value={rentMonthly}
+                  onChange={(event) => setRentMonthly(event.target.value)}
+                  placeholder="Ex: 500000"
+                  className="rounded-xl"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm text-gray-600" htmlFor="platform-fee">Commission PUOL (FCFA)</Label>
+                <Input
+                  id="platform-fee"
+                  type="number"
+                  value={platformFee}
+                  onChange={(event) => setPlatformFee(event.target.value)}
+                  placeholder="Ex: 50000"
+                  className="rounded-xl"
+                />
+              </div>
             </div>
 
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-gray-500">
-                Choisissez le locataire, l’annonce concernée et la période pour préparer la signature du bail.
+                Choisissez le locataire, l'annonce concernée, la période et les montants pour préparer la signature du bail.
               </p>
               <Button
                 className="rounded-xl bg-[#2ECC71] hover:bg-[#27AE60]"
                 onClick={handleAssignTenant}
-                disabled={!selectedTenant || !selectedListingId || !leaseStartDate}
+                disabled={!selectedTenant || !selectedListingId || !leaseStartDate || !rentMonthly || !platformFee}
               >
-                Valider l’assignation
+                Valider l'assignation
               </Button>
             </div>
 
             {assignmentPreview && (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 space-y-2 text-sm text-emerald-800">
-                <p className="font-semibold text-emerald-900">Résumé de l’assignation</p>
-                <ul className="space-y-1">
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 space-y-3 text-sm text-emerald-800">
+                <p className="font-semibold text-emerald-900">Résumé de l'assignation</p>
+                <ul className="space-y-2">
                   <li>
                     <span className="font-medium">Locataire :</span> {assignmentPreview.tenantName} ({assignmentPreview.tenantPhone})
                   </li>
@@ -572,6 +739,18 @@ export function LandlordProfileView({ landlord, onBack }: LandlordProfileViewPro
                   <li>
                     <span className="font-medium">Période :</span> {assignmentPreview.startDate}
                     {assignmentPreview.endDate ? ` → ${assignmentPreview.endDate}` : ' (en cours)'}
+                  </li>
+                  <li>
+                    <span className="font-medium">Durée :</span> {assignmentPreview.monthsCount} mois
+                  </li>
+                  <li>
+                    <span className="font-medium">Loyer mensuel :</span> {assignmentPreview.rentMonthly.toLocaleString('fr-FR')} FCFA
+                  </li>
+                  <li>
+                    <span className="font-medium">Loyer total :</span> {assignmentPreview.totalRent.toLocaleString('fr-FR')} FCFA
+                  </li>
+                  <li>
+                    <span className="font-medium">Commission PUOL :</span> {assignmentPreview.platformFee.toLocaleString('fr-FR')} FCFA
                   </li>
                 </ul>
               </div>

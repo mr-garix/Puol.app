@@ -9,6 +9,7 @@ import type { SupabaseProfile } from '@/src/contexts/AuthContext';
 import { firebaseAuth } from '@/src/firebaseClient';
 import { supabase } from '@/src/supabaseClient';
 import { syncSupabaseSession } from './supabaseSession';
+import { getOrCreateVisitorId, deleteVisitorId } from '@/src/utils/visitorId';
 
 const DEFAULT_COUNTRY_CODE = '+237';
 
@@ -142,6 +143,30 @@ export const createSupabaseProfile = async ({
 
   if (error) {
     throw error;
+  }
+
+  // 🔄 Merger le visitor_id au user_id après création du profil
+  try {
+    const visitorId = await getOrCreateVisitorId();
+    if (visitorId) {
+      console.log('[createSupabaseProfile] Merging visitor to user:', { visitorId, userId: user.uid });
+      
+      // Mettre à jour la table visitor_activity_heartbeat pour lier le visiteur au nouvel utilisateur
+      await supabase
+        .from('visitor_activity_heartbeat')
+        .update({
+          linked_user_id: user.uid,
+          merged_at: timestamp,
+        })
+        .eq('visitor_id', visitorId);
+      
+      // Supprimer le visitor_id du stockage local pour ne plus l'utiliser
+      await deleteVisitorId();
+      console.log('[createSupabaseProfile] Visitor merged successfully');
+    }
+  } catch (mergeErr) {
+    console.error('[createSupabaseProfile] Error merging visitor to user:', mergeErr);
+    // Ne pas échouer la création de profil si le merge échoue
   }
 
   return data as SupabaseProfile;

@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useHostBookings } from '@/src/features/host/hooks';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { fetchHostListingIds } from '@/src/features/bookings/services';
+
+const NOTIFIED_BOOKINGS_STORAGE_KEY = 'notified_bookings_cache';
 
 const HostBookingNotificationBridge = () => {
   console.log('[HostBookingNotificationBridge] COMPONENT MOUNTED - This should always appear!');
@@ -22,12 +25,34 @@ const HostBookingNotificationBridge = () => {
   const knownBookingsRef = useRef<Set<string>>(new Set());
   const hostListingIdsRef = useRef<Set<string>>(new Set());
   const hasLoadedHostListingsRef = useRef(false);
+  const notifiedBookingsRef = useRef<Set<string>>(new Set());
+  const [notifiedBookingsLoaded, setNotifiedBookingsLoaded] = useState(false);
 
   console.log('[HostBookingNotificationBridge] Bridge initialized:', {
     isLoggedIn,
     supabaseProfile: supabaseProfile ? { id: supabaseProfile.id, username: supabaseProfile.username } : null,
     bookingsCount: bookings.length
   });
+
+  // 💾 Charger le cache des notifications affichées depuis AsyncStorage
+  useEffect(() => {
+    const loadNotifiedBookings = async () => {
+      try {
+        const cached = await AsyncStorage.getItem(NOTIFIED_BOOKINGS_STORAGE_KEY);
+        if (cached) {
+          const notifiedIds = JSON.parse(cached) as string[];
+          notifiedBookingsRef.current = new Set(notifiedIds);
+          console.log('[HostBookingNotificationBridge] Loaded notified bookings from cache:', notifiedIds.length);
+        }
+      } catch (error) {
+        console.error('[HostBookingNotificationBridge] Error loading notified bookings cache:', error);
+      } finally {
+        setNotifiedBookingsLoaded(true);
+      }
+    };
+
+    loadNotifiedBookings();
+  }, []);
 
   // Initialisation : synchroniser les statuts existants
   useEffect(() => {
@@ -153,7 +178,15 @@ const HostBookingNotificationBridge = () => {
         return start ?? end ?? null;
       };
 
+      // 🎉 Afficher notification si c'est une nouvelle réservation (confirmée ou en attente)
       if (!isKnownBooking && booking.status !== 'cancelled') {
+        // Vérifier si on a déjà notifié cette réservation pour éviter les doublons
+        const notificationKey = `booking-created-${booking.id}`;
+        if (notifiedBookingsRef.current.has(notificationKey)) {
+          console.log('[HostBookingNotificationBridge] Already notified for booking:', booking.id);
+          return;
+        }
+        
         const guestName = booking.guest?.name || 'Un voyageur';
         const listingTitle = booking.listingTitle || 'votre logement';
         const stayRange = formatStayRange();
@@ -173,7 +206,14 @@ const HostBookingNotificationBridge = () => {
 
         try {
           showNotification(notificationPayload);
-          console.log('[HostBookingNotificationBridge] New booking notification displayed');
+          notifiedBookingsRef.current.add(notificationKey); // 🆕 Marquer comme notifié
+          
+          // 💾 Sauvegarder le cache dans AsyncStorage pour persister après actualisation
+          const notifiedArray = Array.from(notifiedBookingsRef.current);
+          AsyncStorage.setItem(NOTIFIED_BOOKINGS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+            console.error('[HostBookingNotificationBridge] Error saving notified bookings cache:', err);
+          });
+          console.log('[HostBookingNotificationBridge] New booking notification displayed and cached');
         } catch (error) {
           console.error('[HostBookingNotificationBridge] Error showing new booking notification:', error);
         }

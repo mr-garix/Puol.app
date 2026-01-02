@@ -1,6 +1,7 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
 import type { CommentWithAuthor, HostCommentThread } from '../types';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 
@@ -537,6 +538,11 @@ export const createListingComment = async (
         enterprise_logo_url,
         avatar_url,
         is_certified
+      ),
+      listing:listings(
+        id,
+        title,
+        host_id
       )
     `)
     .single();
@@ -548,10 +554,61 @@ export const createListingComment = async (
 
   const authorRecord = Array.isArray(data.author) ? data.author[0] : data.author;
 
-  return mapCommentRowToCommentWithAuthor({
+  // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+  await sendHeartbeat(profileId || null);
+
+  const mappedComment = mapCommentRowToCommentWithAuthor({
     ...data,
     author: authorRecord ?? {},
   });
+
+  // 🔔 Envoyer une notification au HOST/LANDLORD si c'est un commentaire principal (pas une réponse)
+  if (!parentCommentId) {
+    try {
+      const listingData = data.listing as any;
+      const listing = (Array.isArray(listingData) && listingData.length > 0) 
+        ? listingData[0] 
+        : (listingData && typeof listingData === 'object' ? listingData : null);
+      
+      if (listing && listing.host_id && listing.host_id !== profileId) {
+        const channelName = `comment-notifications-${listing.host_id}`;
+        const authorName = authorRecord?.first_name && authorRecord?.last_name
+          ? `${authorRecord.first_name} ${authorRecord.last_name}`
+          : authorRecord?.username || 'Un utilisateur';
+        
+        const preview = content.length > 80 ? `${content.slice(0, 77)}...` : content;
+        
+        console.log('[createListingComment] Broadcasting comment notification to host:', {
+          hostId: listing.host_id,
+          channelName,
+          commentId: mappedComment.id,
+          authorName,
+        });
+        
+        await supabase.channel(channelName).send({
+          type: 'broadcast',
+          event: 'new_comment',
+          payload: {
+            commentId: mappedComment.id,
+            authorName,
+            authorId: profileId,
+            listingTitle: listing.title,
+            listingId: listing.id,
+            content: preview,
+            hostProfileId: listing.host_id,
+            createdAt: new Date().toISOString(),
+          }
+        }).catch((err) => {
+          console.error('[createListingComment] Error broadcasting comment notification:', err);
+        });
+      }
+    } catch (notificationError) {
+      console.error('[createListingComment] Error sending comment notification:', notificationError);
+      // Ne pas échouer la création de commentaire si la notification échoue
+    }
+  }
+
+  return mappedComment;
 };
 
 export const getCommentById = async (commentId: string): Promise<CommentWithAuthor | null> => {

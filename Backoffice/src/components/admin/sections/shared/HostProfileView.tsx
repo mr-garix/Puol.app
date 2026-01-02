@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type {
   HostProfileDetail,
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { supabase } from '@/lib/supabaseClient';
 import { HostPayoutSection } from './HostPayoutSection';
 import {
   Table,
@@ -49,6 +50,69 @@ const timelineColors: Record<
 
 export function HostProfileView({ host, onBack }: HostProfileViewProps) {
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  const [hostStats, setHostStats] = useState({ bookingsCount: 0, revenueBrut: 0 });
+
+  useEffect(() => {
+    const loadHostStats = async () => {
+      if (!supabase) return;
+
+      try {
+        // Récupérer les listings du host
+        const { data: listings, error: listingsError } = await supabase
+          .from('listings')
+          .select('id')
+          .eq('host_id', host.id);
+
+        if (listingsError) {
+          console.warn('[HostProfileView] Error fetching listings:', listingsError);
+          return;
+        }
+
+        const listingIds = (listings ?? []).map(l => l.id);
+
+        // Récupérer les bookings pour ces listings
+        const { data: bookings, error: bookingsError } = listingIds.length > 0
+          ? await supabase
+              .from('bookings')
+              .select('id')
+              .in('listing_id', listingIds)
+          : { data: [], error: null };
+
+        if (bookingsError) {
+          console.warn('[HostProfileView] Error fetching bookings:', bookingsError);
+          return;
+        }
+
+        const bookingIds = (bookings ?? []).map(b => b.id);
+
+        // Récupérer les revenus depuis payments
+        // Les revenus du host sont dans la table payments avec related_id = listing_id ou booking_id
+        const { data: paymentsData, error: paymentsError } = 
+          listingIds.length > 0 || bookingIds.length > 0
+            ? await supabase
+                .from('payments')
+                .select('amount')
+                .in('related_id', [...listingIds, ...bookingIds])
+            : { data: [], error: null };
+
+        if (paymentsError) {
+          console.warn('[HostProfileView] Error fetching payments:', paymentsError);
+          return;
+        }
+
+        const totalRevenue = (paymentsData ?? []).reduce((sum, p) => sum + (p.amount || 0), 0);
+
+        setHostStats({
+          bookingsCount: bookingIds.length,
+          revenueBrut: totalRevenue,
+        });
+      } catch (error) {
+        console.error('[HostProfileView] Error loading host stats:', error);
+      }
+    };
+
+    loadHostStats();
+  }, [host.id]);
 
   return (
     <div className="space-y-6">
@@ -92,10 +156,10 @@ export function HostProfileView({ host, onBack }: HostProfileViewProps) {
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
-          <HeroStat label="Voyageurs accompagnés" value={host.stats.guests.toString()} />
+          <HeroStat label="Voyageurs accompagnés" value={hostStats.bookingsCount.toString()} />
           <HeroStat label="Nuits opérées" value={host.stats.nights.toString()} />
           <HeroStat label="Note moyenne" value={`${host.stats.rating.toFixed(2)} · ${host.reviewsCount} avis`} />
-          <HeroStat label="Revenus bruts" value={host.stats.payout} />
+          <HeroStat label="Revenus bruts" value={`${hostStats.revenueBrut.toLocaleString('fr-FR')} FCFA`} />
         </div>
       </div>
 

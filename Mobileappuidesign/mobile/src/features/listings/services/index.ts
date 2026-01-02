@@ -303,13 +303,16 @@ export const createListingWithRelations = async (payload: CreateListingPayload):
   const role = await getUserRole();
   const isFurnished = role === 'host';
 
+  // Calculer le prix affiché (prix host + 10% de commission)
+  const displayPrice = Math.round(payload.pricePerNight * 1.1);
+
   const { data: listingData, error: listingError } = await supabase
     .from('listings')
     .insert({
       host_id: payload.hostId,
       title: payload.title,
       property_type: payload.propertyType,
-      price_per_night: payload.pricePerNight,
+      price_per_night: displayPrice,
       city: payload.city,
       district: payload.district,
       address_text: payload.addressText,
@@ -419,12 +422,15 @@ export const updateListingWithRelations = async (payload: UpdateListingPayload):
 
   const coverUrl = await ensureCoverUrl(listingId, payload.coverPhotoUri, payload.coverFileName);
 
+  // Calculer le prix affiché (prix host + 10% de commission)
+  const displayPrice = Math.round(payload.pricePerNight * 1.1);
+
   const { error: listingError } = await supabase
     .from('listings')
     .update({
       title: payload.title,
       property_type: payload.propertyType,
-      price_per_night: payload.pricePerNight,
+      price_per_night: displayPrice,
       city: payload.city,
       district: payload.district,
       address_text: payload.addressText,

@@ -1,76 +1,293 @@
-import { Activity, Users, Smartphone, TrendingUp, Clock, ChevronRight, RefreshCw, Download, Monitor, MapPin, Globe, DollarSign, Banknote } from 'lucide-react';
+import { Activity, Smartphone, RefreshCw, Download, MapPin, Globe, Banknote } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { REVENUE_COLORS, formatCurrency } from '../../../lib/revenueMetrics';
-import { UNIFIED_REALTIME_24H, UNIFIED_CITIES } from '../../../lib/mockDataUnified';
-
-type TimePeriod = 'now' | '5min' | '15min' | 'custom';
+import { supabase } from '../../../lib/supabaseClient';
 
 export function RealtimeSection() {
-  const [period, setPeriod] = useState<TimePeriod>('now');
   const [activeUsers, setActiveUsers] = useState(0);
-  const [devices, setDevices] = useState({ mobile: 0, desktop: 0 });
-  const [chartData, setChartData] = useState<{ time: string; users: number }[]>([]);
-  const [events, setEvents] = useState<{ type: string; user: string; action: string; time: string }[]>([]);
+  const [activeVisitors, setActiveVisitors] = useState(0);
+  const [totalActive, setTotalActive] = useState(0);
+  const [devices, setDevices] = useState({ android: 0, ios: 0 });
+  const [chartData, setChartData] = useState<{ time: string; users: number; visitors: number; total: number }[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [gmvToday, setGmvToday] = useState(0);
+  const [caToday, setCaToday] = useState(0);
 
   // Initialize chart with last 5 minutes
   useEffect(() => {
     const now = new Date();
-    const initialData: { time: string; users: number }[] = [];
+    const initialData: { time: string; users: number; visitors: number; total: number }[] = [];
     for (let i = 4; i >= 0; i--) {
       const time = new Date(now.getTime() - i * 60000);
+      const users = Math.floor(Math.random() * 20) + 5;
+      const visitors = Math.floor(Math.random() * 30) + 10;
       initialData.push({
         time: time.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-        users: Math.floor(Math.random() * 30) + 10,
+        users,
+        visitors,
+        total: users + visitors,
       });
     }
     setChartData(initialData);
   }, []);
 
-  // Mock realtime updates
+  // Fetch and subscribe to realtime data from Supabase
   useEffect(() => {
-    const updateRealtimeData = () => {
-      // Update active users
-      const newActiveUsers = Math.floor(Math.random() * 50) + 20;
-      setActiveUsers(newActiveUsers);
+    if (!supabase) {
+      console.warn('[RealtimeSection] Supabase client not configured');
+      return;
+    }
 
-      // Update chart data
-      setChartData(prev => {
-        const now = new Date();
-        const newPoint = {
-          time: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-          users: newActiveUsers,
-        };
-        return [...prev.slice(-4), newPoint];
-      });
+    // Fonction pour récupérer GMV et CA d'aujourd'hui (minuit à minuit)
+    const fetchTodayRevenue = async () => {
+      try {
+        const today = new Date();
+        // Minuit d'aujourd'hui (UTC)
+        const startOfDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0)).toISOString();
+        // Minuit de demain (UTC)
+        const endOfDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1, 0, 0, 0)).toISOString();
 
-      // Update devices - Filtrer uniquement mobile (Android, iOS)
-      const mobile = Math.floor(Math.random() * 45) + 15;
-      setDevices({ mobile, desktop: 0 });
+        console.log('[RealtimeSection] Fetching revenue for:', { startOfDay, endOfDay });
 
-      // Add new event
-      const mockActions = ['viewed', 'clicked', 'searched', 'booked'];
-      const mockUsers = ['User1', 'User2', 'User3', 'User4', 'User5'];
-      const newEvent = {
-        type: mockActions[Math.floor(Math.random() * mockActions.length)],
-        user: mockUsers[Math.floor(Math.random() * mockUsers.length)],
-        action: 'property',
-        time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      };
+        // Récupérer les paiements d'aujourd'hui
+        const [paymentsRes, earningsRes, visitPaymentsRes] = await Promise.all([
+          (supabase as any)
+            .from('payments')
+            .select('amount')
+            .gte('created_at', startOfDay)
+            .lt('created_at', endOfDay),
+          (supabase as any)
+            .from('host_earnings')
+            .select('platform_fee')
+            .gte('created_at', startOfDay)
+            .lt('created_at', endOfDay),
+          (supabase as any)
+            .from('payments')
+            .select('amount')
+            .eq('purpose', 'visit')
+            .gte('created_at', startOfDay)
+            .lt('created_at', endOfDay),
+        ]);
 
-      setEvents(prev => [newEvent, ...prev.slice(0, 19)]);
-      setLastUpdate(new Date());
+        console.log('[RealtimeSection] Raw data:', {
+          payments: paymentsRes.data?.length,
+          earnings: earningsRes.data?.length,
+          visits: visitPaymentsRes.data?.length,
+          paymentsError: paymentsRes.error,
+          earningsError: earningsRes.error,
+          visitsError: visitPaymentsRes.error
+        });
+
+        // Calculer GMV = somme de tous les amounts
+        const gmv = (paymentsRes.data || []).reduce((acc: number, row: any) => acc + (row.amount ?? 0), 0);
+
+        // Calculer CA = platform_fee + visit amounts
+        const reservationRevenue = (earningsRes.data || []).reduce((acc: number, row: any) => acc + (row.platform_fee ?? 0), 0);
+        const visitRevenue = (visitPaymentsRes.data || []).reduce((acc: number, row: any) => acc + (row.amount ?? 0), 0);
+        const ca = reservationRevenue + visitRevenue;
+
+        console.log('[RealtimeSection] Today revenue calculated:', { gmv, ca, reservationRevenue, visitRevenue });
+
+        setGmvToday(gmv);
+        setCaToday(ca);
+      } catch (err) {
+        console.error('[RealtimeSection] Error fetching today revenue:', err);
+      }
     };
 
-    updateRealtimeData();
-    const interval = setInterval(updateRealtimeData, 5000);
+    // Fonction pour calculer et mettre à jour les stats
+    const updateStats = (usersData: any[], visitorsData: any[]) => {
+      try {
+        // Récupérer les utilisateurs actifs des 2 dernières minutes
+        const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+        
+        // Filtrer les utilisateurs connectés actifs
+        const activeUsersData = usersData.filter((u: any) => u.last_activity_at >= twoMinutesAgo);
+        const totalUsers = activeUsersData.length;
 
-    return () => clearInterval(interval);
+        // Filtrer les visiteurs actifs (non-merged uniquement)
+        const activeVisitorsData = visitorsData.filter((v: any) => 
+          v.last_activity_at >= twoMinutesAgo && v.merged_at === null
+        );
+        const totalVisitors = activeVisitorsData.length;
+
+        const totalCombined = totalUsers + totalVisitors;
+
+        // Calculer les plateformes pour les utilisateurs connectés ET les visiteurs
+        const allActiveData = [...activeUsersData, ...activeVisitorsData];
+        const androidUsers = allActiveData.filter((d: any) => d.platform === 'android').length;
+        const iosUsers = allActiveData.filter((d: any) => d.platform === 'ios').length;
+
+        console.log('[RealtimeSection] Combined stats (last 2 min):', { 
+          totalUsers, 
+          totalVisitors,
+          totalCombined,
+          androidUsers, 
+          iosUsers,
+          threshold: twoMinutesAgo,
+          activeUsers: activeUsersData.map((u: any) => ({ id: u.user_id, platform: u.platform, lastActivity: u.last_activity_at })),
+          activeVisitors: activeVisitorsData.map((v: any) => ({ id: v.visitor_id, platform: v.platform, lastActivity: v.last_activity_at }))
+        });
+
+        setActiveUsers(totalUsers);
+        setActiveVisitors(totalVisitors);
+        setTotalActive(totalCombined);
+        setDevices({ android: androidUsers, ios: iosUsers });
+
+        // Mettre à jour le graphique
+        setChartData(prev => {
+          const now = new Date();
+          const newPoint = {
+            time: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+            users: totalUsers,
+            visitors: totalVisitors,
+            total: totalCombined,
+          };
+          return [...prev.slice(-4), newPoint];
+        });
+
+        setLastUpdate(new Date());
+      } catch (err) {
+        console.error('[RealtimeSection] Error updating stats:', err);
+      }
+    };
+
+    // Charger les données initiales
+    const loadInitialData = async () => {
+      try {
+        // Récupérer les heartbeats des utilisateurs connectés
+        const { data: userHeartbeats, error: userError } = await (supabase as any)
+          .from('user_activity_heartbeat')
+          .select('user_id, platform, last_activity_at, city');
+
+        // Récupérer les heartbeats des visiteurs anonymes
+        const { data: visitorHeartbeats, error: visitorError } = await (supabase as any)
+          .from('visitor_activity_heartbeat')
+          .select('visitor_id, platform, last_activity_at, city, merged_at');
+
+        if (userError) {
+          console.error('[RealtimeSection] Error loading user heartbeats:', userError);
+          return;
+        }
+
+        if (visitorError) {
+          console.error('[RealtimeSection] Error loading visitor heartbeats:', visitorError);
+          return;
+        }
+
+        console.log('[RealtimeSection] Data loaded:', {
+          users: userHeartbeats?.length,
+          visitors: visitorHeartbeats?.length,
+          totalHeartbeats: (userHeartbeats?.length || 0) + (visitorHeartbeats?.length || 0)
+        });
+        
+        updateStats(userHeartbeats || [], visitorHeartbeats || []);
+        setIsLoaded(true);
+      } catch (err) {
+        console.error('[RealtimeSection] Error loading initial data:', err);
+        setIsLoaded(true);
+      }
+    };
+
+    // Charger les données initiales immédiatement
+    loadInitialData();
+    fetchTodayRevenue();
+
+    // S'abonner aux changements en temps réel
+    console.log('[RealtimeSection] Setting up Realtime subscription...');
+    
+    let userHeartbeatChannel: any = null;
+    let visitorHeartbeatChannel: any = null;
+    let paymentsChannel: any = null;
+    let recalculateInterval: ReturnType<typeof setInterval> | null = null;
+
+    try {
+      // Écouter les changements de heartbeat des utilisateurs connectés
+      userHeartbeatChannel = (supabase as any)
+        .channel('user_activity_heartbeat_changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'user_activity_heartbeat',
+          },
+          (_payload: any) => {
+            console.log('[RealtimeSection] 👤 USER HEARTBEAT EVENT DETECTED');
+            loadInitialData();
+          }
+        )
+        .subscribe();
+
+      // Écouter les changements de heartbeat des visiteurs anonymes
+      visitorHeartbeatChannel = (supabase as any)
+        .channel('visitor_activity_heartbeat_changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'visitor_activity_heartbeat',
+          },
+          (_payload: any) => {
+            console.log('[RealtimeSection] 👁️ VISITOR HEARTBEAT EVENT DETECTED');
+            loadInitialData();
+          }
+        )
+        .subscribe();
+
+      // Écouter les changements de paiements pour GMV/CA en temps réel
+      paymentsChannel = (supabase as any)
+        .channel('payments_changes')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'payments',
+          },
+          (payload: any) => {
+            console.log('[RealtimeSection] 💰 PAYMENT EVENT DETECTED:', payload?.new);
+            fetchTodayRevenue();
+          }
+        )
+        .subscribe();
+
+      console.log('[RealtimeSection] ✅ Realtime subscriptions created (users + visitors + payments)');
+
+      // Ajouter un interval pour recalculer les stats toutes les 5 secondes
+      recalculateInterval = setInterval(() => {
+        console.log('[RealtimeSection] ⏱️ Checking for inactive users/visitors...');
+        loadInitialData();
+        fetchTodayRevenue();
+      }, 5 * 1000); // 5 secondes
+
+      console.log('[RealtimeSection] ✅ Inactivity check interval started (5s)');
+    } catch (err) {
+      console.error('[RealtimeSection] Error setting up Realtime:', err);
+    }
+
+    return () => {
+      console.log('[RealtimeSection] Cleaning up...');
+      if (userHeartbeatChannel) {
+        (supabase as any).removeChannel(userHeartbeatChannel);
+      }
+      if (visitorHeartbeatChannel) {
+        (supabase as any).removeChannel(visitorHeartbeatChannel);
+      }
+      if (paymentsChannel) {
+        (supabase as any).removeChannel(paymentsChannel);
+      }
+      if (recalculateInterval) {
+        clearInterval(recalculateInterval);
+      }
+    };
   }, []);
 
   const handleRefresh = () => {
@@ -79,10 +296,8 @@ export function RealtimeSection() {
   };
 
   const handleExport = () => {
-    const csvContent = events.map(e => 
-      `${e.time},${e.user},${e.type},${e.action}`
-    ).join('\n');
-    const blob = new Blob([`Time,User,Type,Action\n${csvContent}`], { type: 'text/csv' });
+    const csvContent = `user_id,platform,last_activity_at\n`;
+    const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -90,8 +305,9 @@ export function RealtimeSection() {
     a.click();
   };
 
-  const totalDevices = devices.mobile + devices.desktop;
-  const mobilePercentage = totalDevices > 0 ? (devices.mobile / totalDevices) * 100 : 0;
+  const totalDevices = devices.android + devices.ios;
+  const androidPercentage = totalDevices > 0 ? (devices.android / totalDevices) * 100 : 0;
+  const iosPercentage = totalDevices > 0 ? (devices.ios / totalDevices) * 100 : 0;
 
   // Mock data for top pages
   const topPages = [
@@ -111,8 +327,23 @@ export function RealtimeSection() {
     { city: 'Garoua', country: 'Cameroun', users: 3 },
   ];
 
-  return (
-    <div className="p-6 space-y-6">
+  console.log('[RealtimeSection] Rendering with state:', { activeUsers, devices, lastUpdate, isLoaded });
+
+  if (!isLoaded) {
+    return (
+      <div className="p-6">
+        <Card>
+          <CardContent className="p-6">
+            <p className="text-gray-600">Chargement des données en temps réel...</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  try {
+    return (
+      <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -124,7 +355,7 @@ export function RealtimeSection() {
             </div>
           </div>
           <p className="text-gray-500 mt-1">
-            Activité des utilisateurs en temps réel • Mise à jour toutes les 5 secondes
+            Utilisateurs actifs dans les 2 dernières minutes • Mise à jour en temps réel
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -153,107 +384,91 @@ export function RealtimeSection() {
       </div>
 
       {/* Main Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="border-green-200 bg-gradient-to-br from-green-50 to-white">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Activity className="w-5 h-5 text-[#2ECC71]" />
-              <p className="text-sm text-gray-600">Utilisateurs actifs</p>
-            </div>
-            <p className="text-4xl text-gray-900">{activeUsers}</p>
-            <p className="text-xs text-gray-500 mt-2">En ligne maintenant</p>
-          </CardContent>
-        </Card>
+      <div className="space-y-6">
+        {/* Row 1: Total Active, Connected Users, Visitors, Android, iOS */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <Card className="border-purple-200 bg-gradient-to-br from-purple-50 to-white">
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="w-5 h-5 text-purple-600" />
+                <p className="text-sm text-gray-600">Total actif</p>
+              </div>
+              <p className="text-4xl text-gray-900">{totalActive}</p>
+              <p className="text-xs text-gray-500 mt-2">Connectés + Visiteurs</p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Smartphone className="w-5 h-5 text-blue-500" />
-              <p className="text-sm text-gray-600">Mobile uniquement</p>
-            </div>
-            <p className="text-4xl text-gray-900">{devices.mobile}</p>
-            <p className="text-xs text-gray-500 mt-2">Android, iOS, PWA</p>
-          </CardContent>
-        </Card>
+          <Card className="border-green-200 bg-gradient-to-br from-green-50 to-white">
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="w-5 h-5 text-[#2ECC71]" />
+                <p className="text-sm text-gray-600">Utilisateurs</p>
+              </div>
+              <p className="text-4xl text-gray-900">{activeUsers}</p>
+              <p className="text-xs text-gray-500 mt-2">Connectés</p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Clock className="w-5 h-5 text-purple-500" />
-              <p className="text-sm text-gray-600">Période</p>
-            </div>
-            <div className="flex gap-2 mt-2 flex-wrap">
-              <Button
-                variant={period === 'now' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setPeriod('now')}
-                className="rounded-xl text-xs"
-              >
-                Maintenant
-              </Button>
-              <Button
-                variant={period === '5min' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setPeriod('5min')}
-                className="rounded-xl text-xs"
-              >
-                5 min
-              </Button>
-              <Button
-                variant={period === '15min' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setPeriod('15min')}
-                className="rounded-xl text-xs"
-              >
-                15 min
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-white">
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Globe className="w-5 h-5 text-blue-600" />
+                <p className="text-sm text-gray-600">Visiteurs</p>
+              </div>
+              <p className="text-4xl text-gray-900">{activeVisitors}</p>
+              <p className="text-xs text-gray-500 mt-2">Anonymes</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Smartphone className="w-5 h-5 text-blue-500" />
+                <p className="text-sm text-gray-600">Android</p>
+              </div>
+              <p className="text-4xl text-gray-900">{devices.android}</p>
+              <p className="text-xs text-gray-500 mt-2">{androidPercentage.toFixed(1)}% des utilisateurs</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Smartphone className="w-5 h-5 text-green-500" />
+                <p className="text-sm text-gray-600">iOS</p>
+              </div>
+              <p className="text-4xl text-gray-900">{devices.ios}</p>
+              <p className="text-xs text-gray-500 mt-2">{iosPercentage.toFixed(1)}% des utilisateurs</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Row 2: GMV and CA (Full Width) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Card className={`${REVENUE_COLORS.gmv.border} bg-gradient-to-br ${REVENUE_COLORS.gmv.bgLight} to-white`}>
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Banknote className={`w-5 h-5 ${REVENUE_COLORS.gmv.text}`} />
+                <p className="text-sm text-gray-600">GMV aujourd'hui</p>
+              </div>
+              <p className={`text-4xl ${REVENUE_COLORS.gmv.text}`}>{formatCurrency(gmvToday, true)}</p>
+              <p className="text-xs text-gray-500 mt-2">En temps réel</p>
+            </CardContent>
+          </Card>
+
+          <Card className={`${REVENUE_COLORS.revenue.border} bg-gradient-to-br ${REVENUE_COLORS.revenue.bgLight} to-white`}>
+            <CardContent className="p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Banknote className={`w-5 h-5 ${REVENUE_COLORS.revenue.text}`} />
+                <p className="text-sm text-gray-600">CA aujourd'hui</p>
+              </div>
+              <p className={`text-4xl ${REVENUE_COLORS.revenue.text}`}>{formatCurrency(caToday, true)}</p>
+              <p className="text-xs text-gray-500 mt-2">En temps réel</p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
-      {/* GMV & Revenue temps réel (dernières 24h) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card className={`${REVENUE_COLORS.gmv.border} bg-gradient-to-br ${REVENUE_COLORS.gmv.bgLight} to-white`}>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <DollarSign className={`w-5 h-5 ${REVENUE_COLORS.gmv.text}`} />
-              <p className="text-sm text-gray-600">GMV dernières 24h</p>
-            </div>
-            <p className={`text-4xl ${REVENUE_COLORS.gmv.text}`}>
-              {formatCurrency(847000, true)}
-            </p>
-            <div className="flex items-center gap-2 mt-3">
-              <div className="flex items-center gap-1 text-green-600">
-                <TrendingUp className="w-4 h-4" />
-                <span className="text-sm">+12.3%</span>
-              </div>
-              <p className="text-xs text-gray-500">vs 24h précédentes</p>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">Montant total payé par les utilisateurs</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`${REVENUE_COLORS.revenue.border} bg-gradient-to-br ${REVENUE_COLORS.revenue.bgLight} to-white`}>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Banknote className={`w-5 h-5 ${REVENUE_COLORS.revenue.text}`} />
-              <p className="text-sm text-gray-600">CA PUOL dernières 24h</p>
-            </div>
-            <p className={`text-4xl ${REVENUE_COLORS.revenue.text}`}>
-              {formatCurrency(152460, true)}
-            </p>
-            <div className="flex items-center gap-2 mt-3">
-              <div className="flex items-center gap-1 text-green-600">
-                <TrendingUp className="w-4 h-4" />
-                <span className="text-sm">+15.7%</span>
-              </div>
-              <p className="text-xs text-gray-500">vs 24h précédentes</p>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">Commission + frais (Take rate: 18%)</p>
-          </CardContent>
-        </Card>
-      </div>
 
       {/* Chart */}
       <Card>
@@ -288,6 +503,25 @@ export function RealtimeSection() {
                 strokeWidth={2}
                 dot={{ fill: '#2ECC71', r: 4 }}
                 activeDot={{ r: 6 }}
+                name="Utilisateurs connectés"
+              />
+              <Line 
+                type="monotone" 
+                dataKey="visitors" 
+                stroke="#3B82F6" 
+                strokeWidth={2}
+                dot={{ fill: '#3B82F6', r: 4 }}
+                activeDot={{ r: 6 }}
+                name="Visiteurs anonymes"
+              />
+              <Line 
+                type="monotone" 
+                dataKey="total" 
+                stroke="#A855F7" 
+                strokeWidth={2}
+                dot={{ fill: '#A855F7', r: 4 }}
+                activeDot={{ r: 6 }}
+                name="Total"
               />
             </LineChart>
           </ResponsiveContainer>
@@ -295,42 +529,6 @@ export function RealtimeSection() {
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Event Stream */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Flux d'événements</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {events.map((event, idx) => (
-                <div
-                  key={`${event.time}-${idx}`}
-                  className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                >
-                  <div className={`p-2 rounded-lg ${
-                    event.type === 'viewed' ? 'bg-blue-100' : 'bg-purple-100'
-                  }`}>
-                    {event.type === 'viewed' ? (
-                      <Smartphone className="w-4 h-4 text-blue-600" />
-                    ) : (
-                      <Monitor className="w-4 h-4 text-purple-600" />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-gray-900 truncate">{event.action}</p>
-                    <p className="text-xs text-gray-500">
-                      {event.user} • {event.time}
-                    </p>
-                  </div>
-                  <Badge variant="secondary" className="text-xs">
-                    {event.type}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Top Stats */}
         <div className="space-y-6">
           {/* Top Pages */}
@@ -421,5 +619,18 @@ export function RealtimeSection() {
         </CardContent>
       </Card>
     </div>
-  );
+    );
+  } catch (err) {
+    console.error('[RealtimeSection] Error rendering component:', err);
+    return (
+      <div className="p-6">
+        <Card>
+          <CardContent className="p-6">
+            <p className="text-red-600">Erreur lors du rendu de la section Temps réel</p>
+            <p className="text-sm text-gray-600 mt-2">{String(err)}</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 }

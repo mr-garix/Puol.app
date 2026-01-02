@@ -206,6 +206,33 @@ export const useComments = (listingId: string, profileId?: string | null, listin
             ? `${enrichedComment.content.slice(0, 77)}...`
             : enrichedComment.content;
 
+          console.log('[useComments] Sending reply notification to comment author:', {
+            parentCommentId,
+            parentAuthorId,
+            replyAuthorId: profileId,
+          });
+
+          // 🔔 Envoyer une notification via broadcast au parent du commentaire
+          try {
+            const channelName = `comment-reply-notifications-${parentAuthorId}`;
+            await supabase.channel(channelName).send({
+              type: 'broadcast',
+              event: 'new_reply',
+              payload: {
+                replyId: enrichedComment.id,
+                parentCommentId,
+                authorName: enrichedComment.author?.username || 'Un utilisateur',
+                authorId: profileId,
+                content: preview,
+                createdAt: new Date().toISOString(),
+              }
+            }).catch((err) => {
+              console.error('[useComments] Error broadcasting reply notification:', err);
+            });
+          } catch (notificationError) {
+            console.error('[useComments] Error sending reply notification:', notificationError);
+          }
+
           showNotification({
             id: `comment-reply-${parentCommentId}-${Date.now()}`,
             title: 'Nouvelle réponse à votre commentaire',
@@ -225,7 +252,9 @@ export const useComments = (listingId: string, profileId?: string | null, listin
           };
         });
       } else {
-        setComments((prev) => [enrichedComment, ...prev]);
+        // Ne pas ajouter le commentaire localement - laisser le système de realtime le faire
+        // pour éviter les doublons
+        console.log('[useComments] Comment created, waiting for realtime to add it:', enrichedComment.id);
       }
 
       await loadStoredLikes();
@@ -243,9 +272,16 @@ export const useComments = (listingId: string, profileId?: string | null, listin
     if (!parentId) {
       setComments((prev) => {
         const exists = prev.some((comment) => comment.id === incoming.id);
+        console.log('[useComments] prependOrMergeComment - checking for duplicate:', {
+          commentId: incoming.id,
+          exists,
+          prevLength: prev.length,
+        });
         if (exists) {
+          console.log('[useComments] Comment already exists, skipping merge:', incoming.id);
           return prev;
         }
+        console.log('[useComments] Adding comment via realtime:', incoming.id);
         return [incoming, ...prev];
       });
       return;

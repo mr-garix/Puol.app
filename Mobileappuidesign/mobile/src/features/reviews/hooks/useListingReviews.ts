@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type Tables = Database['public']['Tables'];
 type ProfilesRow = Tables['profiles']['Row'];
@@ -172,10 +173,19 @@ const isCompletedOrPastStay = (row: Partial<BookingsRow>) => {
     parseDate((row as any).check_out) ??
     parseDate((row as any).checkout);
 
+  // Vérifier si le statut indique un séjour complété
   const isCompletedStatus = status === 'completed' || status === 'finished' || status === 'checked_out';
+  
+  // Vérifier si la date de checkout est passée (le séjour est terminé)
+  // Important : on accepte aussi les séjours "confirmed" si la date de checkout est passée
   const isPastCheckout = checkout ? checkout.getTime() <= Date.now() : false;
 
-  return isCompletedStatus || isPastCheckout;
+  // L'utilisateur peut laisser un avis si :
+  // 1. Le statut est 'completed/finished/checked_out' OU
+  // 2. La date de checkout est passée (peu importe le statut, tant qu'il n'est pas 'cancelled')
+  const isNotCancelled = status !== 'cancelled' && status !== 'rejected';
+  
+  return isCompletedStatus || (isPastCheckout && isNotCancelled);
 };
 
 const checkUserEligibility = async (listingId: string, currentUserId: string): Promise<EligibilityState> => {
@@ -188,10 +198,23 @@ const checkUserEligibility = async (listingId: string, currentUserId: string): P
       .limit(25);
 
     if (error) {
+      console.error('[useListingReviews] eligibility query error', error);
       throw error;
     }
 
     const rows = (data ?? []) as Partial<BookingsRow>[];
+    console.log('[useListingReviews] Checking eligibility for reviews:', {
+      listingId,
+      currentUserId,
+      bookingsFound: rows.length,
+      bookings: rows.map(row => ({
+        id: row.id,
+        status: row.status,
+        checkout_date: (row as any).checkout_date,
+        isEligible: isCompletedOrPastStay(row),
+      })),
+    });
+
     const hasEligibleBooking = rows.some(isCompletedOrPastStay);
 
     return hasEligibleBooking
@@ -334,19 +357,72 @@ export const useListingReviews = (listingId?: string | null, currentUserId?: str
             throw updateError;
           }
         } else {
-          const { error: insertError } = await supabase.from('reviews').insert({
-            listing_id: effectiveListingId,
-            author_id: effectiveUserId,
-            rating: safeRating,
-            comment: trimmedComment,
-          });
+          const { data: insertedData, error: insertError } = await supabase
+            .from('reviews')
+            .insert({
+              listing_id: effectiveListingId,
+              author_id: effectiveUserId,
+              rating: safeRating,
+              comment: trimmedComment,
+            })
+            .select('id, listing_id, author_id, rating, comment, created_at');
 
           if (insertError) {
             throw insertError;
           }
+
+          // 🔔 Envoyer une notification au HOST quand un nouvel avis est créé
+          if (insertedData && insertedData.length > 0) {
+            try {
+              const review = insertedData[0];
+              // Récupérer les informations du listing pour obtenir le host_id
+              const { data: listingData, error: listingError } = await supabase
+                .from('listings')
+                .select('id, title, host_id')
+                .eq('id', effectiveListingId)
+                .single();
+
+              if (!listingError && listingData && listingData.host_id) {
+                const channelName = `review-notifications-${listingData.host_id}`;
+                const preview = trimmedComment && trimmedComment.length > 80 
+                  ? `${trimmedComment.slice(0, 77)}...` 
+                  : trimmedComment || `Note: ${safeRating}/5`;
+
+                console.log('[useListingReviews] Broadcasting review notification to host:', {
+                  hostId: listingData.host_id,
+                  channelName,
+                  reviewId: review.id,
+                });
+
+                await supabase.channel(channelName).send({
+                  type: 'broadcast',
+                  event: 'new_review',
+                  payload: {
+                    reviewId: review.id,
+                    listingId: effectiveListingId,
+                    listingTitle: listingData.title,
+                    authorId: effectiveUserId,
+                    rating: safeRating,
+                    content: preview,
+                    hostProfileId: listingData.host_id,
+                    createdAt: new Date().toISOString(),
+                  }
+                }).catch((err) => {
+                  console.error('[useListingReviews] Error broadcasting review notification:', err);
+                });
+              }
+            } catch (notificationError) {
+              console.error('[useListingReviews] Error sending review notification:', notificationError);
+              // Ne pas échouer la création d'avis si la notification échoue
+            }
+          }
         }
 
         await fetchReviews({ initial: false });
+        // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+        if (effectiveUserId) {
+          await sendHeartbeat(effectiveUserId);
+        }
         return true;
       } catch (err) {
         console.error('[useListingReviews] submit error', err);

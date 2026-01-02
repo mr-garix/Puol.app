@@ -19,8 +19,8 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { ArrowUpRight, Filter, Users, MapPin, Calendar, Phone, Loader2 } from 'lucide-react';
-import type { LandlordListItem } from '@/lib/services/landlords';
-import { fetchLandlordsList } from '@/lib/services/landlords';
+import type { LandlordListItem, LandlordRentalMetrics } from '@/lib/services/landlords';
+import { fetchLandlordsList, fetchLandlordRentalMetrics } from '@/lib/services/landlords';
 import {
   landlordProfiles as landlordProfilesMock,
   landlordProfileDetails,
@@ -40,6 +40,8 @@ type LandlordBuyersBoardProps = {
 
 export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps) {
   const [landlords, setLandlords] = useState<LandlordListItem[]>([]);
+  const [rentalMetrics, setRentalMetrics] = useState<Map<string, LandlordRentalMetrics>>(new Map());
+  const [totalLandlordsCount, setTotalLandlordsCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,18 +50,24 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
 
   useEffect(() => {
     let isMounted = true;
-    const loadLandlords = async () => {
+    const loadData = async () => {
       setIsLoading(true);
       setFetchError(null);
       try {
-        const data = await fetchLandlordsList();
+        const [landlordsList, metricsResult] = await Promise.all([
+          fetchLandlordsList(),
+          fetchLandlordRentalMetrics(),
+        ]);
+        console.log('[LandlordBuyersBoard] Données chargées:', { landlordsList, metricsResult });
         if (isMounted) {
-          setLandlords(data);
+          setLandlords(landlordsList);
+          setRentalMetrics(metricsResult.metricsMap);
+          setTotalLandlordsCount(metricsResult.totalLandlordsCount);
         }
       } catch (error) {
-        console.warn('[LandlordBuyersBoard] unable to load landlords', error);
+        console.warn('[LandlordBuyersBoard] unable to load data', error);
         if (isMounted) {
-          setFetchError("Impossible de charger les bailleurs.");
+          setFetchError("Impossible de charger les données des bailleurs.");
         }
       } finally {
         if (isMounted) {
@@ -67,7 +75,7 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
         }
       }
     };
-    loadLandlords();
+    loadData();
     return () => {
       isMounted = false;
     };
@@ -120,6 +128,21 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
   );
 
   const summary = useMemo(() => {
+    // Utiliser les vraies données de rental_leases si disponibles
+    if (rentalMetrics.size > 0) {
+      const metricsArray = Array.from(rentalMetrics.values());
+      const totalLeases = metricsArray.reduce((sum, metric) => sum + metric.totalLeases, 0);
+      const totalRevenue = metricsArray.reduce((sum, metric) => sum + metric.totalRevenue, 0);
+
+      return {
+        totalLeases,
+        totalLandlords: totalLandlordsCount,
+        totalRevenue,
+        onboardingDelta: 0,
+      };
+    }
+
+    // Sinon, utiliser les données moquées
     const fallback = {
       totalLeases: landlordProfilesMock.reduce((sum, profile) => sum + profile.leasesSigned, 0),
       totalLandlords: landlordProfilesMock.length,
@@ -134,7 +157,7 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
       totalRevenue: fallback.totalRevenue,
       onboardingDelta: liveTotal ? Math.max(liveTotal - fallback.totalLandlords, 0) : 1,
     };
-  }, [landlords]);
+  }, [rentalMetrics, totalLandlordsCount, landlords]);
 
   const filteredProfiles = useMemo(() => {
     return effectiveProfiles.filter(profile => {
@@ -280,9 +303,10 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
                       </TableRow>
                     ))
                   : filteredProfiles.map(profile => {
+                      const metric = rentalMetrics.get(profile.id);
                       const fallbackDetail = fallbackProfilesById.get(profile.id);
-                      const tenantsTotal = fallbackDetail?.tenantsTotal ?? 0;
-                      const revenueShare = fallbackDetail?.revenueShare ?? 0;
+                      const tenantsTotal = metric?.totalTenants ?? fallbackDetail?.tenantsTotal ?? 0;
+                      const revenueShare = metric?.totalRevenue ?? fallbackDetail?.revenueShare ?? 0;
                       const listingStats = profile.listingStats ?? deriveListingStats(fallbackDetail);
 
                       return (

@@ -13,17 +13,21 @@ const PLATFORM_FEE_PERCENT = 0.10; // 10%
 
 /**
  * Calcule les montants pour une réservation
- * @param customerPrice - Prix payé par le client (prix affiché dans l'UI)
+ * @param customerPrice - Prix payé par le client (prix affiché = prix host + 10%)
  * @returns Montant total, frais plateforme, montant pour le host
  */
 export const calculateReservationAmounts = (customerPrice: number) => {
-  const platformFee = Math.round(customerPrice * PLATFORM_FEE_PERCENT); // 10% du prix client
-  const hostAmount = customerPrice - platformFee; // Le host reçoit 90%
+  // Le prix original du host = prix affiché / 1.1
+  const hostOriginalPrice = Math.round(customerPrice / 1.1);
+  // La commission = différence entre prix affiché et prix original
+  const platformFee = customerPrice - hostOriginalPrice;
+  // Le host reçoit son prix original
+  const hostAmount = hostOriginalPrice;
   
   return {
     totalAmount: customerPrice, // Ce que le client paie
-    platformFee, // Ta commission
-    hostAmount, // Ce que le host reçoit
+    platformFee, // Ta commission (fixe = 10% du prix original)
+    hostAmount, // Ce que le host reçoit (son prix original)
   };
 };
 

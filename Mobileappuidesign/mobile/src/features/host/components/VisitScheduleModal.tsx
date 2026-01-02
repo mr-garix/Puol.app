@@ -9,6 +9,8 @@ interface VisitScheduleModalProps {
   visible: boolean;
   onClose: () => void;
   onConfirm: (date: Date, time: string) => void;
+  listingId: string;
+  hostProfileId?: string;
   initialDate?: Date | null;
   initialTime?: string;
 }
@@ -17,6 +19,7 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
   visible,
   onClose,
   onConfirm,
+  listingId,
   initialDate,
   initialTime,
 }) => {
@@ -61,6 +64,11 @@ export const VisitScheduleModal: React.FC<VisitScheduleModalProps> = ({
 
   const handleConfirm = () => {
     if (selectedDate && selectedTime) {
+      console.log('[VisitScheduleModal] handleConfirm called with:', {
+        selectedDate,
+        selectedTime,
+        listingId,
+      });
       onConfirm(selectedDate, selectedTime);
       handleClose();
     }

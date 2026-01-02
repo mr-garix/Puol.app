@@ -1,5 +1,6 @@
 import { supabase } from '@/src/supabaseClient';
 import type { TablesInsert } from '@/src/types/supabase.generated';
+import { sendHeartbeat } from '@/src/utils/heartbeat';
 
 type ListingShareInsert = TablesInsert<'listing_shares'>;
 
@@ -66,6 +67,9 @@ export async function recordListingShare(params: TrackListingShareParams): Promi
       throw error;
     }
     console.log('[ListingShare] recorded share', payload);
+
+    // Envoyer le heartbeat (user connecté ou visiteur anonyme)
+    await sendHeartbeat(params.profileId || null);
   } catch (error) {
     console.error('[ListingShare] failed to record share', error);
   }

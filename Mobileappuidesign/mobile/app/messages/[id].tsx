@@ -266,6 +266,7 @@ export default function ConversationScreen() {
   const [isSchedulingVisit, setIsSchedulingVisit] = useState(false);
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
   const [visitPaymentModalVisible, setVisitPaymentModalVisible] = useState(false);
+  const [scheduledVisitId, setScheduledVisitId] = useState<string | null>(null);
 
   const handleOpenListingDetails = useCallback(() => {
     if (!listingId) {
@@ -571,6 +572,11 @@ export default function ConversationScreen() {
     }
 
     const proceed = () => {
+      console.log('[ConversationScreen] Opening visit modal with:', {
+        conversationListingId: conversation.listingId,
+        conversationId: conversation.id,
+        conversationListing: conversation.listing,
+      });
       setSelectedListingId(conversation.listingId);
       setScheduledVisitDate(null);
       setScheduledVisitTime('');
@@ -594,17 +600,65 @@ export default function ConversationScreen() {
     setSelectedListingId(null);
   };
 
-  const handleVisitScheduleConfirm = (date: Date, time: string) => {
+  const handleVisitScheduleConfirm = async (date: Date, time: string) => {
+    console.log('[ConversationScreen] handleVisitScheduleConfirm called with:', {
+      date,
+      time,
+      selectedListingId,
+      conversationListingId: conversation?.listingId,
+      viewerProfileId,
+    });
+
     const listingId = selectedListingId ?? conversation?.listingId;
-    if (!listingId || !conversation) {
+    if (!listingId || !conversation || !viewerProfileId) {
+      console.error('[ConversationScreen] Missing required data:', {
+        hasListingId: !!listingId,
+        hasConversation: !!conversation,
+        hasViewerProfileId: !!viewerProfileId,
+      });
       Alert.alert('Planification indisponible', "Les informations nécessaires pour programmer la visite sont manquantes.");
       return;
     }
 
-    setScheduledVisitDate(date);
-    setScheduledVisitTime(time);
-    setVisitModalVisible(false);
-    setVisitPaymentModalVisible(true);
+    setIsSchedulingVisit(true);
+    try {
+      console.log('[ConversationScreen] Creating visit BEFORE payment with:', {
+        listingId,
+        guestProfileId: viewerProfileId,
+        visitDate: date,
+        visitTime: time,
+      });
+
+      // Créer la visite AVANT le paiement pour avoir le visitId
+      const { createRentalVisit } = await import('@/src/features/rental-visits/services');
+      const visit = await createRentalVisit({
+        listingId,
+        guestProfileId: viewerProfileId,
+        visitDate: date,
+        visitTime: time,
+        source: 'mobile_guest_chat',
+      });
+
+      console.log('[ConversationScreen] Visit created successfully:', {
+        visitId: visit.id,
+        visitStatus: visit.status,
+      });
+
+      // Stocker le visitId pour l'utiliser dans le paiement
+      setScheduledVisitId(visit.id);
+      setScheduledVisitDate(date);
+      setScheduledVisitTime(time);
+      setVisitModalVisible(false);
+      setVisitPaymentModalVisible(true);
+    } catch (error) {
+      console.error('[ConversationScreen] Error creating visit:', {
+        error,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      });
+      Alert.alert('Erreur', 'Impossible de créer la visite. Veuillez réessayer.');
+    } finally {
+      setIsSchedulingVisit(false);
+    }
   };
 
   const handleVisitPaymentCancel = () => {
@@ -618,54 +672,25 @@ export default function ConversationScreen() {
   };
 
   const handleVisitPaymentSuccess = async () => {
-    if (!addVisit) {
-      Alert.alert(
-        'Planification indisponible',
-        "La fonctionnalité de visites n'est pas disponible pour le moment. Mettez l'application à jour ou réessayez plus tard.",
-      );
-      return;
-    }
-
-    const listingId = selectedListingId ?? conversation?.listingId;
-    if (!listingId || !conversation || !scheduledVisitDate || !scheduledVisitTime) {
-      Alert.alert('Planification indisponible', "Les informations nécessaires pour programmer la visite sont manquantes.");
-      return;
-    }
-
-    const listing = conversation.listing;
-    const propertyLocation = [listing?.district, listing?.city].filter(Boolean).join(', ') || 'Localisation PUOL';
-
-    setIsSchedulingVisit(true);
-
+    console.log('[ConversationScreen] handleVisitPaymentSuccess called');
+    
+    // La visite a déjà été créée dans handleVisitScheduleConfirm
+    // On ne fait que rafraîchir les données et afficher un message de succès
+    
     try {
-      await addVisit({
-        propertyId: listingId,
-        propertyTitle: listing?.title ?? 'Annonce PUOL',
-        propertyImage: listing?.coverPhotoUrl ?? null,
-        propertyLocation,
-        propertyBedrooms: null,
-        propertyKitchens: null,
-        propertyLivingRooms: null,
-        propertyType: null,
-        propertySurfaceArea: null,
-        propertyIsRoadside: null,
-        visitDate: scheduledVisitDate,
-        visitTime: scheduledVisitTime,
-        amount: CHAT_VISIT_PRICE_FCFA,
-        notes: null,
-      });
-
       await refreshVisits?.().catch((err) => {
-        console.warn('[ConversationScreen] refreshVisits après planification impossible', err);
+        console.warn('[ConversationScreen] refreshVisits après paiement impossible', err);
       });
 
+      console.log('[ConversationScreen] Visit payment successful, visit already created');
       Alert.alert('Visite programmée', 'Votre visite a été enregistrée. Nous vous confirmerons le créneau rapidement.');
       setSelectedListingId(null);
       setScheduledVisitDate(null);
       setScheduledVisitTime('');
+      setScheduledVisitId(null);
     } catch (error) {
-      console.error('[ConversationScreen] Paiement visite échoué', error);
-      Alert.alert('Planification impossible', "Nous n'avons pas pu programmer cette visite. Réessayez dans un instant.");
+      console.error('[ConversationScreen] Erreur après paiement visite', error);
+      Alert.alert('Erreur', "Une erreur s'est produite. Votre visite a été créée mais nous n'avons pas pu mettre à jour les données.");
     } finally {
       setIsSchedulingVisit(false);
       setVisitPaymentModalVisible(false);
@@ -972,6 +997,10 @@ export default function ConversationScreen() {
           ? `Visite le ${scheduledVisitDate.toLocaleDateString('fr-FR')} à ${scheduledVisitTime}`
           : 'Paiement de votre visite'}
         infoMessage="Le paiement valide définitivement votre créneau de visite."
+        purpose="visit"
+        payerProfileId={viewerProfileId || undefined}
+        hostProfileId={conversation?.listing?.hostId || undefined}
+        relatedId={scheduledVisitId || undefined}
       />
     </SafeAreaView>
   );

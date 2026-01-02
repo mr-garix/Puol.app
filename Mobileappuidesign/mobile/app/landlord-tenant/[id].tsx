@@ -30,7 +30,6 @@ const COLORS = {
 const formatDate = (iso: string | null) => {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('fr-FR', {
-    weekday: 'long',
     day: 'numeric',
     month: 'long',
     year: 'numeric',

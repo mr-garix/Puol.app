@@ -9,6 +9,8 @@ import { Asset } from 'expo-asset';
 
 import VisitNotificationBridge from '@/src/infrastructure/notifications/VisitNotificationBridge';
 import HostBookingNotificationBridge from '@/src/infrastructure/notifications/HostBookingNotificationBridge';
+import LandlordVisitNotificationBridge from '@/src/infrastructure/notifications/LandlordVisitNotificationBridge';
+import HostVisitNotificationBridge from '@/src/infrastructure/notifications/HostVisitNotificationBridge';
 import HostCommentNotificationBridge from '@/src/infrastructure/notifications/HostCommentNotificationBridge';
 import UserCommentNotificationBridge from '@/src/infrastructure/notifications/UserCommentNotificationBridge';
 import HostReviewNotificationBridge from '@/src/infrastructure/notifications/HostReviewNotificationBridge';
@@ -24,6 +26,7 @@ import { ProfileProvider } from '@/src/contexts/ProfileContext';
 import { PreloadProvider, usePreloadedVideo } from '@/src/contexts/PreloadContext';
 import { usePreloadFirstVideo } from '@/src/features/listings/hooks';
 import { RemainingPaymentHandler } from '@/src/features/payments/components/RemainingPaymentHandler';
+import { useAppLifecycle } from '@/src/hooks';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -50,6 +53,11 @@ const ICON_ASSETS = [
   require('../assets/icons/splash3.png'),
   require('../assets/icons/splash4.png'),
 ];
+
+function AppLifecycleManager() {
+  useAppLifecycle();
+  return null;
+}
 
 function PreloadManager() {
   const localUri = usePreloadFirstVideo();
@@ -135,6 +143,7 @@ export default function RootLayout() {
         <VisitsProvider>
           <FeedProvider>
             <PreloadManager />
+            <AppLifecycleManager />
             <ReservationProvider>
               <ProfileProvider>
                 <NotificationProvider>
@@ -185,6 +194,8 @@ export default function RootLayout() {
                     </Stack>
                     <VisitNotificationBridge />
                     <HostBookingNotificationBridge />
+                    <LandlordVisitNotificationBridge />
+                    <HostVisitNotificationBridge />
                     <HostCommentNotificationBridge />
                     <UserCommentNotificationBridge />
                     <HostReviewNotificationBridge />

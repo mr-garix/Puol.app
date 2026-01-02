@@ -7,6 +7,7 @@ import { Feather } from '@expo/vector-icons';
 import { useProfile } from '@/src/contexts/ProfileContext';
 import { useLandlordVisits } from '@/src/features/rental-visits/hooks';
 import { useLandlordDashboardListings } from '@/src/features/landlord-listings/dashboard-hooks';
+import { useLandlordTenants } from '@/src/features/landlord-tenants/hooks';
 
 const landlordSections = [
   {
@@ -44,6 +45,7 @@ const LandlordDashboardScreen: React.FC = () => {
     data: landlordListings,
     isLoading: listingsLoading,
   } = useLandlordDashboardListings();
+  const { tenants, isLoading: tenantsLoading } = useLandlordTenants();
 
   useEffect(() => {
     navigation.setOptions({ headerShown: false });
@@ -147,9 +149,14 @@ const LandlordDashboardScreen: React.FC = () => {
           };
         }
         if (section.key === 'tenants') {
+          const tenantsLabel = tenantsLoading
+            ? 'Chargement…'
+            : tenants.length === 0
+              ? 'Aucun locataire'
+              : `${tenants.length} locataire${tenants.length > 1 ? 's' : ''}`;
           return {
             ...section,
-            hint: 'Suivi des baux signés',
+            hint: tenantsLabel,
           };
         }
         if (section.key === 'properties') {
@@ -168,7 +175,7 @@ const LandlordDashboardScreen: React.FC = () => {
           hint: 'Disponible bientôt',
         };
       }),
-    [listingsCount, listingsLoading, visitsCount, visitsCountLabel, visitsLoading],
+    [listingsCount, listingsLoading, visitsCount, visitsCountLabel, visitsLoading, tenants.length, tenantsLoading],
   );
 
   return (
@@ -218,7 +225,7 @@ const LandlordDashboardScreen: React.FC = () => {
               <Text style={styles.summaryLabel}>Biens</Text>
             </View>
             <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>0</Text>
+              <Text style={styles.summaryValue}>{tenantsLoading ? '· · ·' : tenants.length}</Text>
               <Text style={styles.summaryLabel}>Locataires</Text>
             </View>
             <View style={styles.summaryItem}>

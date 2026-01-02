@@ -75,6 +75,7 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
   const [assignedLeaseEnd, setAssignedLeaseEnd] = useState(initialListing.currentLeaseEnd ?? '');
   const [leaseStartInput, setLeaseStartInput] = useState('');
   const [leaseEndInput, setLeaseEndInput] = useState('');
+  const [isAssignedModalOpen, setIsAssignedModalOpen] = useState(false);
 
   useEffect(() => {
     setCurrentListing(initialListing);
@@ -155,6 +156,11 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
     setAssignedTenant('');
     setAssignedLeaseStart('');
     setAssignedLeaseEnd('');
+  };
+
+  const handleContactSupport = () => {
+    // Navigate to contact form or open contact dialog
+    window.location.href = '/contact';
   };
 
   const fallbackAddress =
@@ -541,6 +547,34 @@ export function LandlordListingDetailView({ listing: initialListing, onBack, onV
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={isAssignedModalOpen} onOpenChange={setIsAssignedModalOpen}>
+        <DialogContent className="max-w-md">
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Cette offre est assignée à quelqu'un</h2>
+              <p className="text-sm text-gray-600 mt-2">
+                Cette annonce est actuellement assignée à un locataire. Pour publier cette offre, veuillez contacter le service PUOL.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setIsAssignedModalOpen(false)}
+              >
+                Fermer
+              </Button>
+              <Button
+                className="flex-1 bg-[#2ECC71] hover:bg-[#27AE60]"
+                onClick={handleContactSupport}
+              >
+                Contacter le service PUOL
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -29,6 +29,8 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
   const [error, setError] = useState<string | null>(null);
   const [hostListingIds, setHostListingIds] = useState<Set<string>>(new Set());
   const changeCallbacksRef = useRef(new Set<(booking: HostBookingRecord) => void>());
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPolledRef = useRef<number>(0);
 
   const refresh = useCallback(async () => {
     if (!isLoggedIn || !supabaseProfile || !isHostProfile) {
@@ -68,6 +70,68 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // 🔄 Polling intelligent : recharger les réservations toutes les 15 secondes
+  useEffect(() => {
+    if (!isLoggedIn || !supabaseProfile || !isHostProfile) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      return;
+    }
+
+    console.log('[useHostBookings] Starting polling for new bookings');
+    
+    const pollForNewBookings = async () => {
+      const now = Date.now();
+      if (now - lastPolledRef.current < 15000) {
+        return; // Ne pas poller plus souvent que toutes les 15 secondes
+      }
+      
+      lastPolledRef.current = now;
+      
+      try {
+        const freshBookings = await fetchHostBookings(supabaseProfile.id);
+        
+        // Comparer avec les anciennes réservations pour détecter les nouvelles
+        const oldBookingIds = new Set(bookings.map(b => b.id));
+        const newBookings = freshBookings.filter(b => !oldBookingIds.has(b.id));
+        
+        if (newBookings.length > 0) {
+          console.log('[useHostBookings] Detected new bookings via polling:', newBookings.map(b => b.id));
+          
+          // Notifier les callbacks pour chaque nouvelle réservation
+          newBookings.forEach(booking => {
+            changeCallbacksRef.current.forEach(callback => {
+              try {
+                callback(booking);
+              } catch (err) {
+                console.error('[useHostBookings] Error in polling callback:', err);
+              }
+            });
+          });
+        }
+        
+        // Mettre à jour l'état avec les réservations fraîches
+        setBookings(freshBookings);
+      } catch (err) {
+        console.error('[useHostBookings] Polling error:', err);
+      }
+    };
+
+    pollingIntervalRef.current = setInterval(pollForNewBookings, 15000);
+    
+    // Faire un premier poll immédiatement
+    pollForNewBookings();
+    
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [isLoggedIn, supabaseProfile, isHostProfile, bookings]);
 
   useEffect(() => {
     if (!supabaseProfile) {

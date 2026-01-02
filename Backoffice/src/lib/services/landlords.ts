@@ -1706,3 +1706,262 @@ function unwrapJoinedValue<T>(value: T | T[] | null | undefined): T | null {
 function formatFeeAmount(value: number): string {
   return `${value.toLocaleString('fr-FR')} FCFA`;
 }
+
+export async function checkIfListingIsAssigned(listingId: string): Promise<boolean> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return false;
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    const { data, error } = await client
+      .from('rental_leases')
+      .select('id', { count: 'exact', head: true })
+      .eq('listing_id', listingId)
+      .eq('status', 'active');
+
+    if (error) {
+      console.warn('[landlords] checkIfListingIsAssigned error', error);
+      return false;
+    }
+
+    return (data?.length ?? 0) > 0;
+  } catch (error) {
+    console.error('[landlords] checkIfListingIsAssigned failed', error);
+    return false;
+  }
+}
+
+export type CreateRentalLeaseInput = {
+  listing_id: string;
+  tenant_profile_id: string;
+  owner_profile_id: string;
+  start_date: string;
+  end_date?: string;
+  rent_monthly: number;
+  platform_fee_total: number;
+  months_count: number;
+  total_rent: number;
+  currency?: string;
+  status?: string;
+};
+
+export async function createRentalLease(input: CreateRentalLeaseInput): Promise<{ success: boolean; error?: string }> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return { success: false, error: 'Supabase client unavailable' };
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    const { error } = await client
+      .from('rental_leases')
+      .insert([
+        {
+          listing_id: input.listing_id,
+          tenant_profile_id: input.tenant_profile_id,
+          owner_profile_id: input.owner_profile_id,
+          start_date: input.start_date,
+          end_date: input.end_date || null,
+          rent_monthly: input.rent_monthly,
+          platform_fee_total: input.platform_fee_total,
+          months_count: input.months_count,
+          total_rent: input.total_rent,
+          currency: input.currency || 'XAF',
+          status: input.status || 'active',
+        },
+      ]);
+
+    if (error) {
+      console.warn('[landlords] createRentalLease error', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('[landlords] createRentalLease failed', error);
+    return { success: false, error: String(error) };
+  }
+}
+
+export async function updateListingStatus(listingId: string, status: string): Promise<{ success: boolean; error?: string }> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return { success: false, error: 'Supabase client unavailable' };
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    console.log('[landlords] Updating listing', listingId, 'to status:', status);
+    
+    const { data, error } = await client
+      .from('listings')
+      .update({ status })
+      .eq('id', listingId)
+      .select();
+
+    if (error) {
+      console.warn('[landlords] updateListingStatus error', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('[landlords] Listing updated successfully:', data);
+    return { success: true };
+  } catch (error) {
+    console.error('[landlords] updateListingStatus failed', error);
+    return { success: false, error: String(error) };
+  }
+}
+
+export type TenantProfile = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  username: string | null;
+};
+
+export async function fetchTenantProfiles(searchQuery?: string): Promise<TenantProfile[]> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return [];
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    let query = client
+      .from('profiles')
+      .select('id, first_name, last_name, phone, username')
+      .not('phone', 'is', null);
+
+    if (searchQuery) {
+      const normalized = searchQuery.toLowerCase().trim();
+      query = query.or(
+        `first_name.ilike.%${normalized}%,last_name.ilike.%${normalized}%,phone.ilike.%${normalized}%,username.ilike.%${normalized}%`
+      );
+    }
+
+    const { data, error } = await query.limit(10);
+
+    if (error) {
+      console.warn('[landlords] fetchTenantProfiles error', error);
+      return [];
+    }
+
+    return (data ?? []).map((profile) => ({
+      id: profile.id,
+      firstName: profile.first_name || '',
+      lastName: profile.last_name || '',
+      phone: profile.phone || '',
+      username: profile.username,
+    }));
+  } catch (error) {
+    console.error('[landlords] fetchTenantProfiles failed', error);
+    return [];
+  }
+}
+
+export type LandlordRentalMetrics = {
+  landlordId: string;
+  landlordName: string;
+  landlordPhone: string | null;
+  landlordCity: string | null;
+  totalLeases: number;
+  totalTenants: number;
+  totalRevenue: number;
+  avgMonthlyRevenue: number;
+};
+
+export type LandlordMetricsResult = {
+  metricsMap: Map<string, LandlordRentalMetrics>;
+  totalLandlordsCount: number;
+};
+
+export async function fetchLandlordRentalMetrics(): Promise<LandlordMetricsResult> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return { metricsMap: new Map(), totalLandlordsCount: 0 };
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    
+    // Récupérer le nombre total de landlords (profils avec statut landlord)
+    const { count: landlordCount, error: countError } = await client
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('role', 'landlord');
+
+    if (countError) {
+      console.warn('[landlords] fetchLandlordRentalMetrics error counting landlords', countError);
+    }
+
+    // Récupérer tous les baux
+    const { data: leases, error: leasesError } = await client
+      .from('rental_leases')
+      .select('id, owner_profile_id, tenant_profile_id, total_rent, platform_fee_total, created_at');
+
+    if (leasesError) {
+      console.warn('[landlords] fetchLandlordRentalMetrics error fetching leases', leasesError);
+      return { metricsMap: new Map(), totalLandlordsCount: landlordCount || 0 };
+    }
+
+    if (!leases || leases.length === 0) {
+      console.log('[landlords] Aucun bail trouvé dans rental_leases');
+      return { metricsMap: new Map(), totalLandlordsCount: landlordCount || 0 };
+    }
+
+    // Grouper par landlord et calculer les métriques
+    const metricsMap = new Map<string, LandlordRentalMetrics & { tenantIds: Set<string> }>();
+
+    (leases ?? []).forEach((lease: any) => {
+      const landlordId = lease.owner_profile_id;
+      
+      if (!landlordId) {
+        return;
+      }
+
+      const key = landlordId;
+      const existing = metricsMap.get(key);
+
+      if (existing) {
+        existing.totalLeases += 1;
+        existing.totalRevenue += lease.total_rent || 0;
+        if (lease.tenant_profile_id) {
+          existing.tenantIds.add(lease.tenant_profile_id);
+        }
+        existing.totalTenants = existing.tenantIds.size;
+      } else {
+        const tenantIds = new Set<string>();
+        if (lease.tenant_profile_id) {
+          tenantIds.add(lease.tenant_profile_id);
+        }
+        metricsMap.set(key, {
+          landlordId,
+          landlordName: 'Bailleur PUOL',
+          landlordPhone: null,
+          landlordCity: null,
+          totalLeases: 1,
+          totalTenants: tenantIds.size,
+          totalRevenue: lease.total_rent || 0,
+          avgMonthlyRevenue: (lease.total_rent || 0) / 12,
+          tenantIds,
+        });
+      }
+    });
+
+    // Convertir en Map sans la propriété tenantIds
+    const metricsMapClean = new Map<string, LandlordRentalMetrics>();
+    metricsMap.forEach((metric, key) => {
+      const { tenantIds, ...cleanMetric } = metric;
+      metricsMapClean.set(key, cleanMetric);
+    });
+    
+    console.log('[landlords] Métriques calculées:', metricsMapClean);
+    return { metricsMap: metricsMapClean, totalLandlordsCount: landlordCount || 0 };
+  } catch (error) {
+    console.error('[landlords] fetchLandlordRentalMetrics failed', error);
+    return { metricsMap: new Map(), totalLandlordsCount: 0 };
+  }
+}

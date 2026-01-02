@@ -7,8 +7,8 @@ interface VisitPaymentDialogProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
-  hostProfileId: string;
-  visitId?: string;
+  hostProfileId?: string;
+  visitId: string;
 }
 
 export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
@@ -19,6 +19,14 @@ export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
   visitId
 }) => {
   const { supabaseProfile } = useAuth();
+
+  console.log('[VisitPaymentDialog] Rendering with props:', {
+    visible,
+    visitId,
+    hostProfileId,
+    payerProfileId: supabaseProfile?.id,
+    supabaseProfileExists: !!supabaseProfile,
+  });
 
   return (
     <PaymentModal
@@ -31,7 +39,7 @@ export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
       purpose="visit"
       payerProfileId={supabaseProfile?.id}
       hostProfileId={hostProfileId}
-      relatedId={undefined}
+      relatedId={visitId}
     />
   );
 };
