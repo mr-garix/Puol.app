@@ -22,7 +22,7 @@ import { supabase } from '@/src/supabaseClient';
 interface PaymentModalProps {
   visible: boolean;
   onClose: () => void;
-  onSuccess: () => void | Promise<void>;
+  onSuccess: (provider: 'orange' | 'mtn' | 'card') => void | Promise<void>;
   amount: number;
   title: string;
   description: string;
@@ -236,30 +236,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           return;
         }
         
-        console.log('[PaymentModal] Appel de createPaymentAndEarning avec:', {
-          purpose,
-          payerProfileId,
-          hostProfileId: finalHostProfileId,
-          relatedId,
-          provider: dbProvider,
-          customerPrice: purpose === 'booking' ? customerPrice : undefined,
-        });
-        
-        await createPaymentAndEarning({
-          payerProfileId,
-          hostProfileId: finalHostProfileId,
-          purpose,
-          relatedId,
-          provider: dbProvider,
-          customerPrice: purpose === 'booking' ? customerPrice : undefined,
-        });
-        
-        // Pour les bookings : valider la réservation après paiement
-        if (purpose === 'booking' && relatedId) {
-          await markBookingPaid(relatedId);
-        }
-        
-        console.log('[PaymentModal] Paiement créé avec succès');
+        // Le paiement est déjà créé dans createBooking, pas besoin de l'appeler ici
+        console.log('[PaymentModal] Paiement déjà créé lors de la création du booking');
       } else {
         console.warn('[PaymentModal] Informations manquantes:', {
           purpose,
@@ -282,8 +260,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       setIsProcessing(false);
       
       try {
-        console.log('[PaymentModal] Appel onSuccess callback...');
-        const result = await onSuccess();
+        console.log('[PaymentModal] Appel onSuccess callback avec provider:', paymentMethod);
+        const result = await onSuccess(paymentMethod);
         console.log('[PaymentModal] onSuccess callback retourné:', result);
         console.log('[PaymentModal] onSuccess callback exécuté avec succès');
         // Le parent gère la fermeture via onSuccess

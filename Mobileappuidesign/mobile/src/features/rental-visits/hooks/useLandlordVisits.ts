@@ -28,19 +28,38 @@ export const useLandlordVisits = (): UseLandlordVisitsResult => {
 
   const refresh = useCallback(async () => {
     if (!isLoggedIn || !supabaseProfile || !isLandlord) {
+      console.log('[useLandlordVisits] refresh() - Not ready:', { isLoggedIn, hasProfile: !!supabaseProfile, isLandlord });
       setVisits([]);
       return;
     }
 
+    console.log('[useLandlordVisits] 🔵 refresh() called for profile:', {
+      profileId: supabaseProfile.id,
+      profileRole: supabaseProfile.role,
+      isLandlord,
+    });
+
     setIsLoading(true);
     try {
       const data = await fetchLandlordRentalVisits(supabaseProfile.id);
-      // Sécurité côté client : ne garder que les visites liées au bailleur courant.
-      const filtered = data.filter((visit) => visit.landlordProfileId === supabaseProfile.id);
-      setVisits(filtered);
+      
+      console.log('[useLandlordVisits] ✅ fetchLandlordRentalVisits returned:', {
+        profileId: supabaseProfile.id,
+        visitCount: data.length,
+        visits: data.map(v => ({
+          id: v.id,
+          landlordProfileId: v.landlordProfileId,
+          listingTitle: v.listingTitle,
+          guestName: v.guest?.name,
+        })),
+      });
+
+      // fetchLandlordRentalVisits retourne déjà les visites filtrées par listing.host_id
+      // Pas besoin de filtrer à nouveau
+      setVisits(data);
       setError(null);
     } catch (err) {
-      console.error('[useLandlordVisits] Failed to fetch landlord visits', err);
+      console.error('[useLandlordVisits] ❌ Failed to fetch landlord visits', err);
       setError('unable_to_load_landlord_visits');
     } finally {
       setIsLoading(false);

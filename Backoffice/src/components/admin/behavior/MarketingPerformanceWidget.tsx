@@ -4,14 +4,30 @@ import { Badge } from '../../ui/badge';
 import type { DateRange } from '../DateRangePicker';
 import { createComparisonMetric } from '../../../lib/mockDataComparison';
 
+type CityRecommendation = 'increase' | 'maintain' | 'reduce';
+
+interface CityRoasEntry {
+  city: string;
+  spent: number;
+  revenue: number;
+  roas: number;
+  recommendation: CityRecommendation;
+  trend: number;
+  previousRoas?: number;
+}
+
 interface MarketingPerformanceWidgetProps {
   dateRange: DateRange;
   isLoading: boolean;
 }
 
 export function MarketingPerformanceWidget({ dateRange, isLoading }: MarketingPerformanceWidgetProps) {
-  const isComparing = dateRange.compareEnabled && dateRange.compareStartDate && dateRange.compareEndDate;
-  
+  const isComparing = Boolean(
+    dateRange.compareEnabled &&
+      dateRange.compareStartDate &&
+      dateRange.compareEndDate,
+  );
+
   // Mock data - TODO: remplacer par API
   
   // CAC (Coût d'acquisition par utilisateur)
@@ -20,7 +36,7 @@ export function MarketingPerformanceWidget({ dateRange, isLoading }: MarketingPe
   const cacPerHost = createComparisonMetric(18000, isComparing, 9.1);
 
   // ROAS par ville
-  const roasByCity = [
+  const baseRoasByCity: CityRoasEntry[] = [
     {
       city: 'Douala',
       spent: 450000, // FCFA
@@ -61,15 +77,19 @@ export function MarketingPerformanceWidget({ dateRange, isLoading }: MarketingPe
       recommendation: 'reduce',
       trend: -5.7,
     },
-  ].map(city => {
-    if (isComparing) {
-      const roasMetric = createComparisonMetric(city.roas, true, city.trend);
-      return {
-        ...city,
-        previousRoas: roasMetric.previous,
-      };
+  ];
+
+  const roasByCity: CityRoasEntry[] = baseRoasByCity.map((city) => {
+    if (!isComparing) {
+      return city;
     }
-    return city;
+
+    const roasMetric = createComparisonMetric(city.roas, true, city.trend);
+
+    return {
+      ...city,
+      previousRoas: roasMetric.previous,
+    };
   });
 
   const formatCurrency = (value: number) => {
@@ -96,7 +116,7 @@ export function MarketingPerformanceWidget({ dateRange, isLoading }: MarketingPe
     return 'text-red-600 bg-red-100';
   };
 
-  const getRecommendationBadge = (rec: string) => {
+  const getRecommendationBadge = (rec: CityRecommendation) => {
     if (rec === 'increase') return <Badge className="bg-green-600">📈 Augmenter budget</Badge>;
     if (rec === 'maintain') return <Badge className="bg-blue-600">⚖️ Maintenir</Badge>;
     return <Badge variant="destructive">📉 Réduire budget</Badge>;

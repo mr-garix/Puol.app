@@ -2,12 +2,15 @@ import { MOCK_LANDLORD_TENANTS, type LandlordTenant } from '@/src/data/mockLandl
 import { supabase } from '@/src/supabaseClient';
 
 export const fetchLandlordTenants = async (landlordId: string): Promise<LandlordTenant[]> => {
+  console.log('[fetchLandlordTenants] 🔵 Fetching tenants for landlord:', landlordId);
+
   try {
     if (!supabase) {
-      console.warn('[fetchLandlordTenants] Supabase not available, using mock data');
-      return MOCK_LANDLORD_TENANTS.filter((tenant) => tenant.hostId === landlordId);
+      console.error('[fetchLandlordTenants] ❌ Supabase not available');
+      return [];
     }
 
+    // Récupérer les contrats de location du landlord depuis rental_leases
     const { data: leases, error } = await supabase
       .from('rental_leases')
       .select(`
@@ -27,20 +30,24 @@ export const fetchLandlordTenants = async (landlordId: string): Promise<Landlord
       .eq('owner_profile_id', landlordId);
 
     if (error) {
-      console.warn('[fetchLandlordTenants] Error fetching from Supabase:', error);
-      return MOCK_LANDLORD_TENANTS.filter((tenant) => tenant.hostId === landlordId);
+      console.error('[fetchLandlordTenants] ❌ Error fetching leases from Supabase:', error);
+      throw error;
     }
 
+    // Si aucun contrat, retourner un tableau vide (pas de données moquées)
     if (!leases || leases.length === 0) {
-      return MOCK_LANDLORD_TENANTS.filter((tenant) => tenant.hostId === landlordId);
+      console.log('[fetchLandlordTenants] ℹ️ No leases found for landlord:', landlordId);
+      return [];
     }
 
-    // Fetch tenant profiles and listings to get additional info
+    console.log('[fetchLandlordTenants] ✅ Found leases:', leases.length);
+
+    // Récupérer les profils des locataires et les annonces
     const tenantIds = leases.map((lease: any) => lease.tenant_profile_id).filter(Boolean);
     const listingIds = leases.map((lease: any) => lease.listing_id).filter(Boolean);
 
-    console.log('[fetchLandlordTenants] Fetching tenant IDs:', tenantIds);
-    console.log('[fetchLandlordTenants] Fetching listing IDs:', listingIds);
+    console.log('[fetchLandlordTenants] 📋 Fetching tenant IDs:', tenantIds);
+    console.log('[fetchLandlordTenants] 📋 Fetching listing IDs:', listingIds);
 
     const [{ data: tenantProfiles, error: tenantError }, { data: listings, error: listingError }] = await Promise.all([
       supabase.from('profiles').select('id, first_name, last_name, avatar_url, phone').in('id', tenantIds),
@@ -48,23 +55,23 @@ export const fetchLandlordTenants = async (landlordId: string): Promise<Landlord
     ]);
 
     if (tenantError) {
-      console.warn('[fetchLandlordTenants] Error fetching tenant profiles:', tenantError);
+      console.error('[fetchLandlordTenants] ❌ Error fetching tenant profiles:', tenantError);
     }
     if (listingError) {
-      console.warn('[fetchLandlordTenants] Error fetching listings:', listingError);
+      console.error('[fetchLandlordTenants] ❌ Error fetching listings:', listingError);
     }
 
-    console.log('[fetchLandlordTenants] Tenant profiles fetched:', tenantProfiles?.length);
-    console.log('[fetchLandlordTenants] Listings fetched:', listings?.length);
+    console.log('[fetchLandlordTenants] ✅ Tenant profiles fetched:', tenantProfiles?.length);
+    console.log('[fetchLandlordTenants] ✅ Listings fetched:', listings?.length);
 
-    // Map rental_leases to LandlordTenant format
+    // Mapper les contrats de location au format LandlordTenant
     const tenants: LandlordTenant[] = leases.map((lease: any) => {
       const tenantProfile = tenantProfiles?.find((p: any) => p.id === lease.tenant_profile_id);
       const listing = listings?.find((l: any) => l.id === lease.listing_id);
       const monthlyRent = lease.rent_monthly || 0;
       const depositAmount = monthlyRent; // Caution = loyer mensuel
 
-      console.log('[fetchLandlordTenants] Lease ID:', lease.id, 'Tenant:', tenantProfile?.first_name, 'Listing:', listing?.title);
+      console.log('[fetchLandlordTenants] 📝 Lease ID:', lease.id, 'Tenant:', tenantProfile?.first_name, 'Listing:', listing?.title);
 
       return {
         id: lease.id,
@@ -88,11 +95,12 @@ export const fetchLandlordTenants = async (landlordId: string): Promise<Landlord
       };
     });
 
-    console.log('[fetchLandlordTenants] Total tenants mapped:', tenants.length);
+    console.log('[fetchLandlordTenants] ✅ Total tenants mapped:', tenants.length);
     return tenants;
   } catch (err) {
-    console.error('[fetchLandlordTenants] Exception:', err);
-    return MOCK_LANDLORD_TENANTS.filter((tenant) => tenant.hostId === landlordId);
+    console.error('[fetchLandlordTenants] ❌ Exception:', err);
+    // Retourner un tableau vide en cas d'erreur (pas de données moquées)
+    return [];
   }
 };
 
@@ -100,15 +108,15 @@ export const fetchLandlordTenantById = async (
   landlordId: string,
   tenantId: string,
 ): Promise<LandlordTenant | null> => {
+  console.log('[fetchLandlordTenantById] 🔵 Fetching tenant:', tenantId, 'for landlord:', landlordId);
+
   try {
     if (!supabase) {
-      console.warn('[fetchLandlordTenantById] Supabase not available, using mock data');
-      const tenant = MOCK_LANDLORD_TENANTS.find(
-        (item) => item.hostId === landlordId && item.id === tenantId,
-      );
-      return tenant ?? null;
+      console.error('[fetchLandlordTenantById] ❌ Supabase not available');
+      return null;
     }
 
+    // Récupérer le contrat de location
     const { data: lease, error } = await supabase
       .from('rental_leases')
       .select(`
@@ -127,17 +135,21 @@ export const fetchLandlordTenantById = async (
       `)
       .eq('id', tenantId)
       .eq('owner_profile_id', landlordId)
-      .single();
+      .maybeSingle();
 
-    if (error || !lease) {
-      console.warn('[fetchLandlordTenantById] Error fetching from Supabase:', error);
-      const mockTenant = MOCK_LANDLORD_TENANTS.find(
-        (item) => item.hostId === landlordId && item.id === tenantId,
-      );
-      return mockTenant ?? null;
+    if (error) {
+      console.error('[fetchLandlordTenantById] ❌ Error fetching lease from Supabase:', error);
+      return null;
     }
 
-    // Fetch tenant profile and listing
+    if (!lease) {
+      console.log('[fetchLandlordTenantById] ℹ️ No lease found for tenant:', tenantId);
+      return null;
+    }
+
+    console.log('[fetchLandlordTenantById] ✅ Lease found:', lease.id);
+
+    // Récupérer le profil du locataire et l'annonce
     const [{ data: tenantProfile }, { data: listing }] = await Promise.all([
       supabase
         .from('profiles')
@@ -153,6 +165,8 @@ export const fetchLandlordTenantById = async (
 
     const monthlyRent = lease.rent_monthly || 0;
     const depositAmount = monthlyRent; // Caution = loyer mensuel
+
+    console.log('[fetchLandlordTenantById] ✅ Tenant profile and listing fetched');
 
     return {
       id: lease.id,
@@ -175,10 +189,8 @@ export const fetchLandlordTenantById = async (
       notes: null,
     };
   } catch (err) {
-    console.error('[fetchLandlordTenantById] Exception:', err);
-    const mockTenant = MOCK_LANDLORD_TENANTS.find(
-      (item) => item.hostId === landlordId && item.id === tenantId,
-    );
-    return mockTenant ?? null;
+    console.error('[fetchLandlordTenantById] ❌ Exception:', err);
+    // Retourner null en cas d'erreur (pas de données moquées)
+    return null;
   }
 };

@@ -13,6 +13,9 @@ import type {
 import { type VisitRecord } from '@/components/admin/VisitsManagement';
 import { fetchLandlordListingDetail } from './landlords';
 
+// Supabase table aliases
+type ProfilesTable = Database['public']['Tables']['profiles']['Row'];
+
 const HOST_ROLE: NonNullable<ProfilesTable['role']> = 'host';
 const HOST_SUPPLY_ROLE: ProfilesTable['supply_role'] = 'host';
 const HOST_PROFILE_FILTER = `role.eq.${HOST_ROLE},supply_role.eq.${HOST_SUPPLY_ROLE}`;
@@ -45,9 +48,9 @@ async function countRowsByColumn(
     return 0;
   }
 
-  const { count, error } = await client.from(table).select('id', { count: 'exact', head: true }).eq(column, value);
+  const { count, error } = await (client.from(table as any) as any).select('id', { count: 'exact', head: true }).eq(column, value);
   if (error) {
-    console.warn(`[hosts] countRowsByColumn error for ${table}.${column}`, error);
+    console.warn(`[hosts] countRowsByColumn error for ${String(table)}.${column}`, error);
     return 0;
   }
 
@@ -112,9 +115,8 @@ export type HostBoardListing = {
   visitsCount: number;
 };
 
-// Supabase table aliases
+// Supabase table aliases (ProfilesTable already defined above)
 
-type ProfilesTable = Database['public']['Tables']['profiles']['Row'];
 type ListingsRow = Database['public']['Tables']['listings']['Row'];
 type RentalVisitRow = Database['public']['Tables']['rental_visits']['Row'];
 type HostApplicationRow = Database['public']['Tables']['host_applications']['Row'];
@@ -538,6 +540,7 @@ export type HostReservationRecord = {
   hostPhone?: string | null;
   hostId?: string | null;
   tenant: string;
+  tenantProfileId?: string | null;
   phone?: string | null;
   city?: string | null;
   district?: string | null;
@@ -647,13 +650,21 @@ export async function fetchHostReservations(): Promise<HostReservationRecord[]> 
       return 'finished';
     };
 
-    return bookings.map((booking) => {
+    const reservations = bookings.map((booking) => {
       const listing = listingMap.get(booking.listing_id as string);
       const hostMeta = listing?.host_id ? hostNameMap.get(listing.host_id) : null;
       const hostName = hostMeta?.name ?? 'Hôte PUOL';
       const hostPhone = hostMeta?.phone ?? null;
       const guest = guestNameMap.get(booking.guest_profile_id ?? '')?.name ?? 'Voyageur';
       const guestPhone = guestNameMap.get(booking.guest_profile_id ?? '')?.phone ?? null;
+      const guestProfileId = booking.guest_profile_id ?? null;
+
+      console.log('[fetchHostReservations] Mapping booking:', {
+        bookingId: booking.id,
+        guestProfileId,
+        guestName: guest,
+        rawGuestProfileId: booking.guest_profile_id,
+      });
 
       const checkIn = booking.checkin_date ?? null;
       const checkOut = booking.checkout_date ?? null;
@@ -682,6 +693,7 @@ export async function fetchHostReservations(): Promise<HostReservationRecord[]> 
         hostPhone,
         hostId: listing?.host_id ?? null,
         tenant: guest,
+        tenantProfileId: guestProfileId,
         phone: guestPhone,
         city: listing?.city ?? null,
         district: listing?.district ?? null,
@@ -697,6 +709,13 @@ export async function fetchHostReservations(): Promise<HostReservationRecord[]> 
         status: mapStatus(booking.status),
         timelineStatus,
       } satisfies HostReservationRecord;
+    });
+
+    // Trier par date d'arrivée (du plus récent au plus ancien)
+    return reservations.sort((a, b) => {
+      const dateA = a.checkIn ? new Date(a.checkIn).getTime() : 0;
+      const dateB = b.checkIn ? new Date(b.checkIn).getTime() : 0;
+      return dateB - dateA; // Plus récent en premier
     });
   } catch (error) {
     console.warn('[hosts] fetchHostReservations failed', error);
@@ -846,53 +865,59 @@ export async function fetchHostProfiles(): Promise<HostProfile[]> {
       hostRevenueBrut.set(hostId, (hostRevenueBrut.get(hostId) ?? 0) + amount);
     });
 
-    return rows.map((row) => {
-      const { name, username } = buildHostProfileName(row);
-      const joinedAt = row.created_at ? new Date(row.created_at).getFullYear().toString() : '—';
+    return rows
+      .map((row) => {
+        const { name, username } = buildHostProfileName(row);
+        const joinedAt = row.created_at ? new Date(row.created_at).getFullYear().toString() : '—';
 
-      const hostListings = listingsByHost.get(row.id) ?? [];
-      const hostBookings = bookingsByHost.get(row.id) ?? [];
+        const hostListings = listingsByHost.get(row.id) ?? [];
+        const hostBookings = bookingsByHost.get(row.id) ?? [];
 
-      // Types de biens uniques
-      const propertyTags = Array.from(
-        new Set(
-          hostListings
-            .map((l) => l.property_type?.trim())
-            .filter((v): v is string => Boolean(v && v.length > 0)),
-        ),
-      );
+        // Types de biens uniques
+        const propertyTags = Array.from(
+          new Set(
+            hostListings
+              .map((l) => l.property_type?.trim())
+              .filter((v): v is string => Boolean(v && v.length > 0)),
+          ),
+        );
 
-      // Séjours = bookings liés aux listings de l’hôte
-      const staysHosted = hostBookings.length;
+        // Séjours = bookings liés aux listings de l'hôte
+        const staysHosted = hostBookings.length;
 
-      // Invités = distinct guest_profile_id
-      const guestsSupported = Array.from(
-        new Set(
-          hostBookings
-            .map((b) => b.guest_profile_id?.trim())
-            .filter((v): v is string => Boolean(v && v.length > 0)),
-        ),
-      ).length;
+        // Invités = distinct guest_profile_id
+        const guestsSupported = Array.from(
+          new Set(
+            hostBookings
+              .map((b) => b.guest_profile_id?.trim())
+              .filter((v): v is string => Boolean(v && v.length > 0)),
+          ),
+        ).length;
 
-      const listingsActive = hostListings.length;
-      const revenueBrut = hostRevenueBrut.get(row.id) ?? 0;
-      const revenueShare = revenueBrut;
+        const listingsActive = hostListings.length;
+        const revenueBrut = hostRevenueBrut.get(row.id) ?? 0;
+        const revenueShare = revenueBrut;
 
-      return {
-        id: row.id,
-        name,
-        username,
-        segment: mapHostSegment(row.host_status),
-        city: row.city?.trim() || '—',
-        staysHosted,
-        listingsActive,
-        guestsSupported,
-        revenueShare,
-        joinedAt,
-        propertyTags,
-        avatarUrl: row.avatar_url ?? null,
-      } satisfies HostProfile;
-    });
+        // Normaliser le statut du host
+        const hostStatus = normalizeHostApplicationStatus(row.host_status);
+
+        return {
+          id: row.id,
+          name,
+          username,
+          segment: mapHostSegment(row.host_status),
+          city: row.city?.trim() || '—',
+          staysHosted,
+          listingsActive,
+          guestsSupported,
+          revenueShare,
+          joinedAt,
+          propertyTags,
+          avatarUrl: row.avatar_url ?? null,
+          status: hostStatus,
+        } satisfies HostProfile;
+      })
+      .filter((host) => host.status === 'approved');
   } catch (error) {
     console.warn('[hosts] fetchHostProfiles failed', error);
     return [];

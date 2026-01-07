@@ -406,14 +406,58 @@ async function countDailyVisitors(client: typeof supabase, startDate: Date, endD
   return authenticated + anonymous;
 }
 
-async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ gmv: number; revenue: number }> {
+async function fetchRefundsTotals(startIso: string, endIso: string): Promise<{ total: number; count: number; byStatus: Record<string, number> }> {
   if (!supabase) {
-    console.warn('[dashboardStats] fetchPaymentTotals skipped: supabase client absent');
-    return { gmv: 0, revenue: 0 };
+    console.warn('[dashboardStats] fetchRefundsTotals skipped: supabase client absent');
+    return { total: 0, count: 0, byStatus: {} };
   }
 
   try {
-    const [paymentsRes, visitPaymentsRes, earningsRes] = await Promise.all([
+    const { data: refundsData, error: refundsError } = await (supabase as any)
+      .from('refunds')
+      .select('refund_amount, status')
+      .gte('requested_at', startIso)
+      .lt('requested_at', endIso);
+
+    if (refundsError) {
+      console.warn('[dashboardStats] fetchRefundsTotals error', refundsError);
+      return { total: 0, count: 0, byStatus: {} };
+    }
+
+    const refundsRows = (refundsData ?? []) as { refund_amount?: number | null; status?: string | null }[];
+    const total = refundsRows.reduce((acc, row) => acc + (row.refund_amount ?? 0), 0);
+    const count = refundsRows.length;
+
+    // Compter par statut
+    const byStatus: Record<string, number> = {};
+    refundsRows.forEach((row) => {
+      const status = row.status ?? 'unknown';
+      byStatus[status] = (byStatus[status] ?? 0) + 1;
+    });
+
+    console.log('[dashboardStats] fetchRefundsTotals breakdown', {
+      startIso,
+      endIso,
+      total,
+      count,
+      byStatus,
+    });
+
+    return { total, count, byStatus };
+  } catch (error) {
+    console.warn('[dashboardStats] fetchRefundsTotals unexpected error', error);
+    return { total: 0, count: 0, byStatus: {} };
+  }
+}
+
+async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ gmv: number; revenue: number; refundsTotal: number }> {
+  if (!supabase) {
+    console.warn('[dashboardStats] fetchPaymentTotals skipped: supabase client absent');
+    return { gmv: 0, revenue: 0, refundsTotal: 0 };
+  }
+
+  try {
+    const [paymentsRes, visitPaymentsRes, earningsRes, refundsRes] = await Promise.all([
       supabase
         .from('payments')
         .select('amount')
@@ -430,6 +474,7 @@ async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ g
         .select('platform_fee')
         .gte('created_at', startIso)
         .lt('created_at', endIso),
+      fetchRefundsTotals(startIso, endIso),
     ]);
 
     if (paymentsRes.error) {
@@ -446,27 +491,42 @@ async function fetchPaymentTotals(startIso: string, endIso: string): Promise<{ g
     const visitPaymentsRows = (visitPaymentsRes.data ?? []) as { amount?: number | null }[];
     const earningsRows = (earningsRes.data ?? []) as { platform_fee?: number | null }[];
 
-    // GMV = somme de tous les amounts (réservations + visites)
-    const gmv = paymentsRows.reduce((acc, row) => acc + (row.amount ?? 0), 0);
+    // GMV brut = somme de tous les amounts (réservations + visites)
+    const gmvBrut = paymentsRows.reduce((acc, row) => acc + (row.amount ?? 0), 0);
 
-    // CA = platform_fee (réservations) + amounts des visites
+    // CA brut = platform_fee (réservations) + amounts des visites
     const reservationRevenue = earningsRows.reduce((acc, row) => acc + (row.platform_fee ?? 0), 0);
     const visitRevenue = visitPaymentsRows.reduce((acc, row) => acc + (row.amount ?? 0), 0);
-    const revenue = reservationRevenue + visitRevenue;
+    const revenueBrut = reservationRevenue + visitRevenue;
+
+    // Déduction des remboursements
+    const refundsTotal = refundsRes.total;
+    const commissionRemboursee = refundsTotal * 0.10; // 10% de commission sur chaque remboursement
+
+    // GMV net = GMV brut - remboursements
+    const gmv = gmvBrut - refundsTotal;
+
+    // CA net = (CA_meublé - commission_remboursée) + CA_non_meublé + CA_visites
+    // Ici on soustrait la commission remboursée du revenue total
+    const revenue = revenueBrut - commissionRemboursee;
 
     console.log('[dashboardStats] fetchPaymentTotals breakdown', {
       startIso,
       endIso,
+      gmvBrut,
+      refundsTotal,
       gmv,
       reservationRevenue,
+      commissionRemboursee,
       visitRevenue,
-      totalRevenue: revenue,
+      revenueBrut,
+      revenue,
     });
 
-    return { gmv, revenue };
+    return { gmv, revenue, refundsTotal };
   } catch (error) {
     console.warn('[dashboardStats] fetchPaymentTotals unexpected error', error);
-    return { gmv: 0, revenue: 0 };
+    return { gmv: 0, revenue: 0, refundsTotal: 0 };
   }
 }
 

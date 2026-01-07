@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useAuth } from '@/src/contexts/AuthContext';
-import { useNotifications } from '@/src/contexts/NotificationContext';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 import { getUserReviewReplyById } from '@/src/features/reviews/services';
 import { supabase } from '@/src/supabaseClient';
 
@@ -33,12 +33,9 @@ const UserReviewReplyNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedReplies = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_REVIEW_REPLIES_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedRepliesRef.current = new Set(notifiedIds);
-          console.log('[UserReviewReplyNotificationBridge] Loaded notified replies from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_REVIEW_REPLIES_STORAGE_KEY);
+        notifiedRepliesRef.current = notifiedIds;
+        console.log('[UserReviewReplyNotificationBridge] Loaded notified replies from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[UserReviewReplyNotificationBridge] Error loading notified replies cache:', error);
       } finally {
@@ -93,8 +90,7 @@ const UserReviewReplyNotificationBridge = () => {
           notifiedRepliesRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache
-          const notifiedArray = Array.from(notifiedRepliesRef.current);
-          AsyncStorage.setItem(NOTIFIED_REVIEW_REPLIES_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_REVIEW_REPLIES_STORAGE_KEY, notifiedRepliesRef.current).catch((err) => {
             console.error('[UserReviewReplyNotificationBridge] Error saving notified replies cache:', err);
           });
           console.log('[UserReviewReplyNotificationBridge] Reply notification displayed and cached');

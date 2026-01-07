@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
+import { useHostVisits } from '@/src/features/host/hooks';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 import { supabase } from '@/src/supabaseClient';
 
 const NOTIFIED_HOST_VISITS_STORAGE_KEY = 'notified_host_visits_cache';
@@ -28,12 +29,9 @@ const HostVisitNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedVisits = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_HOST_VISITS_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedVisitsRef.current = new Set(notifiedIds);
-          console.log('[HostVisitNotificationBridge] Loaded notified visits from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_HOST_VISITS_STORAGE_KEY);
+        notifiedVisitsRef.current = notifiedIds;
+        console.log('[HostVisitNotificationBridge] Loaded notified visits from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[HostVisitNotificationBridge] Error loading notified visits cache:', error);
       } finally {
@@ -99,8 +97,7 @@ const HostVisitNotificationBridge = () => {
           notifiedVisitsRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache
-          const notifiedArray = Array.from(notifiedVisitsRef.current);
-          AsyncStorage.setItem(NOTIFIED_HOST_VISITS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_HOST_VISITS_STORAGE_KEY, notifiedVisitsRef.current).catch((err) => {
             console.error('[HostVisitNotificationBridge] Error saving notified visits cache:', err);
           });
           console.log('[HostVisitNotificationBridge] Visit notification displayed and cached');

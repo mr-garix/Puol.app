@@ -32,6 +32,8 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { fetchHostReservations, type HostReservationRecord } from '@/lib/services/hosts';
+import { RefundSection } from './RefundSection';
+import { supabase } from '@/lib/supabaseClient';
 
 type HostReservation = {
   id: string;
@@ -41,6 +43,7 @@ type HostReservation = {
   host: string;
   hostPhone?: string | null;
   tenant: string;
+  tenantProfileId?: string | null;
   phone?: string | null;
   city?: string | null;
   addressText?: string | null;
@@ -86,6 +89,12 @@ function HostReservationDetailView({ reservation, onBack, onConfirm, onCancel }:
   const timelineBadge = timelineVariants[reservation.timelineStatus];
   const canConfirm = reservation.status !== 'confirmed';
   const canCancel = reservation.status !== 'cancelled';
+  const [showRefundSuccess, setShowRefundSuccess] = useState(false);
+
+  const handleRefundCreated = () => {
+    setShowRefundSuccess(true);
+    setTimeout(() => setShowRefundSuccess(false), 3000);
+  };
 
   return (
     <div className="space-y-6">
@@ -190,6 +199,23 @@ function HostReservationDetailView({ reservation, onBack, onConfirm, onCancel }:
               <p className="text-sm font-semibold text-orange-600">{currencyFormatter.format(reservation.balance)}</p>
             </div>
           </div>
+
+          {/* Message de succès remboursement */}
+          {showRefundSuccess && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
+              <p className="text-sm text-emerald-700 font-medium">✓ Remboursement effectué avec succès</p>
+            </div>
+          )}
+
+          {/* Section Remboursement */}
+          <RefundSection
+            bookingId={reservation.id}
+            guestProfileId={reservation.tenantProfileId ?? ''}
+            guestName={reservation.tenant}
+            guestPhone={reservation.phone}
+            totalAmount={reservation.total}
+            onRefundCreated={handleRefundCreated}
+          />
         </div>
       </div>
     </div>
@@ -200,6 +226,14 @@ function mapReservationRecordToHostReservation(record: HostReservationRecord): H
   const deposit = Number.isFinite(record.deposit) ? record.deposit : 0;
   const total = Number.isFinite(record.total) ? record.total : 0;
   const balance = Number.isFinite(record.balance) ? record.balance : Math.max(total - deposit, 0);
+  
+  console.log('[mapReservationRecordToHostReservation] Mapping record:', {
+    id: record.id,
+    tenant: record.tenant,
+    tenantProfileId: record.tenantProfileId,
+    hasProperty: 'tenantProfileId' in record,
+  });
+  
   return {
     id: record.id,
     property: record.property,
@@ -208,6 +242,7 @@ function mapReservationRecordToHostReservation(record: HostReservationRecord): H
     host: record.hostName,
     hostPhone: record.hostPhone ?? undefined,
     tenant: record.tenant,
+    tenantProfileId: record.tenantProfileId ?? undefined,
     phone: record.phone ?? undefined,
     city: record.city ?? undefined,
     addressText: record.addressText ?? undefined,
@@ -307,6 +342,71 @@ export function HostReservationsBoard() {
     };
   }, []);
 
+  // Subscription Realtime pour les changements de réservations
+  useEffect(() => {
+    if (!supabase) return;
+
+    console.log('[HostReservationsBoard] Setting up realtime subscription for bookings');
+
+    const channel = (supabase as any)
+      .channel('bookings-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookings',
+        },
+        (payload: any) => {
+          console.log('[HostReservationsBoard] Booking changed:', payload);
+
+          if (payload.eventType === 'UPDATE') {
+            const updatedBooking = payload.new;
+            setReservations((prev) =>
+              prev.map((reservation) => {
+                if (reservation.id === updatedBooking.id) {
+                  return {
+                    ...reservation,
+                    status: updatedBooking.status as HostReservation['status'],
+                  };
+                }
+                return reservation;
+              })
+            );
+
+            // Mettre à jour la réservation focalisée si elle correspond
+            setFocusedReservation((prev) => {
+              if (prev && prev.id === updatedBooking.id) {
+                return {
+                  ...prev,
+                  status: updatedBooking.status as HostReservation['status'],
+                };
+              }
+              return prev;
+            });
+          } else if (payload.eventType === 'INSERT') {
+            // Nouvelle réservation
+            const newBooking = payload.new;
+            const newReservation = mapReservationRecordToHostReservation({
+              id: newBooking.id,
+              status: newBooking.status,
+            } as any);
+            setReservations((prev) => [newReservation, ...prev]);
+          } else if (payload.eventType === 'DELETE') {
+            // Réservation supprimée
+            setReservations((prev) => prev.filter((r) => r.id !== payload.old.id));
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[HostReservationsBoard] Realtime subscription status:', status);
+      });
+
+    return () => {
+      (supabase as any).removeChannel(channel);
+    };
+  }, []);
+
   const { filteredReservations, pendingCount, confirmedCount, totalRevenue } = useMemo(() => {
     const filtered = reservations.filter((reservation) =>
       [reservation.property, reservation.tenant, reservation.city]
@@ -329,9 +429,30 @@ export function HostReservationsBoard() {
     };
   }, [searchQuery, reservations]);
 
-  const updateReservationStatus = (reservationId: string, status: HostReservation['status']) => {
-    setReservations((prev) => prev.map((reservation) => (reservation.id === reservationId ? { ...reservation, status } : reservation)));
-    setFocusedReservation((prev) => (prev?.id === reservationId ? { ...prev, status } : prev));
+  const updateReservationStatus = async (reservationId: string, status: HostReservation['status']) => {
+    try {
+      if (!supabase) {
+        console.error('[HostReservationsBoard] Supabase client not available');
+        return;
+      }
+
+      // Mettre à jour en base de données Supabase
+      const { error } = await supabase
+        .from('bookings')
+        .update({ status })
+        .eq('id', reservationId);
+
+      if (error) {
+        console.error('[HostReservationsBoard] Erreur mise à jour statut:', error);
+        return;
+      }
+
+      // Mettre à jour l'état local après succès
+      setReservations((prev) => prev.map((reservation) => (reservation.id === reservationId ? { ...reservation, status } : reservation)));
+      setFocusedReservation((prev) => (prev?.id === reservationId ? { ...prev, status } : prev));
+    } catch (err) {
+      console.error('[HostReservationsBoard] Exception:', err);
+    }
   };
 
   const handleViewReservation = (reservation: HostReservation) => {

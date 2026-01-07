@@ -10,6 +10,7 @@ import { DailySummaryWidget } from '../widgets/DailySummaryWidget';
 import { ConversionRateWidget } from '../widgets/ConversionRateWidget';
 import { TopPropertiesWidget } from '../widgets/TopPropertiesWidget';
 import { SmartAlertsWidget } from '../widgets/SmartAlertsWidget';
+import { RefundsKPIWidget } from '../widgets/RefundsKPIWidget';
 import { useAdminRole } from '../../../contexts/AdminRoleContext';
 import { exportPendingActionsToCSV, exportTopCitiesToCSV } from '../utils/exportUtils';
 import { getUnifiedCities, UNIFIED_PROPERTIES, UNIFIED_VISITS, UNIFIED_MESSAGES } from '../../../lib/mockDataUnified';
@@ -321,6 +322,9 @@ export function DashboardSectionNew({ onNavigateToRealtime, onNavigateToSection 
             />
           ))}
       </div>
+
+      {/* 3bis. Widget Remboursements full-width */}
+      <RefundsKPIWidget dateRange={dateRange} isLoading={isLoading} />
 
       {/* 4. Top annonces segmentées (meublés / non-meublés) */}
       <TopPropertiesWidget 

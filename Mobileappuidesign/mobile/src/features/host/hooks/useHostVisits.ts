@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/src/contexts/AuthContext';
 import {
@@ -15,18 +15,19 @@ interface UseHostVisitsResult {
   getVisitById: (id: string) => LandlordRentalVisit | undefined;
   fetchVisit: (id: string) => Promise<LandlordRentalVisit | null>;
   visitsCount: number;
-  isHostProfile: boolean;
 }
 
 export const useHostVisits = (): UseHostVisitsResult => {
   const { supabaseProfile, isLoggedIn } = useAuth();
-  const isHostProfile = supabaseProfile?.role === 'host';
+  const isHost = supabaseProfile?.role === 'host';
   const [visits, setVisits] = useState<LandlordRentalVisit[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPolledRef = useRef<number>(0);
 
   const refresh = useCallback(async () => {
-    if (!isLoggedIn || !supabaseProfile || !isHostProfile) {
+    if (!isLoggedIn || !supabaseProfile || !isHost) {
       setVisits([]);
       return;
     }
@@ -34,9 +35,7 @@ export const useHostVisits = (): UseHostVisitsResult => {
     setIsLoading(true);
     try {
       const data = await fetchLandlordRentalVisits(supabaseProfile.id);
-      // Sécurité côté client : ne garder que les visites liées au host courant.
-      const filtered = data.filter((visit) => visit.landlordProfileId === supabaseProfile.id);
-      setVisits(filtered);
+      setVisits(data);
       setError(null);
     } catch (err) {
       console.error('[useHostVisits] Failed to load host visits', err);
@@ -44,7 +43,7 @@ export const useHostVisits = (): UseHostVisitsResult => {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoggedIn, supabaseProfile, isHostProfile]);
+  }, [isLoggedIn, supabaseProfile, isHost]);
 
   useEffect(() => {
     void refresh();
@@ -57,7 +56,7 @@ export const useHostVisits = (): UseHostVisitsResult => {
 
   const fetchVisit = useCallback(
     async (id: string) => {
-      if (!supabaseProfile || !isHostProfile) {
+      if (!supabaseProfile || !isHost) {
         return null;
       }
 
@@ -80,8 +79,45 @@ export const useHostVisits = (): UseHostVisitsResult => {
         return null;
       }
     },
-    [supabaseProfile, isHostProfile],
+    [supabaseProfile, isHost],
   );
+
+  // 🔄 Polling intelligent : recharger les visites toutes les 15 secondes
+  useEffect(() => {
+    if (!isLoggedIn || !supabaseProfile || !isHost) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      return;
+    }
+
+    const pollForNewVisits = async () => {
+      const now = Date.now();
+      if (now - lastPolledRef.current < 15000) {
+        return;
+      }
+
+      lastPolledRef.current = now;
+
+      try {
+        const freshVisits = await fetchLandlordRentalVisits(supabaseProfile.id);
+        setVisits(freshVisits);
+      } catch (err) {
+        console.error('[useHostVisits] Polling error:', err);
+      }
+    };
+
+    pollingIntervalRef.current = setInterval(pollForNewVisits, 15000);
+    pollForNewVisits();
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [isLoggedIn, supabaseProfile, isHost, visits]);
 
   return useMemo(
     () => ({
@@ -92,8 +128,7 @@ export const useHostVisits = (): UseHostVisitsResult => {
       getVisitById,
       fetchVisit,
       visitsCount: visits.length,
-      isHostProfile,
     }),
-    [visits, isLoading, error, refresh, getVisitById, fetchVisit, isHostProfile],
+    [visits, isLoading, error, refresh, getVisitById, fetchVisit],
   );
 };

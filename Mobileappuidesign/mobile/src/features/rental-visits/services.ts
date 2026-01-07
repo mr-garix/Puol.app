@@ -179,9 +179,15 @@ const mapToGuestVisit = (row: SupabaseRentalVisitRow): GuestRentalVisit => {
 
 const mapToLandlordVisit = (row: SupabaseRentalVisitRow): LandlordRentalVisit => {
   const guestProfile = unwrapSingle(row.guest);
+  const listing = unwrapSingle(row.listing);
   const base = mapToGuestVisit(row);
+  
+  // landlordProfileId est en fait le host_id de l'annonce (listings.host_id)
+  const landlordProfileId = listing?.host_id ?? undefined;
+  
   return {
     ...base,
+    landlordProfileId,
     guest: guestProfile
       ? {
           id: guestProfile.id,
@@ -212,18 +218,73 @@ export const fetchGuestRentalVisits = async (guestProfileId: string): Promise<Gu
 };
 
 export const fetchLandlordRentalVisits = async (landlordProfileId: string): Promise<LandlordRentalVisit[]> => {
+  console.log('[fetchLandlordRentalVisits] 🔵 Fetching visits for profile:', landlordProfileId);
+
+  // 1️⃣ D'abord récupérer les IDs des annonces du profil depuis la table listings
+  const { data: listings, error: listingsError } = await supabase
+    .from('listings')
+    .select('id')
+    .eq('host_id', landlordProfileId);
+
+  if (listingsError) {
+    console.error('[fetchLandlordRentalVisits] ❌ Error fetching listings:', listingsError);
+    throw listingsError;
+  }
+
+  const listingIds = (listings ?? []).map((l) => l.id);
+
+  console.log('[fetchLandlordRentalVisits] 📋 Found listings for profile:', {
+    profileId: landlordProfileId,
+    listingCount: listingIds.length,
+    listingIds,
+  });
+
+  // Si le profil n'a pas d'annonces, retourner un tableau vide
+  if (listingIds.length === 0) {
+    console.log('[fetchLandlordRentalVisits] ℹ️ No listings found for profile:', landlordProfileId);
+    return [];
+  }
+
+  // 2️⃣ Récupérer les visites liées à ces annonces
   const { data, error } = await supabase
     .from('rental_visits')
     .select(RENTAL_VISIT_SELECT)
-    .eq('listing.host_id', landlordProfileId)
+    .in('rental_listing_id', listingIds)
     .order('visit_date', { ascending: false })
     .order('visit_time', { ascending: false });
 
   if (error) {
+    console.error('[fetchLandlordRentalVisits] ❌ Error fetching visits:', error);
     throw error;
   }
 
-  return (data ?? []).map((row) => mapToLandlordVisit(row));
+  console.log('[fetchLandlordRentalVisits] ✅ Raw data from Supabase:', {
+    requestedHostId: landlordProfileId,
+    visitCount: (data ?? []).length,
+    rawVisits: (data ?? []).map((row: any) => ({
+      visitId: row.id,
+      rentalListingId: row.rental_listing_id,
+      guestProfileId: row.guest_profile_id,
+      listingHostId: (row.listing as any)?.host_id,
+      listingTitle: (row.listing as any)?.title,
+      guestName: (row.guest as any)?.first_name,
+    })),
+  });
+
+  const mapped = (data ?? []).map((row) => mapToLandlordVisit(row));
+
+  console.log('[fetchLandlordRentalVisits] ✅ Mapped visits:', {
+    requestedHostId: landlordProfileId,
+    visitCount: mapped.length,
+    mappedVisits: mapped.map(v => ({
+      visitId: v.id,
+      landlordProfileId: v.landlordProfileId,
+      listingTitle: v.listingTitle,
+      guestName: v.guest?.name,
+    })),
+  });
+
+  return mapped;
 };
 
 export const fetchLandlordRentalVisitById = async (
@@ -318,32 +379,49 @@ export const createRentalVisit = async (input: ScheduleRentalVisitInput): Promis
   // Envoyer le heartbeat (user connecté ou visiteur anonyme)
   await sendHeartbeat(input.guestProfileId || null);
 
-  // 🔔 Envoyer une notification au HOST via Supabase Realtime
+  // ⚠️ NE PAS envoyer la notification ici - elle sera envoyée après le paiement
+  // La notification doit être envoyée uniquement après que le paiement soit confirmé
+
+  return mapToGuestVisit(data);
+};
+
+/**
+ * Envoyer une notification au host après la création de la visite et du paiement
+ */
+export const sendVisitNotificationToHost = async (visitData: SupabaseRentalVisitRow): Promise<void> => {
   try {
-    const mappedVisit = mapToGuestVisit(data);
-    const listingData = data.listing as any;
+    console.log('[sendVisitNotificationToHost] 🔵 Starting notification process for visit:', {
+      visitId: visitData?.id,
+      hasVisitData: !!visitData,
+    });
+
+    const mappedVisit = mapToGuestVisit(visitData);
+    const listingData = visitData.listing as any;
     
-    console.log('[createRentalVisit] Listing data:', {
+    console.log('[sendVisitNotificationToHost] 📋 Listing data structure:', {
       listingData,
       isArray: Array.isArray(listingData),
       length: Array.isArray(listingData) ? listingData.length : 'N/A',
+      type: typeof listingData,
     });
     
     const listing = (Array.isArray(listingData) && listingData.length > 0) 
       ? listingData[0] 
       : (listingData && typeof listingData === 'object' ? listingData : null);
     
-    console.log('[createRentalVisit] Extracted listing:', {
-      listing,
+    console.log('[sendVisitNotificationToHost] 🏠 Extracted listing:', {
+      listing: listing ? { id: listing.id, title: listing.title, host_id: listing.host_id } : null,
       hostId: listing?.host_id,
     });
     
     if (listing && listing.host_id) {
       const channelName = `host-visit-notifications-${listing.host_id}`;
-      console.log('[createRentalVisit] Broadcasting visit notification to host:', {
+      console.log('[sendVisitNotificationToHost] 📡 Broadcasting visit notification to host:', {
         hostId: listing.host_id,
         channelName,
         visitId: mappedVisit.id,
+        guestName: mappedVisit.guest?.name || 'Un visiteur',
+        listingTitle: mappedVisit.listingTitle,
       });
       
       // Envoyer un événement broadcast au HOST via Supabase Realtime
@@ -361,19 +439,26 @@ export const createRentalVisit = async (input: ScheduleRentalVisitInput): Promis
         }
       });
       
-      console.log('[createRentalVisit] Broadcast result:', result);
+      console.log('[sendVisitNotificationToHost] ✅ Broadcast sent successfully:', {
+        result,
+        channelName,
+        visitId: mappedVisit.id,
+      });
     } else {
-      console.warn('[createRentalVisit] No listing or host_id found:', {
+      console.warn('[sendVisitNotificationToHost] ⚠️ No listing or host_id found:', {
         hasListing: !!listing,
         hostId: listing?.host_id,
+        listingKeys: listing ? Object.keys(listing) : [],
       });
     }
   } catch (notificationError) {
-    console.error('[createRentalVisit] Error sending visit notification:', notificationError);
-    // Ne pas échouer la création de visite si la notification échoue
+    console.error('[sendVisitNotificationToHost] ❌ Error sending visit notification:', {
+      error: notificationError,
+      message: notificationError instanceof Error ? notificationError.message : 'Unknown error',
+      stack: notificationError instanceof Error ? notificationError.stack : undefined,
+    });
+    // Ne pas échouer si la notification échoue
   }
-
-  return mapToGuestVisit(data);
 };
 
 export const updateRentalVisit = async (params: {

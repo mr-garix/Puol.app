@@ -1,6 +1,7 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
 import { sendHeartbeat } from '@/src/utils/heartbeat';
+import { createPaymentAndEarning } from '@/src/lib/services/payments';
 
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T];
 export type BookingRow = Tables<'bookings'>['Row'] & {
@@ -771,6 +772,44 @@ export const createBooking = async (input: CreateBookingInput) => {
   const mapped = mapToGuestBooking(data as any);
   console.log('[createBooking] Booking créé et mappé avec succès:', mapped);
 
+  // Créer le paiement avec le booking ID comme related_id
+  const hostId = (mapped as any).host?.id;
+  if (!hostId) {
+    console.error('[createBooking] Impossible de créer le paiement: hostId manquant');
+    console.warn('[createBooking] Réservation créée mais paiement non enregistré');
+  } else {
+    console.log('[createBooking] ===== AVANT createPaymentAndEarning =====');
+    console.log('[createBooking] Création du paiement avec booking ID:', mapped.id);
+    console.log('[createBooking] Paramètres paiement:', {
+      payerProfileId: input.guestProfileId,
+      hostProfileId: hostId,
+      purpose: 'booking',
+      relatedId: mapped.id,
+      provider: 'orange_money',
+      customerPrice: input.totalPrice,
+    });
+    
+    try {
+      console.log('[createBooking] Appel createPaymentAndEarning...');
+      await createPaymentAndEarning({
+        payerProfileId: input.guestProfileId,
+        hostProfileId: hostId,
+        purpose: 'booking',
+        relatedId: mapped.id,
+        provider: 'orange_money',
+        customerPrice: input.totalPrice,
+      });
+      console.log('[createBooking] ===== PAIEMENT CRÉÉ AVEC SUCCÈS =====');
+      console.log('[createBooking] Paiement créé avec succès pour booking:', mapped.id);
+    } catch (paymentError) {
+      console.error('[createBooking] ===== ERREUR CRÉATION PAIEMENT =====');
+      console.error('[createBooking] Erreur création paiement:', paymentError);
+      console.error('[createBooking] Stack trace:', paymentError instanceof Error ? paymentError.stack : 'No stack');
+      // Ne pas bloquer la réservation si le paiement échoue
+      console.warn('[createBooking] Paiement échoué mais réservation créée, continuant...');
+    }
+  }
+
   // Envoyer le heartbeat (user connecté ou visiteur anonyme)
   await sendHeartbeat(input.guestProfileId || null);
   
@@ -950,6 +989,39 @@ export const cancelGuestBooking = async (guestProfileId: string, bookingId: stri
     checkInDate: mappedBooking.checkInDate,
     checkOutDate: mappedBooking.checkOutDate
   });
+
+  // Envoyer une notification au host via broadcast Supabase
+  const hostId = Array.isArray(data.listing) && data.listing.length > 0 
+    ? data.listing[0]?.host_id 
+    : (data.listing as any)?.host_id;
+  
+  if (hostId) {
+    try {
+      console.log(`[cancelGuestBooking] Sending cancellation notification to host ${hostId}`);
+      const channelName = `booking-notifications-${hostId}`;
+      
+      await supabase
+        .channel(channelName)
+        .send({
+          type: 'broadcast',
+          event: 'booking_cancelled',
+          payload: {
+            bookingId: data.id,
+            listingId: data.listing_id,
+            listingTitle: mappedBooking.listingTitle || 'Annonce PUOL',
+            guestName: mappedBooking.guestName || 'Un voyageur',
+            checkInDate: data.checkin_date,
+            checkOutDate: data.checkout_date,
+            cancelledAt: new Date().toISOString(),
+          },
+        });
+      
+      console.log(`[cancelGuestBooking] Cancellation notification sent to host ${hostId}`);
+    } catch (notificationError) {
+      console.warn(`[cancelGuestBooking] Failed to send cancellation notification:`, notificationError);
+      // Ne pas échouer la cancellation si la notification échoue
+    }
+  }
   
   return mappedBooking;
 };

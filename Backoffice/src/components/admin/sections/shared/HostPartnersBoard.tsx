@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/table';
 import { Users, MapPin, Filter, Calendar, ArrowUpRight } from 'lucide-react';
 import { type HostProfile } from '../../UsersManagement';
+import { supabase } from '@/lib/supabaseClient';
 
 const segmentLabels: Record<HostProfile['segment'], string> = {
   premium: 'Premium',
@@ -45,19 +46,112 @@ export function HostPartnersBoard({ hosts = [], onViewProfile }: HostPartnersBoa
   const [searchQuery, setSearchQuery] = useState('');
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all');
   const [periodRange, setPeriodRange] = useState<PeriodRange>('12m');
+  const [totalRefunds, setTotalRefunds] = useState(0);
+  const [hostPayoutData, setHostPayoutData] = useState<Record<string, number>>({});
+  const [hostRefundsData, setHostRefundsData] = useState<Record<string, number>>({});
+
+  // Récupérer les remboursements totaux et les données de payout par host
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!supabase) return;
+
+      try {
+        // Récupérer tous les remboursements
+        const { data: refundsData, error: refundsError } = await supabase
+          .from('refunds')
+          .select('refund_amount')
+          .order('requested_at', { ascending: false });
+
+        if (refundsError) {
+          console.warn('[HostPartnersBoard] Error fetching refunds:', refundsError);
+        } else {
+          const totalRefundsAmount = (refundsData ?? []).reduce((sum, r) => sum + (r.refund_amount || 0), 0);
+          setTotalRefunds(totalRefundsAmount);
+        }
+
+        // Récupérer les payouts pending par host
+        const { data: payoutsData, error: payoutsError } = await supabase
+          .from('host_payouts')
+          .select('host_profile_id, total_amount')
+          .eq('status', 'pending');
+
+        let payoutMap: Record<string, number> = {};
+        if (payoutsError) {
+          console.warn('[HostPartnersBoard] Error fetching payouts:', payoutsError);
+        } else {
+          (payoutsData ?? []).forEach((payout: any) => {
+            payoutMap[payout.host_profile_id] = (payoutMap[payout.host_profile_id] || 0) + (payout.total_amount || 0);
+          });
+        }
+
+        // Récupérer les remboursements par host pour soustraire du montant disponible
+        const { data: hostRefundsData, error: hostRefundsError } = await supabase
+          .from('refunds')
+          .select('booking_id, refund_amount')
+          .order('requested_at', { ascending: false });
+
+        if (!hostRefundsError && hostRefundsData && hostRefundsData.length > 0) {
+          const bookingIds = (hostRefundsData ?? []).map((r: any) => r.booking_id).filter(Boolean);
+          
+          if (bookingIds.length > 0) {
+            const { data: bookingsData } = await supabase
+              .from('bookings')
+              .select('id, listing_id')
+              .in('id', bookingIds);
+
+            const { data: listingsData } = await supabase
+              .from('listings')
+              .select('id, host_id')
+              .in('id', (bookingsData ?? []).map((b: any) => b.listing_id).filter(Boolean));
+
+            // Créer une map des remboursements par host
+            const hostRefundsMap: Record<string, number> = {};
+            (hostRefundsData ?? []).forEach((refund: any) => {
+              const booking = (bookingsData ?? []).find((b: any) => b.id === refund.booking_id);
+              if (booking) {
+                const listing = (listingsData ?? []).find((l: any) => l.id === booking.listing_id);
+                if (listing) {
+                  hostRefundsMap[listing.host_id] = (hostRefundsMap[listing.host_id] || 0) + (refund.refund_amount || 0);
+                }
+              }
+            });
+
+            // Mettre à jour les payouts en soustrayant les remboursements
+            const adjustedPayoutMap: Record<string, number> = {};
+            Object.entries(payoutMap).forEach(([hostId, amount]: [string, number]) => {
+              adjustedPayoutMap[hostId] = Math.max(0, amount - (hostRefundsMap[hostId] || 0));
+            });
+            setHostPayoutData(adjustedPayoutMap);
+            setHostRefundsData(hostRefundsMap);
+          } else {
+            setHostPayoutData(payoutMap);
+            setHostRefundsData({});
+          }
+        } else {
+          setHostPayoutData(payoutMap);
+          setHostRefundsData({});
+        }
+      } catch (error) {
+        console.error('[HostPartnersBoard] Error loading data:', error);
+      }
+    };
+
+    fetchData();
+  }, []);
 
   const summary = useMemo(() => {
     const totalStays = hosts.reduce((sum, host) => sum + (host.staysHosted ?? 0), 0);
     const totalGuests = hosts.reduce((sum, host) => sum + (host.guestsSupported ?? 0), 0);
-    const totalRevenue = hosts.reduce((sum, host) => sum + (host.revenueShare ?? 0), 0);
+    const totalRevenueGross = hosts.reduce((sum, host) => sum + (host.revenueShare ?? 0), 0);
+    const totalRevenueNet = totalRevenueGross - totalRefunds;
 
     return {
       totalStays,
       totalGuests,
-      totalRevenue,
+      totalRevenue: totalRevenueNet,
       totalHosts: hosts.length,
     };
-  }, [hosts]);
+  }, [hosts, totalRefunds]);
 
   const filteredHosts = useMemo(() => {
     return hosts.filter((host) => {
@@ -181,6 +275,7 @@ export function HostPartnersBoard({ hosts = [], onViewProfile }: HostPartnersBoa
                   <TableHead>Séjours & annonces</TableHead>
                   <TableHead>Invités accompagnés</TableHead>
                   <TableHead>Revenus partagés</TableHead>
+                  <TableHead>Disponible pour retrait</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -202,6 +297,11 @@ export function HostPartnersBoard({ hosts = [], onViewProfile }: HostPartnersBoa
                             <Badge variant="secondary" className="text-xs capitalize">
                               {segmentLabels[host.segment]}
                             </Badge>
+                            {host.status === 'approved' && (
+                              <Badge className="text-xs bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                Approuvé
+                              </Badge>
+                            )}
                           </p>
                           <p className="text-xs text-gray-500">{host.username}</p>
                           <p className="text-xs text-gray-500 flex items-center gap-1">
@@ -232,7 +332,10 @@ export function HostPartnersBoard({ hosts = [], onViewProfile }: HostPartnersBoa
                       <span className="text-xs text-gray-500 ml-1">invités</span>
                     </TableCell>
                     <TableCell className="text-sm text-gray-900">
-                      {host.revenueShare.toLocaleString('fr-FR')} FCFA
+                      {(Math.max(0, host.revenueShare - (hostRefundsData[host.id] || 0))).toLocaleString('fr-FR')} FCFA
+                    </TableCell>
+                    <TableCell className="text-sm text-gray-900">
+                      {(hostPayoutData[host.id] ?? 0).toLocaleString('fr-FR')} FCFA
                     </TableCell>
                     <TableCell className="text-right">
                       <Button

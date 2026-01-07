@@ -10,12 +10,8 @@ import {
 import {
   landlordRequests as landlordRequestsMock,
   landlordSubtabs,
-  landlordProfileDetails,
-  landlordProfiles,
   type LandlordRequest,
   type ListingRecord,
-  type LandlordProfileDetail,
-  type LandlordListingDetail,
 } from '../UsersManagement';
 import { VisitsBoard, type VisitRecord } from '../VisitsManagement';
 import type { ListingFilters } from '../UsersManagement';
@@ -35,39 +31,75 @@ import {
   resolveSegment,
   type LandlordProfileData,
   type LandlordBoardListing,
+  type LandlordListingDetail,
 } from '@/lib/services/landlords';
-import { isSupabaseConfigured } from '@/lib/supabaseClient';
+import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { RefreshCw } from 'lucide-react';
 
 const PRICE_PLACEHOLDER = 'Tarif non renseigné';
 const NO_VALUE_PLACEHOLDER = '—';
 
-function cloneLandlordDetail(detail: LandlordProfileDetail): LandlordProfileDetail {
-  return {
-    ...detail,
-    tags: [...detail.tags],
-    stats: { ...detail.stats },
-    leases: detail.leases.map((lease) => ({ ...lease })),
-    listings: detail.listings.map((listing) => ({ ...listing })),
-    timeline: detail.timeline.map((event) => ({ ...event })),
+type LandlordListingSummary = {
+  id: string;
+  title: string;
+  city: string;
+  status: 'en ligne' | 'en brouillon';
+  price: string;
+  type: string;
+  updatedAt: string;
+  previewUrl: string;
+  viewCount?: number;
+  likeCount?: number;
+  commentCount?: number;
+};
+
+type LandlordLease = {
+  id: string;
+  unit: string;
+  tenant: string;
+  startDate: string;
+  duration: string;
+  value: string;
+  status: 'actif' | 'terminé' | 'en préparation';
+};
+
+type LandlordTimelineEvent = {
+  id: string;
+  date: string;
+  label: string;
+  detail: string;
+  type: 'lease' | 'moderation' | 'payment';
+};
+
+type LandlordProfileDetail = {
+  id: string;
+  name: string;
+  username: string;
+  segment: 'premium' | 'core' | 'lite';
+  city: string;
+  leasesSigned: number;
+  unitsManaged: number;
+  tenantsTotal: number;
+  revenueShare: number;
+  lastActive: string;
+  joinedAt: string;
+  avatarUrl: string;
+  email: string;
+  phone: string;
+  address: string;
+  notes: string;
+  tags: string[];
+  stats: {
+    views: number;
+    likes: number;
+    comments: number;
+    visits: number;
   };
-}
+  leases: LandlordLease[];
+  listings: LandlordListingSummary[];
+  timeline: LandlordTimelineEvent[];
+};
 
-function getFallbackLandlordDetail(landlordId: string): LandlordProfileDetail | null {
-  const direct = landlordProfileDetails[landlordId];
-  if (direct) {
-    return cloneLandlordDetail(direct);
-  }
-
-  const [firstEntry] = Object.values(landlordProfileDetails);
-  if (!firstEntry) {
-    return null;
-  }
-
-  const detail = cloneLandlordDetail(firstEntry);
-  detail.id = landlordId;
-  return detail;
-}
 
 function buildFullName(liveData: LandlordProfileData): string | null {
   const parts = [liveData.firstName, liveData.lastName]
@@ -222,9 +254,8 @@ function mergeListings(
 
 function mergeLandlordDetailData(
   liveData: LandlordProfileData,
-  fallback?: LandlordProfileDetail | null,
 ): LandlordProfileDetail {
-  const base = fallback ? cloneLandlordDetail(fallback) : createBaseDetail(liveData);
+  const base = createBaseDetail(liveData);
 
   const fullName = buildFullName(liveData);
   if (fullName) {
@@ -302,7 +333,7 @@ export function LandlordsSection() {
   const [statsState, setStatsState] = useState({
     isLoading: false,
     data: {
-      activeLandlords: landlordProfiles.length,
+      activeLandlords: 0,
       landlordListings: liveLandlordListings.length,
       landlordVisits: liveLandlordVisits.length,
       pendingApplications: landlordRequestsMock.length,
@@ -410,13 +441,7 @@ export function LandlordsSection() {
     }
 
     let isCancelled = false;
-    const fallbackDetail = getFallbackLandlordDetail(selectedLandlordId);
-    if (fallbackDetail) {
-      setSelectedLandlordDetail(fallbackDetail);
-    } else {
-      setSelectedLandlordDetail(null);
-    }
-
+    setSelectedLandlordDetail(null);
     setProfileError(null);
     setIsProfileLoading(true);
 
@@ -425,19 +450,29 @@ export function LandlordsSection() {
         const data = await fetchLandlordProfileData(selectedLandlordId);
         if (isCancelled) return;
         if (data) {
-          const merged = mergeLandlordDetailData(data, fallbackDetail);
+          const merged = mergeLandlordDetailData(data);
+          
+          // Récupérer l'adresse réelle depuis la table profiles
+          if (isSupabaseConfigured && supabase) {
+            const { data: profileData, error: profileError } = await supabase
+              .from('profiles')
+              .select('city')
+              .eq('id', selectedLandlordId)
+              .single();
+            
+            if (!profileError && profileData?.city) {
+              merged.address = profileData.city;
+            }
+          }
+          
           setSelectedLandlordDetail(merged);
           return;
         }
 
-        if (!fallbackDetail) {
-          setProfileError('Aucune donnée réelle disponible pour ce bailleur.');
-        }
+        setProfileError('Aucune donnée réelle disponible pour ce bailleur.');
       } catch (error) {
         console.warn('[LandlordsSection] Unable to fetch landlord profile', error);
-        if (!fallbackDetail) {
-          setProfileError('Impossible de charger les données Supabase pour ce bailleur.');
-        }
+        setProfileError('Impossible de charger les données Supabase pour ce bailleur.');
       } finally {
         if (!isCancelled) {
           setIsProfileLoading(false);

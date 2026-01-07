@@ -48,9 +48,21 @@ const timelineColors: Record<
   quality: { bg: 'bg-purple-50', dot: 'bg-purple-500', accent: 'text-purple-800' },
 };
 
+function formatReservationStatus(status: string): string {
+  const statusMap: Record<string, string> = {
+    'pending': 'À confirmer',
+    'confirmed': 'Confirmée',
+    'in_progress': 'En cours',
+    'completed': 'Terminée',
+    'cancelled': 'Annulée',
+  };
+  return statusMap[status] || status;
+}
+
 export function HostProfileView({ host, onBack }: HostProfileViewProps) {
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
-  const [hostStats, setHostStats] = useState({ bookingsCount: 0, revenueBrut: 0 });
+  const [hostStats, setHostStats] = useState({ bookingsCount: 0, revenueBrut: 0, revenueNet: 0 });
+  const [reservationsWithStatus, setReservationsWithStatus] = useState<any[]>([]);
 
   useEffect(() => {
     const loadHostStats = async () => {
@@ -74,7 +86,7 @@ export function HostProfileView({ host, onBack }: HostProfileViewProps) {
         const { data: bookings, error: bookingsError } = listingIds.length > 0
           ? await supabase
               .from('bookings')
-              .select('id')
+              .select('id, status')
               .in('listing_id', listingIds)
           : { data: [], error: null };
 
@@ -102,17 +114,47 @@ export function HostProfileView({ host, onBack }: HostProfileViewProps) {
 
         const totalRevenue = (paymentsData ?? []).reduce((sum, p) => sum + (p.amount || 0), 0);
 
+        // Récupérer les remboursements liés aux bookings de ce host
+        const { data: refundsData, error: refundsError } = bookingIds.length > 0
+          ? await supabase
+              .from('refunds')
+              .select('refund_amount')
+              .in('booking_id', bookingIds)
+          : { data: [], error: null };
+
+        if (refundsError) {
+          console.warn('[HostProfileView] Error fetching refunds:', refundsError);
+        }
+
+        const totalRefunds = (refundsData ?? []).reduce((sum, r) => sum + (r.refund_amount || 0), 0);
+        const revenueNet = totalRevenue - totalRefunds;
+
         setHostStats({
           bookingsCount: bookingIds.length,
           revenueBrut: totalRevenue,
+          revenueNet: revenueNet,
         });
+
+        // Créer une map des statuts des réservations
+        const bookingStatusMap = new Map((bookings ?? []).map(b => [b.id, b.status]));
+        
+        // Mettre à jour les réservations avec les vrais statuts
+        const updatedReservations = host.reservations.map((reservation) => {
+          const bookingStatus = bookingStatusMap.get(reservation.id);
+          return {
+            ...reservation,
+            status: bookingStatus || reservation.status,
+          };
+        });
+
+        setReservationsWithStatus(updatedReservations);
       } catch (error) {
         console.error('[HostProfileView] Error loading host stats:', error);
       }
     };
 
     loadHostStats();
-  }, [host.id]);
+  }, [host.id, host.reservations]);
 
   return (
     <div className="space-y-6">
@@ -159,7 +201,7 @@ export function HostProfileView({ host, onBack }: HostProfileViewProps) {
           <HeroStat label="Voyageurs accompagnés" value={hostStats.bookingsCount.toString()} />
           <HeroStat label="Nuits opérées" value={host.stats.nights.toString()} />
           <HeroStat label="Note moyenne" value={`${host.stats.rating.toFixed(2)} · ${host.reviewsCount} avis`} />
-          <HeroStat label="Revenus bruts" value={`${hostStats.revenueBrut.toLocaleString('fr-FR')} FCFA`} />
+          <HeroStat label="Revenus bruts" value={`${hostStats.revenueNet.toLocaleString('fr-FR')} FCFA`} />
         </div>
       </div>
 
@@ -218,14 +260,14 @@ export function HostProfileView({ host, onBack }: HostProfileViewProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {host.reservations.map((reservation) => (
+                  {(reservationsWithStatus.length > 0 ? reservationsWithStatus : host.reservations).map((reservation) => (
                     <TableRow key={reservation.id}>
                       <TableCell>{reservation.guest}</TableCell>
                       <TableCell>{reservation.stay}</TableCell>
                       <TableCell>{reservation.amount}</TableCell>
                       <TableCell>
                         <Badge className={statusStyles(reservation.status)}>
-                          {reservation.status}
+                          {formatReservationStatus(reservation.status)}
                         </Badge>
                       </TableCell>
                     </TableRow>
@@ -457,13 +499,21 @@ function ContactLine({ icon, value }: { icon: ReactNode; value: string }) {
   );
 }
 
-function statusStyles(status: HostReservationSummary['status']) {
-  const styles: Record<HostReservationSummary['status'], string> = {
+function statusStyles(status: string) {
+  const styles: Record<string, string> = {
     'à confirmer': 'bg-amber-100 text-amber-700',
-    confirmée: 'bg-emerald-100 text-emerald-700',
+    'pending': 'bg-amber-100 text-amber-700',
+    'confirmée': 'bg-emerald-100 text-emerald-700',
+    'confirmed': 'bg-emerald-100 text-emerald-700',
+    'en cours': 'bg-blue-100 text-blue-700',
+    'in_progress': 'bg-blue-100 text-blue-700',
+    'terminée': 'bg-emerald-100 text-emerald-700',
+    'completed': 'bg-emerald-100 text-emerald-700',
     'en litige': 'bg-rose-100 text-rose-700',
+    'cancelled': 'bg-rose-100 text-rose-700',
+    'annulée': 'bg-rose-100 text-rose-700',
   };
-  return cn('text-xs rounded-full px-3 py-1 capitalize', styles[status]);
+  return cn('text-xs rounded-full px-3 py-1 capitalize', styles[status] || 'bg-gray-100 text-gray-700');
 }
 
 function visitStatusStyles(status: HostVisitSummary['status']) {

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useHostBookings } from '@/src/features/host/hooks';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { fetchHostListingIds } from '@/src/features/bookings/services';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 
 const NOTIFIED_BOOKINGS_STORAGE_KEY = 'notified_bookings_cache';
 
@@ -38,12 +38,9 @@ const HostBookingNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedBookings = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_BOOKINGS_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedBookingsRef.current = new Set(notifiedIds);
-          console.log('[HostBookingNotificationBridge] Loaded notified bookings from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_BOOKINGS_STORAGE_KEY);
+        notifiedBookingsRef.current = notifiedIds;
+        console.log('[HostBookingNotificationBridge] Loaded notified bookings from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[HostBookingNotificationBridge] Error loading notified bookings cache:', error);
       } finally {
@@ -209,8 +206,7 @@ const HostBookingNotificationBridge = () => {
           notifiedBookingsRef.current.add(notificationKey); // 🆕 Marquer comme notifié
           
           // 💾 Sauvegarder le cache dans AsyncStorage pour persister après actualisation
-          const notifiedArray = Array.from(notifiedBookingsRef.current);
-          AsyncStorage.setItem(NOTIFIED_BOOKINGS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_BOOKINGS_STORAGE_KEY, notifiedBookingsRef.current).catch((err) => {
             console.error('[HostBookingNotificationBridge] Error saving notified bookings cache:', err);
           });
           console.log('[HostBookingNotificationBridge] New booking notification displayed and cached');

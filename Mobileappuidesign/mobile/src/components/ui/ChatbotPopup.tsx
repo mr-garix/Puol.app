@@ -14,6 +14,70 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 
+// Mots-clés pour détecter les offres de visite dans la réponse du bot
+const VISIT_KEYWORDS = [
+  'visite',
+  'visit',
+  'visiter',
+  'voir',
+  'voir la propriété',
+  'voir l\'annonce',
+  'planifier',
+  'programmer',
+  'schedule',
+  'booking',
+  'réserver',
+  'disponibilité',
+  'disponible',
+  'quand',
+  'when',
+  'date',
+  'heure',
+  'time',
+  'visiter la propriété',
+  'voir la maison',
+  'voir l\'appartement',
+  'faire une visite',
+  'organiser une visite',
+  'fixer une visite',
+  'prendre rendez-vous',
+  'rendez-vous',
+  'appointment',
+  'appointment de visite',
+  'visite guidée',
+  'guided tour',
+  'coûte',
+  'coût',
+  'prix',
+  'tarif',
+  'francs',
+  'fcfa',
+  'euros',
+  'cost',
+  'price',
+];
+
+const detectVisitKeywords = (text: string): boolean => {
+  const lowerText = text.toLowerCase().trim();
+  
+  // 🔴 CLÉS OBLIGATOIRES : Si le texte contient "la visite coûte" suivi d'un montant, afficher le bouton
+  const hasMandatoryKeyword = /la\s+visite\s+coûte\s+\d+/.test(lowerText);
+  
+  console.log('[ChatbotPopup] Keyword detection:', {
+    text: text.substring(0, 100),
+    lowerText: lowerText.substring(0, 100),
+    hasMandatoryKeyword,
+    hasAnyKeyword: VISIT_KEYWORDS.some(keyword => lowerText.includes(keyword)),
+  });
+  
+  if (hasMandatoryKeyword) {
+    console.log('[ChatbotPopup] ✅ MANDATORY KEYWORD DETECTED: "la visite coûte"');
+    return true;
+  }
+  
+  return VISIT_KEYWORDS.some(keyword => lowerText.includes(keyword));
+};
+
 interface ChatbotPopupProps {
   visible: boolean;
   onClose: () => void;
@@ -27,6 +91,7 @@ interface Message {
   text: string;
   sender: Sender;
   timestamp: Date;
+  showScheduleButton?: boolean;
 }
 
 export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, propertyTitle }) => {
@@ -80,11 +145,15 @@ export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, pr
     setInputValue('');
 
     setTimeout(() => {
+      const botResponseText = 'Merci pour votre message ! Notre équipe vous répondra dans les plus brefs délais. Pour une réponse plus rapide, contactez-nous également sur WhatsApp.';
+      // Détecter les mots-clés dans la réponse du bot, pas dans le message utilisateur
+      const hasVisitKeywords = detectVisitKeywords(botResponseText);
       const botMessage: Message = {
         id: `${Date.now() + 1}`,
-        text: 'Merci pour votre message ! Notre équipe vous répondra dans les plus brefs délais. Pour une réponse plus rapide, contactez-nous également sur WhatsApp.',
+        text: botResponseText,
         sender: 'bot',
         timestamp: new Date(),
+        showScheduleButton: hasVisitKeywords,
       };
       setMessages((prev) => [...prev, botMessage]);
     }, 1000);
@@ -163,9 +232,10 @@ export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, pr
 interface MessageBubbleProps {
   message: Message;
   index: number;
+  onScheduleVisit?: () => void;
 }
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index, onScheduleVisit }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(10)).current;
 
@@ -203,6 +273,16 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index }) => {
     >
       <View style={[styles.messageBubble, isUser ? styles.messageBubbleUser : styles.messageBubbleBot]}>
         <Text style={[styles.messageText, isUser ? styles.messageTextUser : styles.messageTextBot]}>{message.text}</Text>
+        {message.showScheduleButton && !isUser && (
+          <TouchableOpacity
+            style={styles.scheduleButton}
+            onPress={onScheduleVisit}
+            activeOpacity={0.8}
+          >
+            <Feather name="calendar" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+            <Text style={styles.scheduleButtonText}>Planifier une visite</Text>
+          </TouchableOpacity>
+        )}
         <Text style={[styles.messageTime, isUser ? styles.messageTimeUser : styles.messageTimeBot]}>{timeLabel}</Text>
       </View>
     </Animated.View>
@@ -391,6 +471,22 @@ const styles = StyleSheet.create({
   sendButtonDisabled: {
     backgroundColor: '#D1D5DB',
     opacity: 0.5,
+  },
+  scheduleButton: {
+    marginTop: 12,
+    backgroundColor: '#2ECC71',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleButtonText: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
 

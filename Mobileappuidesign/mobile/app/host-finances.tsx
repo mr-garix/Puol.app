@@ -20,6 +20,7 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import { supabase } from '@/src/supabaseClient';
 
 type TransactionStatus = 'versé' | 'en-attente';
+type TransactionType = 'encaisser' | 'remboursements';
 
 type Transaction = {
   id: string;
@@ -30,6 +31,7 @@ type Transaction = {
   status: TransactionStatus;
   checkInDate?: string;
   checkOutDate?: string;
+  type: TransactionType;
 };
 
 const filterOptions = ["Aujourd'hui", 'Cette semaine', 'Ce mois', '3 derniers mois'];
@@ -99,8 +101,9 @@ export default function HostFinancesScreen() {
   const [tempEndDate, setTempEndDate] = useState(new Date());
   const [activeDateField, setActiveDateField] = useState<'start' | 'end'>('start');
   const [dateFilter, setDateFilter] = useState<'all' | 'custom'>('all');
+  const [transactionTypeFilter, setTransactionTypeFilter] = useState<TransactionType>('encaisser');
 
-  // Récupérer les earnings depuis Supabase avec les données du client et du listing
+  // Récupérer les earnings et remboursements depuis Supabase
   useEffect(() => {
     const fetchEarnings = async () => {
       if (!supabaseProfile?.id) {
@@ -127,16 +130,24 @@ export default function HostFinancesScreen() {
         const totalAvailable = pendingPayouts.reduce((sum: number, payout: any) => sum + (payout.total_amount || 0), 0);
         setAvailableForPayout(totalAvailable);
 
-        const { data, error } = await supabase
+        // Récupérer les earnings
+        const { data: earningsData, error: earningsError } = await supabase
           .from('host_earnings')
           .select('*')
           .eq('host_profile_id', supabaseProfile.id)
           .order('created_at', { ascending: false });
 
-        if (error) throw error;
+        if (earningsError) throw earningsError;
 
-        // Créer une map des payouts par montant ET date pour vérifier le statut de chaque earning
-        // On utilise un Map avec clé composite (montant + date arrondie au jour)
+        // Récupérer les remboursements liés aux bookings de ce host
+        const { data: refundsData, error: refundsError } = await supabase
+          .from('refunds')
+          .select('*')
+          .order('requested_at', { ascending: false });
+
+        if (refundsError) throw refundsError;
+
+        // Créer une map des payouts par montant ET date
         const payoutStatusMap = new Map<string, string>();
         (allPayoutData || []).forEach((p: any) => {
           const payoutDate = new Date(p.created_at).toISOString().split('T')[0];
@@ -144,22 +155,79 @@ export default function HostFinancesScreen() {
           payoutStatusMap.set(key, p.status);
         });
 
-        // Récupérer les détails des bookings en utilisant related_id
-        const relatedIds = (data || []).map((earning: any) => earning.related_id).filter(Boolean);
+        // Récupérer les détails des bookings pour les earnings
+        // Utiliser related_id directement depuis host_earnings
+        console.log('[HostFinances] Raw earnings data:', earningsData?.slice(0, 2));
         
+        const earningRelatedIds = (earningsData || []).map((earning: any) => earning.related_id).filter(Boolean);
+        
+        console.log('[HostFinances] Earnings data:', {
+          earningsCount: earningsData?.length,
+          earningRelatedIds: earningRelatedIds.slice(0, 3),
+          earningsWithRelatedId: (earningsData || []).filter((e: any) => e.related_id).length,
+        });
+
         let bookingsData: any[] = [];
-        if (relatedIds.length > 0) {
+        if (earningRelatedIds.length > 0) {
           const { data: bookings, error: bookingsError } = await supabase
             .from('bookings')
-            .select('*')
-            .in('id', relatedIds);
+            .select('id, guest_profile_id, listing_id, checkin_date, checkout_date')
+            .in('id', earningRelatedIds);
 
           if (bookingsError) throw bookingsError;
           bookingsData = bookings || [];
+          console.log('[HostFinances] Bookings for earnings:', {
+            count: bookingsData.length,
+            earningRelatedIdsCount: earningRelatedIds.length,
+            sample: bookingsData.slice(0, 2),
+          });
         }
 
+        // Récupérer les bookings pour les remboursements
+        const refundBookingIds = (refundsData || []).map((r: any) => r.booking_id).filter(Boolean);
+        let refundBookingsData: any[] = [];
+        if (refundBookingIds.length > 0) {
+          const { data: refundBookings, error: refundBookingsError } = await supabase
+            .from('bookings')
+            .select('id, guest_profile_id, listing_id, checkin_date, checkout_date')
+            .in('id', refundBookingIds);
+
+          if (refundBookingsError) throw refundBookingsError;
+          refundBookingsData = refundBookings || [];
+          console.log('[HostFinances] Bookings for refunds:', refundBookingsData.slice(0, 2));
+        }
+
+        // Récupérer les listings pour obtenir le host_id
+        const listingIds = [...bookingsData, ...refundBookingsData].map((b: any) => b.listing_id).filter(Boolean);
+        let listingsDataForHost: any[] = [];
+        if (listingIds.length > 0) {
+          const { data: listings, error: listingsError } = await supabase
+            .from('listings')
+            .select('id, host_id, title')
+            .in('id', listingIds);
+
+          if (listingsError) throw listingsError;
+          listingsDataForHost = listings || [];
+        }
+
+        // Créer une map listings pour récupérer le host_id
+        const listingsMapForHost = new Map(listingsDataForHost.map((l: any) => [l.id, l]));
+
+        // Ajouter le host_profile_id aux bookings (en utilisant host_id de listings)
+        bookingsData = bookingsData.map((b: any) => ({
+          ...b,
+          host_profile_id: listingsMapForHost.get(b.listing_id)?.host_id,
+        }));
+        refundBookingsData = refundBookingsData.map((b: any) => ({
+          ...b,
+          host_profile_id: listingsMapForHost.get(b.listing_id)?.host_id,
+        }));
+
+        // Fusionner les bookings
+        const allBookingsData = [...bookingsData, ...refundBookingsData];
+
         // Récupérer les profils des guests
-        const guestIds = bookingsData.map((b: any) => b.guest_profile_id).filter(Boolean);
+        const guestIds = allBookingsData.map((b: any) => b.guest_profile_id).filter(Boolean);
         let profilesData: any[] = [];
         if (guestIds.length > 0) {
           const { data: profiles, error: profilesError } = await supabase
@@ -171,26 +239,13 @@ export default function HostFinancesScreen() {
           profilesData = profiles || [];
         }
 
-        // Récupérer les listings
-        const listingIds = bookingsData.map((b: any) => b.listing_id).filter(Boolean);
-        let listingsData: any[] = [];
-        if (listingIds.length > 0) {
-          const { data: listings, error: listingsError } = await supabase
-            .from('listings')
-            .select('id, title')
-            .in('id', listingIds);
-
-          if (listingsError) throw listingsError;
-          listingsData = listings || [];
-        }
-
         // Créer des maps pour les lookups
-        const bookingsMap = new Map(bookingsData.map((b: any) => [b.id, b]));
+        const bookingsMap = new Map(allBookingsData.map((b: any) => [b.id, b]));
         const profilesMap = new Map(profilesData.map((p: any) => [p.id, p]));
-        const listingsMap = new Map(listingsData.map((l: any) => [l.id, l]));
+        const listingsMap = listingsMapForHost;
 
-        // Transformer les données en transactions
-        const transformedTransactions: Transaction[] = (data || []).map((earning: any) => {
+        // Transformer les earnings en transactions
+        const earningsTransactions: Transaction[] = (earningsData || []).map((earning: any) => {
           const booking = bookingsMap.get(earning.related_id);
           const guestProfile = profilesMap.get(booking?.guest_profile_id);
           const listing = listingsMap.get(booking?.listing_id);
@@ -198,7 +253,15 @@ export default function HostFinancesScreen() {
             ? `${guestProfile.first_name || ''} ${guestProfile.last_name || ''}`.trim() 
             : 'Client PUOL';
 
-          // Vérifier le statut du payout correspondant avec clé composite
+          console.log('[HostFinances] Earning transaction:', {
+            earningId: earning.id,
+            relatedId: earning.related_id,
+            bookingFound: !!booking,
+            guestProfileId: booking?.guest_profile_id,
+            guestName,
+            listingTitle: listing?.title,
+          });
+
           const earningDate = new Date(earning.created_at).toISOString().split('T')[0];
           const payoutKey = `${earning.host_amount}_${earningDate}`;
           const payoutStatus = payoutStatusMap.get(payoutKey);
@@ -213,10 +276,68 @@ export default function HostFinancesScreen() {
             status: transactionStatus as TransactionStatus,
             checkInDate: booking?.checkin_date,
             checkOutDate: booking?.checkout_date,
+            type: 'encaisser',
           };
         });
 
-        setTransactions(transformedTransactions);
+        // Transformer les remboursements en transactions (filtrer seulement les remboursements du host)
+        const refundsTransactions: Transaction[] = (refundsData || [])
+          .filter((refund: any) => {
+            const booking = bookingsMap.get(refund.booking_id);
+            // Vérifier que le booking appartient à ce host
+            const isHostRefund = booking?.host_profile_id === supabaseProfile.id;
+            console.log('[HostFinances] Refund filter:', {
+              refundId: refund.id,
+              bookingId: refund.booking_id,
+              bookingExists: !!booking,
+              bookingHostId: booking?.host_profile_id,
+              currentHostId: supabaseProfile.id,
+              isHostRefund,
+            });
+            return isHostRefund;
+          })
+          .map((refund: any) => {
+            const booking = bookingsMap.get(refund.booking_id);
+            const guestProfile = profilesMap.get(booking?.guest_profile_id);
+            const listing = listingsMap.get(booking?.listing_id);
+            const guestName = guestProfile 
+              ? `${guestProfile.first_name || ''} ${guestProfile.last_name || ''}`.trim() 
+              : 'Client PUOL';
+
+            console.log('[HostFinances] Refund transaction:', {
+              refundId: refund.id,
+              guestName,
+              listingTitle: listing?.title,
+              amount: refund.refund_amount,
+            });
+
+            return {
+              id: refund.id,
+              guest: guestName,
+              listing: listing?.title || 'Réservation',
+              amount: refund.refund_amount || 0,
+              date: refund.requested_at,
+              status: 'en-attente' as TransactionStatus,
+              checkInDate: booking?.checkin_date,
+              checkOutDate: booking?.checkout_date,
+              type: 'remboursements',
+            };
+          });
+
+        // Fusionner et trier par date
+        const allTransactions = [...earningsTransactions, ...refundsTransactions].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+
+        console.log('[HostFinances] Transactions loaded:', {
+          earningsCount: earningsTransactions.length,
+          refundsCount: refundsTransactions.length,
+          totalCount: allTransactions.length,
+          earnings: earningsTransactions.slice(0, 3),
+          refunds: refundsTransactions.slice(0, 3),
+        });
+
+        setTransactions(allTransactions);
       } catch (error) {
         console.error('[HostFinances] Erreur lors de la récupération des earnings:', error);
         setTransactions([]);
@@ -329,6 +450,11 @@ export default function HostFinancesScreen() {
     }
 
     return transactions.filter((transaction: Transaction) => {
+      // Filtrer par type de transaction
+      if (transaction.type !== transactionTypeFilter) {
+        return false;
+      }
+
       const txDate = new Date(transaction.date);
       // Comparer en UTC pour éviter les problèmes de fuseau horaire
       const txDateUTC = new Date(txDate.getUTCFullYear(), txDate.getUTCMonth(), txDate.getUTCDate());
@@ -336,7 +462,7 @@ export default function HostFinancesScreen() {
       const rangeEndUTC = new Date(dateRange.end.getUTCFullYear(), dateRange.end.getUTCMonth(), dateRange.end.getUTCDate(), 23, 59, 59, 999);
       return txDateUTC >= rangeStartUTC && txDateUTC <= rangeEndUTC;
     });
-  }, [selectedFilter, currentDate, transactions, dateFilter, customDateRange]);
+  }, [selectedFilter, currentDate, transactions, dateFilter, customDateRange, transactionTypeFilter]);
 
   const summary = useMemo(() => {
     // Déterminer la plage de dates à utiliser
@@ -349,17 +475,47 @@ export default function HostFinancesScreen() {
       dateRange = getDateRange(selectedFilter, currentDate);
     }
 
-    // Calculer le total chiffre d'affaires basé sur la plage de dates
-    const filteredTransactions = transactions.filter((transaction: Transaction) => {
+    // Calculer le total des encaissements (host_earnings) basé sur la plage de dates
+    const filteredEarnings = transactions.filter((transaction: Transaction) => {
+      if (transaction.type !== 'encaisser') return false;
       const txDate = new Date(transaction.date);
-      // Comparer en UTC pour éviter les problèmes de fuseau horaire
       const txDateUTC = new Date(txDate.getUTCFullYear(), txDate.getUTCMonth(), txDate.getUTCDate());
       const rangeStartUTC = new Date(dateRange.start.getUTCFullYear(), dateRange.start.getUTCMonth(), dateRange.start.getUTCDate());
       const rangeEndUTC = new Date(dateRange.end.getUTCFullYear(), dateRange.end.getUTCMonth(), dateRange.end.getUTCDate(), 23, 59, 59, 999);
       return txDateUTC >= rangeStartUTC && txDateUTC <= rangeEndUTC;
     });
 
-    const totalRevenue = filteredTransactions.reduce((sum: number, tx: Transaction) => sum + tx.amount, 0);
+    // Calculer le total des remboursements basé sur la plage de dates
+    const filteredRefunds = transactions.filter((transaction: Transaction) => {
+      if (transaction.type !== 'remboursements') return false;
+      const txDate = new Date(transaction.date);
+      const txDateUTC = new Date(txDate.getUTCFullYear(), txDate.getUTCMonth(), txDate.getUTCDate());
+      const rangeStartUTC = new Date(dateRange.start.getUTCFullYear(), dateRange.start.getUTCMonth(), dateRange.start.getUTCDate());
+      const rangeEndUTC = new Date(dateRange.end.getUTCFullYear(), dateRange.end.getUTCMonth(), dateRange.end.getUTCDate(), 23, 59, 59, 999);
+      return txDateUTC >= rangeStartUTC && txDateUTC <= rangeEndUTC;
+    });
+
+    const totalEarnings = filteredEarnings.reduce((sum: number, tx: Transaction) => sum + tx.amount, 0);
+    const totalRefunds = filteredRefunds.reduce((sum: number, tx: Transaction) => sum + tx.amount, 0);
+    
+    // Chiffre d'affaires = Encaissements - Remboursements
+    const totalRevenue = totalEarnings - totalRefunds;
+
+    // Montant disponible pour retrait = Montant disponible - Remboursements
+    const adjustedAvailableForPayout = Math.max(0, availableForPayout - totalRefunds);
+
+    console.log('[HostFinances] Summary calculation:', {
+      dateRange: { start: dateRange.start.toISOString(), end: dateRange.end.toISOString() },
+      filteredEarningsCount: filteredEarnings.length,
+      filteredRefundsCount: filteredRefunds.length,
+      totalEarnings,
+      totalRefunds,
+      totalRevenue,
+      availableForPayout,
+      adjustedAvailableForPayout,
+      selectedFilter,
+      dateFilter,
+    });
 
     // Déterminer le label de la plage de dates
     let dateRangeLabel = '';
@@ -383,11 +539,11 @@ export default function HostFinancesScreen() {
       totalRevenue,
       dateRangeLabel,
       nextPayout: {
-        amount: availableForPayout,
+        amount: adjustedAvailableForPayout,
         label: `Prochain virement ${tomorrowLabel}`,
       },
     };
-  }, [currentDate, transactions, availableForPayout, selectedFilter, dateFilter, customDateRange, filteredTransactions]);
+  }, [currentDate, transactions, availableForPayout, selectedFilter, dateFilter, customDateRange]);
 
   const handleBack = () => router.back();
   const handleSupportPress = () => router.push('/support' as never);
@@ -480,9 +636,26 @@ export default function HostFinancesScreen() {
 
         <View style={styles.transactionHeader}>
           <Text style={styles.sectionTitle}>Transactions</Text>
-          <TouchableOpacity style={styles.downloadButton} activeOpacity={0.85}>
-            <Feather name="download" size={16} color="#0F172A" />
-            <Text style={styles.downloadLabel}>Télécharger le relevé</Text>
+        </View>
+
+        <View style={styles.transactionTypeFilter}>
+          <TouchableOpacity
+            style={[styles.transactionTypeButton, transactionTypeFilter === 'encaisser' && styles.transactionTypeButtonActive]}
+            onPress={() => setTransactionTypeFilter('encaisser')}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.transactionTypeText, transactionTypeFilter === 'encaisser' && styles.transactionTypeTextActive]}>
+              Encaisser
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.transactionTypeButton, transactionTypeFilter === 'remboursements' && styles.transactionTypeButtonActive]}
+            onPress={() => setTransactionTypeFilter('remboursements')}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.transactionTypeText, transactionTypeFilter === 'remboursements' && styles.transactionTypeTextActive]}>
+              Remboursements
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -491,43 +664,53 @@ export default function HostFinancesScreen() {
             <View style={styles.emptyTransactions}>
               <Text style={styles.emptyTransactionsTitle}>Aucune transaction</Text>
               <Text style={styles.emptyTransactionsSubtitle}>
-                {selectedFilter === "Aujourd'hui"
-                  ? "Aucun encaissement enregistré aujourd’hui."
+                {transactionTypeFilter === 'remboursements'
+                  ? 'Aucun remboursement pour cette période.'
+                  : selectedFilter === "Aujourd'hui"
+                  ? "Aucun encaissement enregistré aujourd'hui."
                   : 'Aucune transaction pour cette période.'}
               </Text>
             </View>
           ) : (
-            filteredTransactions.map((transaction: Transaction, index: number) => (
-              <View
-                key={transaction.id}
-                style={[styles.transactionItem, index === filteredTransactions.length - 1 && styles.transactionItemLast]}
-              >
-                <View style={styles.transactionLeft}>
-                  <View style={styles.transactionAvatar}>
-                    <Text style={styles.transactionAvatarLabel}>{transaction.guest.charAt(0)}</Text>
+            filteredTransactions.map((transaction: Transaction, index: number) => {
+              const isRefund = transaction.type === 'remboursements';
+              return (
+                <View
+                  key={transaction.id}
+                  style={[styles.transactionItem, index === filteredTransactions.length - 1 && styles.transactionItemLast]}
+                >
+                  <View style={styles.transactionLeft}>
+                    <View style={styles.transactionAvatar}>
+                      <Text style={styles.transactionAvatarLabel}>{transaction.guest.charAt(0)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.transactionGuest} numberOfLines={1}>{transaction.guest}</Text>
+                      <Text style={styles.transactionListing} numberOfLines={1}>{transaction.listing}</Text>
+                      {transaction.checkInDate && transaction.checkOutDate ? (
+                        <Text style={styles.transactionDate}>
+                          {formatTransactionDate(transaction.checkInDate)} → {formatTransactionDate(transaction.checkOutDate)}
+                        </Text>
+                      ) : (
+                        <Text style={styles.transactionDate}>{formatTransactionDate(transaction.date)}</Text>
+                      )}
+                    </View>
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.transactionGuest} numberOfLines={1}>{transaction.guest}</Text>
-                    <Text style={styles.transactionListing} numberOfLines={1}>{transaction.listing}</Text>
-                    {transaction.checkInDate && transaction.checkOutDate ? (
-                      <Text style={styles.transactionDate}>
-                        {formatTransactionDate(transaction.checkInDate)} → {formatTransactionDate(transaction.checkOutDate)}
-                      </Text>
-                    ) : (
-                      <Text style={styles.transactionDate}>{formatTransactionDate(transaction.date)}</Text>
-                    )}
+                  <View style={styles.transactionRight}>
+                    <Text style={[styles.transactionAmount, isRefund && styles.transactionAmountRefund]}>
+                      {isRefund ? '-' : '+'}{transaction.amount.toLocaleString('fr-FR')} FCFA
+                    </Text>
+                    <Text
+                      style={[
+                        styles.transactionStatus,
+                        isRefund ? styles.statusRefund : (transaction.status === 'versé' ? styles.statusPaid : styles.statusPending)
+                      ]}
+                    >
+                      {isRefund ? 'Remboursé' : (transaction.status === 'versé' ? 'Versé' : 'Versement en attente')}
+                    </Text>
                   </View>
                 </View>
-                <View style={styles.transactionRight}>
-                  <Text style={styles.transactionAmount}>+{transaction.amount.toLocaleString('fr-FR')} FCFA</Text>
-                  <Text
-                    style={[styles.transactionStatus, transaction.status === 'versé' ? styles.statusPaid : styles.statusPending]}
-                  >
-                    {transaction.status === 'versé' ? 'Versé' : 'Versement en attente'}
-                  </Text>
-                </View>
-              </View>
-            ))
+              );
+            })
           )}
         </View>
 
@@ -807,22 +990,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  downloadButton: {
+  transactionTypeFilter: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
+    gap: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 4,
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
   },
-  downloadLabel: {
+  transactionTypeButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+  },
+  transactionTypeButtonActive: {
+    backgroundColor: '#2ECC71',
+  },
+  transactionTypeText: {
     fontFamily: 'Manrope',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#0F172A',
+    color: '#6B7280',
+  },
+  transactionTypeTextActive: {
+    color: '#FFFFFF',
   },
   transactionList: {
     backgroundColor: '#FFFFFF',
@@ -906,6 +1101,13 @@ const styles = StyleSheet.create({
   statusPending: {
     backgroundColor: 'rgba(251,191,36,0.2)',
     color: '#92400E',
+  },
+  transactionAmountRefund: {
+    color: '#DC2626',
+  },
+  statusRefund: {
+    backgroundColor: 'rgba(220,38,38,0.15)',
+    color: '#991B1B',
   },
   actionsCard: {
     backgroundColor: '#FFFFFF',

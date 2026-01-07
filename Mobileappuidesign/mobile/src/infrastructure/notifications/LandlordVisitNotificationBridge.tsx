@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
-import { useLandlordVisits } from '@/src/features/rental-visits/hooks/useLandlordVisits';
+import { useLandlordVisits } from '@/src/features/rental-visits/hooks';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 import { supabase } from '@/src/supabaseClient';
 
 const NOTIFIED_VISITS_STORAGE_KEY = 'notified_visits_cache';
@@ -32,12 +32,9 @@ const LandlordVisitNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedVisits = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_VISITS_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedVisitsRef.current = new Set(notifiedIds);
-          console.log('[LandlordVisitNotificationBridge] Loaded notified visits from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_VISITS_STORAGE_KEY);
+        notifiedVisitsRef.current = notifiedIds;
+        console.log('[LandlordVisitNotificationBridge] Loaded notified visits from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[LandlordVisitNotificationBridge] Error loading notified visits cache:', error);
       } finally {
@@ -49,11 +46,16 @@ const LandlordVisitNotificationBridge = () => {
   }, []);
 
   // Initialisation : synchroniser les statuts existants
+  // ⚠️ NE PAS ajouter les visites à knownVisitsRef au démarrage
+  // Cela empêcherait le polling de détecter les nouvelles visites
   useEffect(() => {
     console.log('[LandlordVisitNotificationBridge] Syncing existing visits:', visits.length);
     visits.forEach((visit) => {
-      previousStatusesRef.current[visit.id] = visit.status;
-      knownVisitsRef.current.add(visit.id);
+      // Seulement mettre à jour les statuts, pas ajouter à knownVisitsRef
+      // Les visites seront ajoutées à knownVisitsRef lors du polling
+      if (!previousStatusesRef.current[visit.id]) {
+        previousStatusesRef.current[visit.id] = visit.status;
+      }
     });
   }, [visits]);
 
@@ -106,8 +108,7 @@ const LandlordVisitNotificationBridge = () => {
           notifiedVisitsRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache
-          const notifiedArray = Array.from(notifiedVisitsRef.current);
-          AsyncStorage.setItem(NOTIFIED_VISITS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_VISITS_STORAGE_KEY, notifiedVisitsRef.current).catch((err) => {
             console.error('[LandlordVisitNotificationBridge] Error saving notified visits cache:', err);
           });
           console.log('[LandlordVisitNotificationBridge] Visit notification displayed and cached');
@@ -132,7 +133,7 @@ const LandlordVisitNotificationBridge = () => {
       return;
     }
 
-    console.log('[LandlordVisitNotificationBridge] Checking for new visits via polling');
+    console.log('[LandlordVisitNotificationBridge] Checking for new visits via polling - Total visits:', visits.length);
 
     visits.forEach((visit) => {
       const previousStatus = previousStatusesRef.current[visit.id];
@@ -142,7 +143,11 @@ const LandlordVisitNotificationBridge = () => {
         visitId: visit.id,
         status: visit.status,
         isKnownVisit,
-        previousStatus
+        previousStatus,
+        guestName: visit.guest?.name,
+        listingTitle: visit.listingTitle,
+        visitDate: visit.visitDate,
+        visitTime: visit.visitTime,
       });
 
       // Mettre à jour le ref avant de traiter
@@ -164,7 +169,16 @@ const LandlordVisitNotificationBridge = () => {
       };
 
       // 🎉 Afficher notification si c'est une nouvelle visite (confirmée)
-      if (!isKnownVisit && visit.status !== 'cancelled') {
+      // ⚠️ Ignorer les visites du chat (mobile_guest_chat) - elles envoient la notification au HOST
+      // Notifier seulement les visites de la property (mobile_guest)
+      if (!isKnownVisit && visit.status !== 'cancelled' && visit.source !== 'mobile_guest_chat') {
+        console.log('[LandlordVisitNotificationBridge] 🆕 NEW VISIT DETECTED:', {
+          visitId: visit.id,
+          isKnownVisit,
+          status: visit.status,
+          source: visit.source,
+        });
+
         // Vérifier si on a déjà notifié cette visite pour éviter les doublons
         const notificationKey = `visit-created-${visit.id}`;
         if (notifiedVisitsRef.current.has(notificationKey)) {
@@ -187,20 +201,21 @@ const LandlordVisitNotificationBridge = () => {
           },
         };
 
-        console.log('[LandlordVisitNotificationBridge] New visit detected - showing notification:', JSON.stringify(notificationPayload, null, 2));
+        console.log('[LandlordVisitNotificationBridge] 📢 Calling showNotification with payload:', JSON.stringify(notificationPayload, null, 2));
 
         try {
           showNotification(notificationPayload);
+          console.log('[LandlordVisitNotificationBridge] ✅ showNotification called successfully');
+          
           notifiedVisitsRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache dans AsyncStorage pour persister après actualisation
-          const notifiedArray = Array.from(notifiedVisitsRef.current);
-          AsyncStorage.setItem(NOTIFIED_VISITS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_VISITS_STORAGE_KEY, notifiedVisitsRef.current).catch((err) => {
             console.error('[LandlordVisitNotificationBridge] Error saving notified visits cache:', err);
           });
           console.log('[LandlordVisitNotificationBridge] New visit notification displayed and cached');
         } catch (error) {
-          console.error('[LandlordVisitNotificationBridge] Error showing new visit notification:', error);
+          console.error('[LandlordVisitNotificationBridge] ❌ Error showing new visit notification:', error);
         }
         return;
       }

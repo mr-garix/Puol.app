@@ -116,7 +116,8 @@ export const useHostBookings = (subscriptionScope = 'ui'): UseHostBookingsResult
         // Mettre à jour l'état avec les réservations fraîches
         setBookings(freshBookings);
       } catch (err) {
-        console.error('[useHostBookings] Polling error:', err);
+        // Erreur réseau silencieuse - garder les données précédentes
+        // Le polling continuera à fonctionner au prochain intervalle
       }
     };
 

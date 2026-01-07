@@ -44,6 +44,13 @@ const detectVisitIntentFromContent = (content?: string | null): boolean => {
   const text = normalizeText(content);
   if (!text) return false;
 
+  // 🔴 DÉTECTION OBLIGATOIRE : "la visite coûte" doit TOUJOURS afficher le bouton
+  const visitCostRegex = /la\s+visite\s+coute\s+\d+/;
+  if (visitCostRegex.test(text)) {
+    console.log('[detectVisitIntentFromContent] ✅ MANDATORY KEYWORD DETECTED: "la visite coûte"');
+    return true;
+  }
+
   const visitKeywords = [
     'visite',
     'visiter',
@@ -620,45 +627,20 @@ export default function ConversationScreen() {
       return;
     }
 
-    setIsSchedulingVisit(true);
-    try {
-      console.log('[ConversationScreen] Creating visit BEFORE payment with:', {
-        listingId,
-        guestProfileId: viewerProfileId,
-        visitDate: date,
-        visitTime: time,
-      });
+    // ⚠️ NE PAS créer la visite ici
+    // Seulement stocker les données pour créer la visite APRÈS le paiement
+    console.log('[ConversationScreen] Storing visit details for payment:', {
+      listingId,
+      guestProfileId: viewerProfileId,
+      visitDate: date,
+      visitTime: time,
+    });
 
-      // Créer la visite AVANT le paiement pour avoir le visitId
-      const { createRentalVisit } = await import('@/src/features/rental-visits/services');
-      const visit = await createRentalVisit({
-        listingId,
-        guestProfileId: viewerProfileId,
-        visitDate: date,
-        visitTime: time,
-        source: 'mobile_guest_chat',
-      });
-
-      console.log('[ConversationScreen] Visit created successfully:', {
-        visitId: visit.id,
-        visitStatus: visit.status,
-      });
-
-      // Stocker le visitId pour l'utiliser dans le paiement
-      setScheduledVisitId(visit.id);
-      setScheduledVisitDate(date);
-      setScheduledVisitTime(time);
-      setVisitModalVisible(false);
-      setVisitPaymentModalVisible(true);
-    } catch (error) {
-      console.error('[ConversationScreen] Error creating visit:', {
-        error,
-        errorMessage: error instanceof Error ? error.message : 'Unknown error',
-      });
-      Alert.alert('Erreur', 'Impossible de créer la visite. Veuillez réessayer.');
-    } finally {
-      setIsSchedulingVisit(false);
-    }
+    setSelectedListingId(listingId);
+    setScheduledVisitDate(date);
+    setScheduledVisitTime(time);
+    setVisitModalVisible(false);
+    setVisitPaymentModalVisible(true);
   };
 
   const handleVisitPaymentCancel = () => {
@@ -671,26 +653,157 @@ export default function ConversationScreen() {
     setVisitModalVisible(true);
   };
 
-  const handleVisitPaymentSuccess = async () => {
-    console.log('[ConversationScreen] handleVisitPaymentSuccess called');
+  const handleVisitPaymentSuccess = async (provider: 'orange' | 'mtn' | 'card') => {
+    console.log('[ConversationScreen] handleVisitPaymentSuccess called with provider:', provider);
     
-    // La visite a déjà été créée dans handleVisitScheduleConfirm
-    // On ne fait que rafraîchir les données et afficher un message de succès
-    
+    if (!scheduledVisitDate || !scheduledVisitTime) {
+      console.error('[ConversationScreen] Missing visit details');
+      Alert.alert('Erreur', 'Impossible de traiter le paiement. Veuillez réessayer.');
+      setVisitPaymentModalVisible(false);
+      return;
+    }
+
+    const listingId = selectedListingId ?? conversation?.listingId;
+    if (!listingId || !conversation || !viewerProfileId) {
+      console.error('[ConversationScreen] Missing required data for visit creation');
+      Alert.alert('Erreur', 'Impossible de traiter le paiement. Veuillez réessayer.');
+      setVisitPaymentModalVisible(false);
+      return;
+    }
+
+    setIsSchedulingVisit(true);
     try {
+      // 1️⃣ Créer la visite APRÈS la confirmation du paiement
+      console.log('[ConversationScreen] 🔵 Creating visit AFTER payment confirmation:', {
+        listingId,
+        guestProfileId: viewerProfileId,
+        visitDate: scheduledVisitDate,
+        visitTime: scheduledVisitTime,
+      });
+
+      const { createRentalVisit } = await import('@/src/features/rental-visits/services');
+      const createdVisit = await createRentalVisit({
+        listingId,
+        guestProfileId: viewerProfileId,
+        visitDate: scheduledVisitDate,
+        visitTime: scheduledVisitTime,
+        source: 'mobile_guest_chat',
+      });
+
+      console.log('[ConversationScreen] ✅ Visit created successfully:', {
+        visitId: createdVisit.id,
+        visitStatus: createdVisit.status,
+      });
+
+      // 2️⃣ Créer le paiement avec le provider choisi
+      console.log('[ConversationScreen] 🔵 Creating payment for visit:', {
+        visitId: createdVisit.id,
+        provider,
+        guestProfileId: viewerProfileId,
+        hostProfileId: conversation?.listing?.hostId,
+      });
+
+      const { createPaymentAndEarning } = await import('@/src/lib/services/payments');
+      const { sendVisitNotificationToHost } = await import('@/src/features/rental-visits/services');
+      const { supabase } = await import('@/src/supabaseClient');
+
+      // Mapper les providers pour createPaymentAndEarning
+      const providerMap: Record<string, 'orange_money' | 'mtn_momo' | 'card'> = {
+        'orange': 'orange_money',
+        'mtn': 'mtn_momo',
+        'card': 'card',
+      };
+
+      const paymentResult = await createPaymentAndEarning({
+        payerProfileId: viewerProfileId || '',
+        hostProfileId: conversation?.listing?.hostId || '',
+        purpose: 'visit',
+        relatedId: createdVisit.id,
+        provider: providerMap[provider],
+      });
+
+      console.log('[ConversationScreen] ✅ Payment created successfully:', {
+        visitId: createdVisit.id,
+        paymentId: paymentResult?.payment?.id,
+        provider,
+      });
+
+      // 3️⃣ Récupérer les données complètes de la visite avec les relations
+      console.log('[ConversationScreen] 📡 Fetching complete visit data with relations...');
+
+      const { data: visitData, error: fetchError } = await supabase
+        .from('rental_visits')
+        .select(`
+          id,
+          rental_listing_id,
+          guest_profile_id,
+          visit_date,
+          visit_time,
+          status,
+          source,
+          created_at,
+          cancelled_at,
+          cancelled_reason,
+          notes,
+          listing:listings (
+            id,
+            title,
+            cover_photo_url,
+            city,
+            district,
+            address_text,
+            host_id
+          ),
+          guest:profiles!rental_visits_guest_profile_id_fkey (
+            id,
+            first_name,
+            last_name,
+            username,
+            phone,
+            avatar_url
+          )
+        `)
+        .eq('id', createdVisit.id)
+        .single();
+
+      if (fetchError) {
+        console.error('[ConversationScreen] ❌ Error fetching visit data:', fetchError);
+      } else {
+        console.log('[ConversationScreen] ✅ Visit data fetched:', {
+          visitId: visitData?.id,
+          hasListing: !!visitData?.listing,
+          hostId: (visitData?.listing as any)?.host_id,
+        });
+      }
+
+      // 4️⃣ Envoyer la notification au host APRÈS le paiement
+      if (visitData) {
+        console.log('[ConversationScreen] 🔔 Sending notification to host...');
+
+        try {
+          await sendVisitNotificationToHost(visitData as any);
+          console.log('[ConversationScreen] ✅ Notification sent successfully to host for visit:', createdVisit.id);
+        } catch (notificationError) {
+          console.error('[ConversationScreen] ❌ Error sending notification:', notificationError);
+          // Ne pas échouer si la notification échoue
+        }
+      } else {
+        console.warn('[ConversationScreen] ⚠️ No visit data to send notification');
+      }
+
       await refreshVisits?.().catch((err) => {
         console.warn('[ConversationScreen] refreshVisits après paiement impossible', err);
       });
 
-      console.log('[ConversationScreen] Visit payment successful, visit already created');
-      Alert.alert('Visite programmée', 'Votre visite a été enregistrée. Nous vous confirmerons le créneau rapidement.');
+      console.log('[ConversationScreen] Visit payment successful with payment created');
+      Alert.alert('Visite programmée', 'Votre visite a été enregistrée et le paiement confirmé. Nous vous confirmerons le créneau rapidement.');
       setSelectedListingId(null);
       setScheduledVisitDate(null);
       setScheduledVisitTime('');
       setScheduledVisitId(null);
     } catch (error) {
       console.error('[ConversationScreen] Erreur après paiement visite', error);
-      Alert.alert('Erreur', "Une erreur s'est produite. Votre visite a été créée mais nous n'avons pas pu mettre à jour les données.");
+      Alert.alert('Erreur', "Une erreur s'est produite lors du traitement du paiement. Veuillez réessayer.");
     } finally {
       setIsSchedulingVisit(false);
       setVisitPaymentModalVisible(false);
@@ -722,10 +835,14 @@ export default function ConversationScreen() {
           : null;
     const detectedIntentFromContent = detectVisitIntentFromContent(message.content);
     const asksScheduleQuestion = isAiMessage && detectVisitScheduleQuestionFromContent(message.content);
+    // 🔴 Afficher le bouton si :
+    // 1. metadataRecord?.visitSuggestion === true (metadata explicite)
+    // 2. detectedIntentFromContent && asksScheduleQuestion (détection normale)
+    // 3. detectedIntentFromContent === true (détection de "la visite coûte" force le bouton)
     const visitSuggestion =
       viewerRole === 'guest' &&
       isAiMessage &&
-      (metadataRecord?.visitSuggestion === true || (detectedIntentFromContent && asksScheduleQuestion));
+      (metadataRecord?.visitSuggestion === true || (detectedIntentFromContent && asksScheduleQuestion) || detectedIntentFromContent);
 
     console.debug('[ConversationScreen][visit-btn]', {
       messageId: message.id,
@@ -983,6 +1100,7 @@ export default function ConversationScreen() {
         onClose={handleCloseVisitModal}
         onConfirm={handleVisitScheduleConfirm}
         listingId={selectedListingId ?? conversation?.listingId ?? ''}
+        hostProfileId={conversation?.host?.id ?? ''}
         initialDate={scheduledVisitDate}
         initialTime={scheduledVisitTime}
       />

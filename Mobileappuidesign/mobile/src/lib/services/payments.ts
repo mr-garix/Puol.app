@@ -81,15 +81,18 @@ export const createPaymentAndEarning = async (params: {
   }
   
   try {
-    console.log('[createPaymentAndEarning] Début du paiement', { 
+    console.log('[createPaymentAndEarning] 🔵 ===== DÉBUT DU PAIEMENT =====');
+    console.log('[createPaymentAndEarning] 📥 Paramètres reçus:', { 
       purpose, 
       payerProfileId, 
       hostProfileId, 
+      relatedId,
       customerPrice,
       amount,
       platformFee,
       hostAmount 
     });
+    console.log('[createPaymentAndEarning] 🔍 relatedId type:', typeof relatedId, 'value:', relatedId);
     
     // 1. Créer le paiement
     const paymentPayload: PaymentInsert = {
@@ -103,7 +106,10 @@ export const createPaymentAndEarning = async (params: {
       status: 'success', // V1 : on considère le paiement comme réussi
       paid_at: new Date().toISOString(),
     };
+    console.log('[createPaymentAndEarning] 💳 Payment payload avant insert:', paymentPayload);
+    console.log('[createPaymentAndEarning] 🔗 related_id dans payload:', paymentPayload.related_id);
 
+    console.log('[createPaymentAndEarning] 📤 Insertion du paiement dans Supabase...');
     const { data: payment, error: paymentError } = await supabase
       .from('payments')
       .insert(paymentPayload)
@@ -111,42 +117,77 @@ export const createPaymentAndEarning = async (params: {
       .single();
     
     if (paymentError) {
-      console.error('[createPaymentAndEarning] Erreur paiement:', paymentError);
+      console.error('[createPaymentAndEarning] ❌ Erreur paiement:', {
+        error: paymentError,
+        code: paymentError?.code,
+        message: paymentError?.message,
+        details: paymentError?.details,
+      });
       throw paymentError;
     }
     
-    console.log('[createPaymentAndEarning] Paiement créé:', payment);
+    console.log('[createPaymentAndEarning] ✅ ===== PAIEMENT CRÉÉ =====');
+    console.log('[createPaymentAndEarning] 💾 Paiement data complète:', {
+      id: payment?.id,
+      payer_profile_id: payment?.payer_profile_id,
+      purpose: payment?.purpose,
+      related_id: payment?.related_id,
+      amount: payment?.amount,
+      status: payment?.status,
+      created_at: payment?.created_at,
+    });
+    console.log('[createPaymentAndEarning] 🔗 related_id dans paiement créé:', payment?.related_id);
     
     // 2. Créer les earnings associés uniquement si le host a un montant > 0
     let earning: HostEarningInsert | null = null;
     let payout: any = null;
     
     if (hostAmount > 0) {
+      const earningPayload = {
+        host_profile_id: hostProfileId,
+        payment_id: payment.id,
+        purpose,
+        related_id: relatedId || null,
+        customer_amount: amount,
+        platform_fee: platformFee,
+        host_amount: hostAmount,
+        currency: 'XAF',
+        status: 'available',
+        available_at: new Date().toISOString(),
+        paid_at: null,
+      } as HostEarningInsert;
+      console.log('[createPaymentAndEarning] 💰 Earning payload avant insert:', earningPayload);
+      console.log('[createPaymentAndEarning] 🔗 related_id dans earning payload:', earningPayload.related_id);
+      
+      console.log('[createPaymentAndEarning] 📤 Insertion du earning dans Supabase...');
       const { data, error: earningError } = await supabase
         .from('host_earnings')
-        .insert({
-          host_profile_id: hostProfileId,
-          payment_id: payment.id,
-          purpose,
-          related_id: relatedId || null,
-          customer_amount: amount,
-          platform_fee: platformFee,
-          host_amount: hostAmount,
-          currency: 'XAF',
-          status: 'available',
-          available_at: new Date().toISOString(),
-          paid_at: null,
-        } as HostEarningInsert)
+        .insert(earningPayload)
         .select()
         .single();
       
       if (earningError) {
-        console.error('[createPaymentAndEarning] Erreur earning:', earningError);
+        console.error('[createPaymentAndEarning] ❌ Erreur earning:', {
+          error: earningError,
+          code: earningError?.code,
+          message: earningError?.message,
+          details: earningError?.details,
+        });
         throw earningError;
       }
       
       earning = data ?? null;
-      console.log('[createPaymentAndEarning] Earning créé:', earning);
+      console.log('[createPaymentAndEarning] ✅ ===== EARNING CRÉÉ =====');
+      console.log('[createPaymentAndEarning] 💾 Earning data complète:', {
+        id: earning?.id,
+        host_profile_id: earning?.host_profile_id,
+        payment_id: earning?.payment_id,
+        purpose: earning?.purpose,
+        related_id: earning?.related_id,
+        host_amount: earning?.host_amount,
+        created_at: earning?.created_at,
+      });
+      console.log('[createPaymentAndEarning] 🔗 related_id dans earning créé:', earning?.related_id);
       
       // 3. Créer l'entrée dans host_payout pour rendre le montant disponible pour retrait
       const payoutPayload = {
@@ -175,8 +216,17 @@ export const createPaymentAndEarning = async (params: {
       payout = payoutData ?? null;
       console.log('[createPaymentAndEarning] Payout créé:', payout);
     } else {
-      console.log('[createPaymentAndEarning] Pas de host_amount, aucun earning créé (visit)');
+      console.log('[createPaymentAndEarning] ℹ️ Pas de host_amount, aucun earning créé (visit)');
     }
+    
+    console.log('[createPaymentAndEarning] 🎉 ===== PAIEMENT COMPLET =====');
+    console.log('[createPaymentAndEarning] 📊 Résumé final:', {
+      paymentId: payment?.id,
+      paymentRelatedId: payment?.related_id,
+      earningId: earning?.id,
+      earningRelatedId: earning?.related_id,
+      payoutId: payout?.id,
+    });
     
     return {
       payment,
@@ -185,7 +235,11 @@ export const createPaymentAndEarning = async (params: {
     };
     
   } catch (error) {
-    console.error('[createPaymentAndEarning] Erreur générale:', error);
+    console.error('[createPaymentAndEarning] ❌ Erreur générale:', {
+      error,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     throw error;
   }
 };

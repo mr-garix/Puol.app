@@ -15,6 +15,7 @@ import { CitiesSection } from './sections/CitiesSection';
 import { LandlordsSection } from './sections/LandlordsSection';
 import { HostsSection } from './sections/HostsSection';
 import { ClientsSection } from './sections/ClientsSection';
+import { RefundsSection } from './sections/RefundsSection';
 
 // Sections placeholder
 import {
@@ -40,6 +41,7 @@ const AVAILABLE_SECTIONS: AdminSection[] = [
   'landlords',
   'hosts',
   'clients',
+  'refunds',
   'moderation',
   'payments',
   'support',
@@ -93,6 +95,8 @@ export function AdminDashboard({ onLogout, onSwitchToUser }: AdminDashboardProps
         return <HostsSection />;
       case 'clients':
         return <ClientsSection />;
+      case 'refunds':
+        return <RefundsSection />;
       case 'moderation':
         return <ModerationSection />;
       case 'payments':

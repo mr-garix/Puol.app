@@ -97,7 +97,16 @@ export async function fetchClientProfileDetail(profileId: string): Promise<Clien
       console.warn('[clients] fetchClientProfileDetail visits error', visitsError);
     }
 
-    const visits: ClientVisitRecord[] = (visitsData as ClientVisitRow[] | null | undefined)?.map((visit) => {
+    const visitsArray = (visitsData as ClientVisitRow[] | null | undefined) ?? [];
+    
+    // Trier par date de visite (du plus récent au plus ancien)
+    const sortedVisits = visitsArray.sort((a, b) => {
+      const dateA = a.visit_date ? new Date(a.visit_date).getTime() : 0;
+      const dateB = b.visit_date ? new Date(b.visit_date).getTime() : 0;
+      return dateB - dateA; // Plus récent en premier
+    });
+
+    const visits: ClientVisitRecord[] = sortedVisits.map((visit) => {
       const listing = Array.isArray(visit.rental_listing)
         ? visit.rental_listing[0]
         : (visit.rental_listing as Pick<ListingRow, 'title' | 'city'> | null | undefined);
@@ -111,7 +120,7 @@ export async function fetchClientProfileDetail(profileId: string): Promise<Clien
         agent: '—',
         notes: '',
       } satisfies ClientVisitRecord;
-    }) ?? [];
+    });
 
     const visitsCount = visits.length;
 

@@ -13,6 +13,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
+import {
   Table,
   TableBody,
   TableCell,
@@ -22,6 +28,7 @@ import {
 } from '@/components/ui/table';
 import { CreditCard, DollarSign, CheckCircle2 } from 'lucide-react';
 import { getHostPayouts, processHostPayout, type HostPayout } from '@/lib/services/hostPayouts';
+import { supabase } from '@/lib/supabaseClient';
 
 interface HostPayoutSectionProps {
   hostProfileId: string;
@@ -32,12 +39,14 @@ type PaymentMethod = 'orange_money' | 'mtn_momo' | 'bank_transfer';
 export function HostPayoutSection({ hostProfileId }: HostPayoutSectionProps) {
   const [totalAvailable, setTotalAvailable] = useState(0);
   const [payouts, setPayouts] = useState<HostPayout[]>([]);
+  const [refunds, setRefunds] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPayoutModalOpen, setIsPayoutModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('orange_money');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [reference, setReference] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [historyTab, setHistoryTab] = useState<'payouts' | 'refunds'>('payouts');
 
   useEffect(() => {
     loadPayoutData();
@@ -48,12 +57,55 @@ export function HostPayoutSection({ hostProfileId }: HostPayoutSectionProps) {
       setIsLoading(true);
       const payoutsList = await getHostPayouts(hostProfileId);
       
-      // Calculer le total disponible (somme des payouts avec status 'pending')
-      const total = payoutsList
+      // Récupérer les remboursements liés aux bookings de ce host
+      let totalRefunds = 0;
+      try {
+        if (!supabase) {
+          console.warn('[HostPayoutSection] Supabase client unavailable');
+        } else {
+          // Récupérer les listings du host
+          const { data: listings } = await supabase
+            .from('listings')
+            .select('id')
+            .eq('host_id', hostProfileId);
+
+          if (listings && listings.length > 0) {
+            const listingIds = listings.map((l: any) => l.id);
+
+            // Récupérer les bookings pour ces listings
+            const { data: bookings } = await supabase
+              .from('bookings')
+              .select('id')
+              .in('listing_id', listingIds);
+
+            if (bookings && bookings.length > 0) {
+              const bookingIds = bookings.map((b: any) => b.id);
+
+              // Récupérer les remboursements pour ces bookings
+              const { data: refundsData } = await supabase
+                .from('refunds')
+                .select('*')
+                .in('booking_id', bookingIds)
+                .order('requested_at', { ascending: false });
+
+              if (refundsData) {
+                setRefunds(refundsData);
+                totalRefunds = refundsData.reduce((sum: number, r: any) => sum + (r.refund_amount || 0), 0);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[HostPayoutSection] Erreur récupération remboursements:', error);
+      }
+      
+      // Calculer le total disponible (somme des payouts avec status 'pending' - remboursements)
+      const totalPayouts = payoutsList
         .filter((p: any) => p.status === 'pending')
         .reduce((sum: number, p: any) => sum + (p.total_amount || 0), 0);
       
-      setTotalAvailable(total);
+      const totalAvailableNet = Math.max(0, totalPayouts - totalRefunds);
+      setTotalAvailable(totalAvailableNet);
       setPayouts(payoutsList);
     } catch (error) {
       console.error('[HostPayoutSection] Erreur:', error);
@@ -124,59 +176,119 @@ export function HostPayoutSection({ hostProfileId }: HostPayoutSectionProps) {
       <Card className="rounded-2xl border-gray-100">
         <CardContent className="p-6 space-y-4">
           <div>
-            <p className="text-lg font-semibold text-gray-900">Historique des paiements</p>
-            <p className="text-sm text-gray-500">Tous les paiements effectués</p>
+            <p className="text-lg font-semibold text-gray-900">Historique</p>
+            <p className="text-sm text-gray-500">Paiements et remboursements</p>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-gray-50/60">
-                <TableHead>Montant</TableHead>
-                <TableHead>Méthode</TableHead>
-                <TableHead>Référence</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Statut</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {payouts.map((payout: any) => (
-                <TableRow key={payout.id}>
-                  <TableCell className="font-semibold">
-                    {(payout.total_amount || 0).toLocaleString('fr-FR')} FCFA
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {payout.payout_method === 'orange_money' && 'Orange Money'}
-                    {payout.payout_method === 'mtn_momo' && 'MTN MoMo'}
-                    {payout.payout_method === 'bank_transfer' && 'Virement bancaire'}
-                    {!payout.payout_method && '—'}
-                  </TableCell>
-                  <TableCell className="text-sm text-gray-600">{payout.payout_reference || '—'}</TableCell>
-                  <TableCell className="text-sm">
-                    {payout.paid_at
-                      ? new Date(payout.paid_at).toLocaleDateString('fr-FR')
-                      : '—'}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      className={
-                        payout.status === 'paid'
-                          ? 'bg-emerald-100 text-emerald-700'
-                          : 'bg-amber-100 text-amber-700'
-                      }
-                    >
-                      {payout.status === 'paid' ? 'Payé' : 'Disponible'}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {payouts.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-sm text-gray-500 py-8">
-                    Aucun paiement enregistré
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+
+          <Tabs value={historyTab} onValueChange={(value: any) => setHistoryTab(value)}>
+            <TabsList className="bg-gray-100 p-1 rounded-xl">
+              <TabsTrigger value="payouts" className="rounded-lg">
+                Historique de paiement
+              </TabsTrigger>
+              <TabsTrigger value="refunds" className="rounded-lg">
+                Historique de remboursement
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="payouts" className="mt-4">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-gray-50/60">
+                    <TableHead>Montant</TableHead>
+                    <TableHead>Méthode</TableHead>
+                    <TableHead>Référence</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Statut</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {payouts.map((payout: any) => (
+                    <TableRow key={payout.id}>
+                      <TableCell className="font-semibold">
+                        {(payout.total_amount || 0).toLocaleString('fr-FR')} FCFA
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {payout.payout_method === 'orange_money' && 'Orange Money'}
+                        {payout.payout_method === 'mtn_momo' && 'MTN MoMo'}
+                        {payout.payout_method === 'bank_transfer' && 'Virement bancaire'}
+                        {!payout.payout_method && '—'}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-600">{payout.payout_reference || '—'}</TableCell>
+                      <TableCell className="text-sm">
+                        {payout.paid_at
+                          ? new Date(payout.paid_at).toLocaleDateString('fr-FR')
+                          : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={
+                            payout.status === 'paid'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-amber-100 text-amber-700'
+                          }
+                        >
+                          {payout.status === 'paid' ? 'Payé' : 'Disponible'}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {payouts.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-sm text-gray-500 py-8">
+                        Aucun paiement enregistré
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TabsContent>
+
+            <TabsContent value="refunds" className="mt-4">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-gray-50/60">
+                    <TableHead>Montant</TableHead>
+                    <TableHead>Motif</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Statut</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {refunds.map((refund: any) => (
+                    <TableRow key={refund.id}>
+                      <TableCell className="font-semibold text-red-600">
+                        -{(refund.refund_amount || 0).toLocaleString('fr-FR')} FCFA
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {refund.refund_reason === 'reservation_cancelled' && 'Réservation annulée'}
+                        {refund.refund_reason === 'guest_request' && 'Demande du client'}
+                        {refund.refund_reason === 'damage' && 'Dommages'}
+                        {refund.refund_reason === 'other' && 'Autre'}
+                        {!refund.refund_reason && '—'}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {refund.requested_at
+                          ? new Date(refund.requested_at).toLocaleDateString('fr-FR')
+                          : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className="bg-red-100 text-red-700">
+                          Remboursé
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {refunds.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-sm text-gray-500 py-8">
+                        Aucun remboursement enregistré
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 

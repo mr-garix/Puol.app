@@ -26,6 +26,7 @@ const COLORS = {
   border: PUOL_COLORS.border,
   pending: '#F97316',
   cancelled: PUOL_COLORS.error,
+  completed: '#3B82F6',
 };
 
 const formatVisitDate = (isoDate: string, time: string) => {
@@ -54,6 +55,13 @@ const getStatusDescriptor = (status: string) => {
         tint: 'rgba(239, 68, 68, 0.12)',
         color: COLORS.cancelled,
         icon: 'slash' as const,
+      };
+    case 'completed':
+      return {
+        label: 'Terminée',
+        tint: 'rgba(59, 130, 246, 0.12)',
+        color: COLORS.completed,
+        icon: 'check-circle' as const,
       };
     default:
       return {

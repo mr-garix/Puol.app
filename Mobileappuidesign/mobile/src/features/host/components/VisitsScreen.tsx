@@ -71,6 +71,46 @@ const getStatusStyle = (status: Visit['status']) => {
   }
 };
 
+const getProgressionStyle = (visitDate: Date | string) => {
+  try {
+    const dateObj = visitDate instanceof Date ? visitDate : new Date(visitDate);
+    const now = new Date();
+    
+    // Comparer les dates (sans l'heure) en UTC
+    const visitDateUTC = new Date(dateObj.getUTCFullYear(), dateObj.getUTCMonth(), dateObj.getUTCDate());
+    const nowDateUTC = new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    
+    const visitTime = visitDateUTC.getTime();
+    const nowTime = nowDateUTC.getTime();
+    
+    if (visitTime < nowTime) {
+      return {
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        color: '#1D4ED8',
+        text: 'Terminée',
+      };
+    } else if (visitTime === nowTime) {
+      return {
+        backgroundColor: 'rgba(234, 179, 8, 0.1)',
+        color: '#CA8A04',
+        text: 'En cours',
+      };
+    } else {
+      return {
+        backgroundColor: 'rgba(107, 114, 128, 0.1)',
+        color: '#6B7280',
+        text: 'À venir',
+      };
+    }
+  } catch (error) {
+    return {
+      backgroundColor: 'rgba(107, 114, 128, 0.1)',
+      color: '#6B7280',
+      text: 'À venir',
+    };
+  }
+};
+
 type TagDescriptor = {
   label: string;
   featherIcon?: React.ComponentProps<typeof Feather>['name'];
@@ -172,6 +212,7 @@ const VisitsScreen: React.FC<VisitsScreenProps> = ({ visits, onVisitPress, onBac
           <View style={styles.visitsList}>
             {visits.map((visit, index) => {
               const statusStyle = getStatusStyle(visit.status);
+              const progressionStyle = getProgressionStyle(visit.visitDate);
               const tags = buildTags(visit);
 
               return (
@@ -223,17 +264,64 @@ const VisitsScreen: React.FC<VisitsScreenProps> = ({ visits, onVisitPress, onBac
                         </View>
                       )}
 
-                      <View
-                        style={[
-                          styles.statusBadge,
-                          { backgroundColor: statusStyle.backgroundColor },
-                        ]}
-                      >
-                        <Text
-                          style={[styles.statusText, { color: statusStyle.color }]}
-                        >
-                          {statusStyle.text}
-                        </Text>
+                      <View style={styles.badgesRow}>
+                        {visit.status === 'cancelled' ? (
+                          // Si annulée, afficher seulement le badge "Annulée"
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              { backgroundColor: statusStyle.backgroundColor },
+                            ]}
+                          >
+                            <Text
+                              style={[styles.statusText, { color: statusStyle.color }]}
+                            >
+                              {statusStyle.text}
+                            </Text>
+                          </View>
+                        ) : progressionStyle.text === 'Terminée' ? (
+                          // Si terminée (date passée), afficher seulement le badge "Terminée"
+                          <View
+                            style={[
+                              styles.progressionBadge,
+                              { backgroundColor: progressionStyle.backgroundColor },
+                            ]}
+                          >
+                            <Text
+                              style={[styles.progressionText, { color: progressionStyle.color }]}
+                            >
+                              {progressionStyle.text}
+                            </Text>
+                          </View>
+                        ) : (
+                          // Sinon, afficher les deux badges (statut + progression)
+                          <>
+                            <View
+                              style={[
+                                styles.statusBadge,
+                                { backgroundColor: statusStyle.backgroundColor },
+                              ]}
+                            >
+                              <Text
+                                style={[styles.statusText, { color: statusStyle.color }]}
+                              >
+                                {statusStyle.text}
+                              </Text>
+                            </View>
+                            <View
+                              style={[
+                                styles.progressionBadge,
+                                { backgroundColor: progressionStyle.backgroundColor },
+                              ]}
+                            >
+                              <Text
+                                style={[styles.progressionText, { color: progressionStyle.color }]}
+                              >
+                                {progressionStyle.text}
+                              </Text>
+                            </View>
+                          </>
+                        )}
                       </View>
                     </View>
                   </View>
@@ -399,6 +487,11 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     flex: 1,
   },
+  badgesRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   statusBadge: {
     alignSelf: 'flex-start',
     paddingHorizontal: 12,
@@ -406,6 +499,17 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   statusText: {
+    fontFamily: 'Manrope',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  progressionBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  progressionText: {
     fontFamily: 'Manrope',
     fontSize: 12,
     fontWeight: '600',

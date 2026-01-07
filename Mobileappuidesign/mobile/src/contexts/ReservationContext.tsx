@@ -7,6 +7,8 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import { Alert } from 'react-native';
+import { useRouter } from 'expo-router';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
 import { useAuth } from '@/src/contexts/AuthContext';
@@ -137,6 +139,7 @@ const mapBookingToReservationRecord = (
 };
 
 export const ReservationProvider = ({ children }: { children: ReactNode }) => {
+  const router = useRouter();
   const { supabaseProfile, isLoggedIn } = useAuth();
   const [reservations, setReservations] = useState<ReservationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -229,11 +232,40 @@ export const ReservationProvider = ({ children }: { children: ReactNode }) => {
             } 
             else if (payload.eventType === 'UPDATE' && payload.new) {
               const updatedId = payload.new.id;
+              const newStatus = payload.new.status;
               const newRemainingPaymentStatus = payload.new.remaining_payment_status;
               console.log('[ReservationContext] Booking updated:', {
                 id: updatedId,
+                status: newStatus,
                 remainingPaymentStatus: newRemainingPaymentStatus
               });
+              
+              // Si la réservation est annulée, afficher une notification
+              if (newStatus === 'cancelled') {
+                const reservation = reservations.find((r) => r.id === updatedId);
+                if (reservation) {
+                  const checkInDate = new Date(reservation.checkInDate).toLocaleDateString('fr-FR');
+                  const checkOutDate = new Date(reservation.checkOutDate).toLocaleDateString('fr-FR');
+                  Alert.alert(
+                    'Réservation annulée',
+                    `Votre réservation pour ${reservation.propertyTitle} du ${checkInDate} au ${checkOutDate} a été annulée.\n\nPour plus d'informations, veuillez contacter le support.`,
+                    [
+                      {
+                        text: 'OK',
+                        onPress: () => {},
+                        style: 'cancel',
+                      },
+                      {
+                        text: 'Contacter le support',
+                        onPress: () => {
+                          router.push('/support' as never);
+                        },
+                        style: 'default',
+                      },
+                    ]
+                  );
+                }
+              }
               
               // Mettre à jour immédiatement si c'est un changement de remaining_payment_status
               if (newRemainingPaymentStatus === 'requested') {
@@ -301,7 +333,7 @@ export const ReservationProvider = ({ children }: { children: ReactNode }) => {
       subscription?.unsubscribe();
       supabase.removeChannel(channel);
     };
-  }, [supabaseProfile, refreshReservations]);
+  }, [supabaseProfile, refreshReservations, router, reservations]);
 
   const addReservation = useCallback(
     async (input: NewReservationInput) => {

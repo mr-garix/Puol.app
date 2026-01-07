@@ -20,7 +20,8 @@ import {
   ChevronDown,
   ChevronRight,
   ArrowLeft,
-  LogOut
+  LogOut,
+  Banknote
 } from 'lucide-react';
 import { useAdminRole } from "@/contexts/AdminRoleContext";
 
@@ -32,6 +33,7 @@ export type AdminSection =
   | "landlords"
   | "hosts"
   | "clients"
+  | "refunds"
   | "moderation"
   | "payments"
   | "support"
@@ -90,6 +92,7 @@ export function AdminSidebarNew({
         { id: 'landlords', label: 'Bailleurs', icon: <Shield className="w-5 h-5" />, permission: 'users.view' },
         { id: 'hosts', label: 'Hôtes', icon: <Home className="w-5 h-5" />, permission: 'users.view' },
         { id: 'clients', label: 'Clients', icon: <Users className="w-5 h-5" />, permission: 'users.view' },
+        { id: 'refunds', label: 'Remboursements', icon: <Banknote className="w-5 h-5" />, permission: 'payments.view' },
       ]
     },
     {

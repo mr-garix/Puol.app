@@ -169,17 +169,6 @@ function getStatusBadgeTone(status: HostListingDetail['status'], raw?: string): 
   return undefined;
 }
 
-function getStatusAccent(status: HostListingDetail['status'], raw?: string): string {
-  const normalized = raw?.toLowerCase().trim() ?? '';
-  if (normalized.includes('online') || normalized.includes('ligne') || status === 'approved') {
-    return 'text-emerald-600';
-  }
-  if (normalized.includes('draft') || normalized.includes('brouillon') || status === 'pending') {
-    return 'text-orange-600';
-  }
-  return '';
-}
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
@@ -487,17 +476,6 @@ function getStatusLabel(status: HostListingDetail['status'], raw?: string) {
     suspended: 'Suspendue',
   };
   return labels[status];
-}
-
-function getStatusBadgeTone(status: HostListingDetail['status'], raw?: string): InfoChipProps['tone'] {
-  const normalized = raw?.toLowerCase().trim() ?? '';
-  if (normalized.includes('online') || normalized.includes('ligne') || status === 'approved') {
-    return 'success';
-  }
-  if (normalized.includes('draft') || normalized.includes('brouillon') || status === 'pending') {
-    return 'warning';
-  }
-  return undefined;
 }
 
 type InfoChipProps = {

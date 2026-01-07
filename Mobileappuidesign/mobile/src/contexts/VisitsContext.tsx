@@ -8,6 +8,8 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import { Alert } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/src/contexts/AuthContext';
 import { fetchProfileSummaries } from '@/src/features/profiles/services/profileSummaries';
@@ -23,6 +25,7 @@ import {
   type GuestRentalVisit,
   type RentalVisitStatus,
 } from '@/src/features/rental-visits/services';
+import { supabase } from '@/src/supabaseClient';
 
 export type VisitStatus = RentalVisitStatus;
 
@@ -194,6 +197,7 @@ const mapHostSummariesToRecord = async (profileIds: (string | undefined)[]) => {
 };
 
 export const VisitsProvider = ({ children }: { children: ReactNode }) => {
+  const router = useRouter();
   const { supabaseProfile, isLoggedIn } = useAuth();
   const [visits, setVisits] = useState<VisitRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -333,6 +337,65 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [clearTimer, isLoggedIn, refreshVisits, supabaseProfile]);
 
+  // Listener Supabase Realtime pour les changements de statut des visites
+  useEffect(() => {
+    if (!supabaseProfile) {
+      return;
+    }
+
+    const subscription = supabase
+      .channel(`rental_visits:guest_profile_id=eq.${supabaseProfile.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'rental_visits',
+          filter: `guest_profile_id=eq.${supabaseProfile.id}`,
+        },
+        (payload) => {
+          const updatedVisit = payload.new as any;
+          if (updatedVisit.status === 'cancelled') {
+            // Afficher une notification quand la visite est annulée
+            const visit = visitsRef.current.find((v) => v.id === updatedVisit.id);
+            if (visit) {
+              Alert.alert(
+                'Visite annulée',
+                `Votre visite prévue le ${new Date(visit.visitDate).toLocaleDateString('fr-FR')} à ${visit.visitTime} a été annulée.\n\nPour plus d'informations, veuillez contacter le support.`,
+                [
+                  {
+                    text: 'OK',
+                    onPress: () => {},
+                    style: 'cancel',
+                  },
+                  {
+                    text: 'Contacter le support',
+                    onPress: () => {
+                      router.push('/support' as never);
+                    },
+                    style: 'default',
+                  },
+                ]
+              );
+            }
+            // Mettre à jour l'état local
+            setVisits((prev) =>
+              prev.map((v) =>
+                v.id === updatedVisit.id
+                  ? { ...v, status: 'cancelled' as VisitStatus, rawStatus: 'cancelled' as VisitStatus }
+                  : v
+              )
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [router, supabaseProfile]);
+
   const addVisit = useCallback<VisitsContextValue['addVisit']>(
     async (visit) => {
       if (!supabaseProfile) {
@@ -363,6 +426,112 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
         visitsRef.current = next;
         return next;
       });
+
+      // 💰 Créer le paiement et envoyer la notification APRÈS la création de la visite
+      try {
+        console.log('[VisitsContext.addVisit] 🔵 Starting payment and notification flow for visit:', {
+          visitId: created.id,
+          guestProfileId: supabaseProfile.id,
+          hostProfileId: created.landlordProfileId,
+          visitDate: created.visitDate,
+          visitTime: created.visitTime,
+        });
+
+        const { createPaymentAndEarning } = await import('@/src/lib/services/payments');
+        const { sendVisitNotificationToHost } = await import('@/src/features/rental-visits/services');
+        
+        // Créer le paiement pour la visite
+        console.log('[VisitsContext.addVisit] 💳 Creating payment with params:', {
+          payerProfileId: supabaseProfile.id,
+          hostProfileId: created.landlordProfileId || 'MISSING',
+          purpose: 'visit',
+          relatedId: created.id,
+          provider: 'card',
+        });
+
+        const paymentResult = await createPaymentAndEarning({
+          payerProfileId: supabaseProfile.id,
+          hostProfileId: created.landlordProfileId || '',
+          purpose: 'visit',
+          relatedId: created.id, // ID de la visite
+          provider: 'card', // Valeur par défaut
+        });
+
+        console.log('[VisitsContext.addVisit] ✅ Payment created successfully:', {
+          visitId: created.id,
+          paymentId: paymentResult?.payment?.id,
+          earningId: paymentResult?.earning?.id,
+        });
+
+        // Récupérer les données complètes de la visite avec les relations
+        console.log('[VisitsContext.addVisit] 📡 Fetching complete visit data with relations...');
+        
+        const { data: visitData, error: fetchError } = await supabase
+          .from('rental_visits')
+          .select(`
+            id,
+            rental_listing_id,
+            guest_profile_id,
+            visit_date,
+            visit_time,
+            status,
+            source,
+            created_at,
+            cancelled_at,
+            cancelled_reason,
+            notes,
+            listing:listings (
+              id,
+              title,
+              cover_photo_url,
+              city,
+              district,
+              address_text,
+              host_id
+            ),
+            guest:profiles!rental_visits_guest_profile_id_fkey (
+              id,
+              first_name,
+              last_name,
+              username,
+              phone,
+              avatar_url
+            )
+          `)
+          .eq('id', created.id)
+          .single();
+
+        if (fetchError) {
+          console.error('[VisitsContext.addVisit] ❌ Error fetching visit data:', fetchError);
+        } else {
+          console.log('[VisitsContext.addVisit] ✅ Visit data fetched:', {
+            visitId: visitData?.id,
+            hasListing: !!visitData?.listing,
+            hostId: (visitData?.listing as any)?.host_id,
+          });
+        }
+
+        if (visitData) {
+          // Envoyer la notification au host APRÈS le paiement
+          console.log('[VisitsContext.addVisit] 🔔 Sending notification to host...');
+          
+          try {
+            await sendVisitNotificationToHost(visitData as any);
+            console.log('[VisitsContext.addVisit] ✅ Notification sent successfully to host for visit:', created.id);
+          } catch (notificationError) {
+            console.error('[VisitsContext.addVisit] ❌ Error sending notification:', notificationError);
+          }
+        } else {
+          console.warn('[VisitsContext.addVisit] ⚠️ No visit data to send notification');
+        }
+      } catch (paymentError) {
+        console.error('[VisitsContext.addVisit] ❌ Error creating payment or sending notification:', {
+          error: paymentError,
+          message: paymentError instanceof Error ? paymentError.message : 'Unknown error',
+          stack: paymentError instanceof Error ? paymentError.stack : undefined,
+        });
+        // Ne pas échouer la création de visite si le paiement ou la notification échoue
+      }
 
       return record;
     },

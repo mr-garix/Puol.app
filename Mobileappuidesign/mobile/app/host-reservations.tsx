@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -21,6 +21,7 @@ import * as Linking from 'expo-linking';
 
 import { useHostBookings } from '@/src/features/host/hooks';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { supabase } from '@/src/supabaseClient';
 
 const COLORS = {
   background: '#F9FAFB',
@@ -40,6 +41,36 @@ export default function HostReservationsScreen() {
   const [activeFilter, setActiveFilter] = useState<'en-cours' | 'termines' | 'annules' | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [isDatePickerVisible, setIsDatePickerVisible] = useState(false);
+
+  // Subscription Realtime pour les changements de réservations
+  useEffect(() => {
+    if (!supabase) return;
+
+    console.log('[HostReservations] Setting up realtime subscription for bookings');
+
+    const channel = (supabase as any)
+      .channel('bookings-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookings',
+        },
+        (payload: any) => {
+          console.log('[HostReservations] Booking changed:', payload);
+          // Rafraîchir la liste des réservations quand un changement est détecté
+          refresh();
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[HostReservations] Realtime subscription status:', status);
+      });
+
+    return () => {
+      (supabase as any).removeChannel(channel);
+    };
+  }, [refresh]);
 
   const formatCurrency = (value: number) => `${value.toLocaleString('fr-FR')} FCFA`;
   const formatDateRange = (checkInIso: string, checkOutIso: string) => {

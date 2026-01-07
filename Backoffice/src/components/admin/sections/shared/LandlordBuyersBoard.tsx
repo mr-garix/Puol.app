@@ -18,14 +18,9 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
-import { ArrowUpRight, Filter, Users, MapPin, Calendar, Phone, Loader2 } from 'lucide-react';
+import { ArrowUpRight, Filter, Users, MapPin, Phone, Loader2 } from 'lucide-react';
 import type { LandlordListItem, LandlordRentalMetrics } from '@/lib/services/landlords';
 import { fetchLandlordsList, fetchLandlordRentalMetrics } from '@/lib/services/landlords';
-import {
-  landlordProfiles as landlordProfilesMock,
-  landlordProfileDetails,
-  type LandlordProfileDetail,
-} from '../../UsersManagement';
 
 type SegmentFilter = 'all' | LandlordListItem['segment'];
 const segmentLabels: Record<LandlordListItem['segment'], string> = {
@@ -46,7 +41,6 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all');
-  const [periodRange, setPeriodRange] = useState<'12m' | '6m' | '30d'>('12m');
 
   useEffect(() => {
     let isMounted = true;
@@ -81,86 +75,22 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
     };
   }, []);
 
-  const fallbackProfilesById = useMemo(() => {
-    const map = new Map<string, LandlordProfileDetail>();
-    Object.entries(landlordProfileDetails).forEach(([id, detail]) => map.set(id, detail));
-    return map;
-  }, []);
-
-  const deriveListingStats = (detail?: LandlordProfileDetail | null) => {
-    const stats = { online: 0, draft: 0, total: 0 };
-    if (!detail?.listings) {
-      return stats;
-    }
-    detail.listings.forEach(listing => {
-      stats.total += 1;
-      if (listing.status === 'en ligne') {
-        stats.online += 1;
-      } else if (listing.status === 'en brouillon') {
-        stats.draft += 1;
-      }
-    });
-    return stats;
-  };
-
-  const fallbackListAsLandlords: LandlordListItem[] = useMemo(
-    () =>
-      landlordProfilesMock.map(profile => {
-        const detail = landlordProfileDetails[profile.id];
-        return {
-          id: profile.id,
-          fullName: profile.name,
-          username: profile.username,
-          city: profile.city,
-          phone: detail?.phone ?? null,
-          landlordStatus: detail?.notes ?? null,
-          segment: profile.segment,
-          createdAt: detail?.joinedAt ?? null,
-          listingStats: detail ? deriveListingStats(detail) : null,
-        };
-      }),
-    [],
-  );
-
-  const effectiveProfiles = useMemo(
-    () => (landlords.length ? landlords : fallbackListAsLandlords),
-    [landlords, fallbackListAsLandlords],
-  );
 
   const summary = useMemo(() => {
-    // Utiliser les vraies données de rental_leases si disponibles
-    if (rentalMetrics.size > 0) {
-      const metricsArray = Array.from(rentalMetrics.values());
-      const totalLeases = metricsArray.reduce((sum, metric) => sum + metric.totalLeases, 0);
-      const totalRevenue = metricsArray.reduce((sum, metric) => sum + metric.totalRevenue, 0);
-
-      return {
-        totalLeases,
-        totalLandlords: totalLandlordsCount,
-        totalRevenue,
-        onboardingDelta: 0,
-      };
-    }
-
-    // Sinon, utiliser les données moquées
-    const fallback = {
-      totalLeases: landlordProfilesMock.reduce((sum, profile) => sum + profile.leasesSigned, 0),
-      totalLandlords: landlordProfilesMock.length,
-      totalRevenue: landlordProfilesMock.reduce((sum, profile) => sum + profile.revenueShare, 0),
-    };
-
-    const liveTotal = landlords.length;
+    const metricsArray = Array.from(rentalMetrics.values());
+    const totalLeases = metricsArray.reduce((sum, metric) => sum + metric.totalLeases, 0);
+    const totalRevenue = metricsArray.reduce((sum, metric) => sum + metric.totalRevenue, 0);
 
     return {
-      totalLeases: fallback.totalLeases,
-      totalLandlords: liveTotal || fallback.totalLandlords,
-      totalRevenue: fallback.totalRevenue,
-      onboardingDelta: liveTotal ? Math.max(liveTotal - fallback.totalLandlords, 0) : 1,
+      totalLeases,
+      totalLandlords: totalLandlordsCount,
+      totalRevenue,
+      onboardingDelta: 0,
     };
-  }, [rentalMetrics, totalLandlordsCount, landlords]);
+  }, [rentalMetrics, totalLandlordsCount]);
 
   const filteredProfiles = useMemo(() => {
-    return effectiveProfiles.filter(profile => {
+    return landlords.filter(profile => {
       const matchesSearch =
         profile.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (profile.username ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -172,7 +102,7 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
 
       return matchesSearch && matchesSegment;
     });
-  }, [searchQuery, segmentFilter, effectiveProfiles]);
+  }, [searchQuery, segmentFilter, landlords]);
 
   const formatDate = (isoDate: string | null) => {
     if (!isoDate) return '—';
@@ -193,19 +123,6 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
             Vue portefeuille : baux signés, unités gérées, volume locataires et revenus générés pour chaque bailleur long terme.
           </p>
         </div>
-        <Select value={periodRange} onValueChange={(value: '12m' | '6m' | '30d') => setPeriodRange(value)}>
-          <SelectTrigger className="w-[200px] rounded-xl bg-white">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-gray-400" />
-              <SelectValue placeholder="Période" />
-            </div>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="12m">12 derniers mois</SelectItem>
-            <SelectItem value="6m">6 derniers mois</SelectItem>
-            <SelectItem value="30d">30 derniers jours</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -232,17 +149,13 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
         </Card>
         <Card>
           <CardContent className="p-6 space-y-2">
-            <p className="text-sm text-gray-500 uppercase">Revenus PUOL (12 mois)</p>
+            <p className="text-sm text-gray-500 uppercase">Revenus PUOL</p>
             <p className="text-3xl text-gray-900">
               {isLoading ? (
                 <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
               ) : (
                 `${(summary.totalRevenue / 1_000_000).toFixed(1)}M`
               )}
-            </p>
-            <p className="text-xs text-emerald-600 flex items-center gap-1">
-              <ArrowUpRight className="w-3.5 h-3.5" />
-              +18% vs N-1
             </p>
           </CardContent>
         </Card>
@@ -304,10 +217,9 @@ export function LandlordBuyersBoard({ onViewProfile }: LandlordBuyersBoardProps)
                     ))
                   : filteredProfiles.map(profile => {
                       const metric = rentalMetrics.get(profile.id);
-                      const fallbackDetail = fallbackProfilesById.get(profile.id);
-                      const tenantsTotal = metric?.totalTenants ?? fallbackDetail?.tenantsTotal ?? 0;
-                      const revenueShare = metric?.totalRevenue ?? fallbackDetail?.revenueShare ?? 0;
-                      const listingStats = profile.listingStats ?? deriveListingStats(fallbackDetail);
+                      const tenantsTotal = metric?.totalTenants ?? 0;
+                      const revenueShare = metric?.totalRevenue ?? 0;
+                      const listingStats = profile.listingStats ?? { online: 0, draft: 0, total: 0 };
 
                       return (
                         <TableRow key={profile.id} className="hover:bg-gray-50/80">

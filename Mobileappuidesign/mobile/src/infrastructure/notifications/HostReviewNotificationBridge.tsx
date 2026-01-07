@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { useNotifications } from '@/src/contexts/NotificationContext';
+import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useAuth } from '@/src/contexts/AuthContext';
-import { getHostReviewById } from '@/src/features/reviews/services';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 import { supabase } from '@/src/supabaseClient';
+import { getHostReviewById } from '@/src/features/reviews/services';
 
 const NOTIFIED_REVIEWS_STORAGE_KEY = 'notified_reviews_cache';
 
@@ -33,12 +33,9 @@ const HostReviewNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedReviews = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_REVIEWS_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedReviewsRef.current = new Set(notifiedIds);
-          console.log('[HostReviewNotificationBridge] Loaded notified reviews from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_REVIEWS_STORAGE_KEY);
+        notifiedReviewsRef.current = notifiedIds;
+        console.log('[HostReviewNotificationBridge] Loaded notified reviews from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[HostReviewNotificationBridge] Error loading notified reviews cache:', error);
       } finally {
@@ -93,8 +90,7 @@ const HostReviewNotificationBridge = () => {
           notifiedReviewsRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache
-          const notifiedArray = Array.from(notifiedReviewsRef.current);
-          AsyncStorage.setItem(NOTIFIED_REVIEWS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_REVIEWS_STORAGE_KEY, notifiedReviewsRef.current).catch((err) => {
             console.error('[HostReviewNotificationBridge] Error saving notified reviews cache:', err);
           });
           console.log('[HostReviewNotificationBridge] Review notification displayed and cached');

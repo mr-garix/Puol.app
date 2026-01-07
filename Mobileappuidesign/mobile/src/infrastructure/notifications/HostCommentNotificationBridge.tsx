@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { useNotifications } from '@/src/contexts/NotificationContext';
+import { useNotifications, type NotificationPayload } from '@/src/contexts/NotificationContext';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 import { getCommentById } from '@/src/features/comments/services';
 import { supabase } from '@/src/supabaseClient';
 
@@ -19,12 +19,9 @@ const HostCommentNotificationBridge = () => {
   useEffect(() => {
     const loadNotifiedComments = async () => {
       try {
-        const cached = await AsyncStorage.getItem(NOTIFIED_COMMENTS_STORAGE_KEY);
-        if (cached) {
-          const notifiedIds = JSON.parse(cached) as string[];
-          notifiedCommentsRef.current = new Set(notifiedIds);
-          console.log('[HostCommentNotificationBridge] Loaded notified comments from cache:', notifiedIds.length);
-        }
+        const notifiedIds = await loadIdsFromStorage(NOTIFIED_COMMENTS_STORAGE_KEY);
+        notifiedCommentsRef.current = notifiedIds;
+        console.log('[HostCommentNotificationBridge] Loaded notified comments from cache:', notifiedIds.size);
       } catch (error) {
         console.error('[HostCommentNotificationBridge] Error loading notified comments cache:', error);
       } finally {
@@ -80,8 +77,7 @@ const HostCommentNotificationBridge = () => {
           notifiedCommentsRef.current.add(notificationKey);
 
           // 💾 Sauvegarder le cache
-          const notifiedArray = Array.from(notifiedCommentsRef.current);
-          AsyncStorage.setItem(NOTIFIED_COMMENTS_STORAGE_KEY, JSON.stringify(notifiedArray)).catch((err) => {
+          saveIdsToStorage(NOTIFIED_COMMENTS_STORAGE_KEY, notifiedCommentsRef.current).catch((err) => {
             console.error('[HostCommentNotificationBridge] Error saving notified comments cache:', err);
           });
           console.log('[HostCommentNotificationBridge] Comment notification displayed and cached');

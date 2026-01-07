@@ -1667,33 +1667,10 @@ const PropertyProfileScreen = () => {
     });
     setPaymentNotice(paymentInfo.message ?? '');
 
-    try {
-      const booking = await createBooking({
-        listingId: property.id,
-        guestProfileId: supabaseProfile.id,
-        checkInDate: checkIn.toISOString(),
-        checkOutDate: checkOut.toISOString(),
-        nights,
-        nightlyPrice: effectivePricePerNight,
-        totalPrice: total,
-        depositAmount: paymentInfo.amountDueNow,
-        remainingAmount: paymentInfo.remainingAmount,
-        discountAmount,
-        discountPercent,
-        hasDiscount: discountAmount > 0,
-        status: 'pending',
-      });
-
-      setReservationBookingId(booking.id);
-      // Ouvrir le PaymentModal externe - exactement comme les visites
-      setShowPaymentModal(true);
-    } catch (error) {
-      console.error('[PropertyProfileScreen] createBooking (pre-paiement) error', error);
-      Alert.alert(
-        'Réservation impossible',
-        "Impossible de créer la réservation avant paiement. Vérifiez votre connexion puis réessayez."
-      );
-    }
+    // NE PAS créer la réservation ici - seulement préparer les données
+    // La réservation sera créée APRÈS le paiement réussi
+    // Ouvrir le PaymentModal externe - exactement comme les visites
+    setShowPaymentModal(true);
   };
 
   const handleVisitPaymentContinue = () => {
@@ -1745,8 +1722,8 @@ const PropertyProfileScreen = () => {
     setShowVisitPaymentModal(true);
   };
 
-  const handleVisitPaymentSuccess = async () => {
-    console.log('[PropertyProfileScreen] handleVisitPaymentSuccess appelé');
+  const handleVisitPaymentSuccess = async (provider: 'orange' | 'mtn' | 'card') => {
+    console.log('[PropertyProfileScreen] handleVisitPaymentSuccess appelé avec provider:', provider);
     setShowVisitPaymentModal(false);
     const visitDate = visitDetails.date ?? new Date();
     console.log('[PropertyProfileScreen] Date de visite:', visitDate);
@@ -1783,32 +1760,186 @@ const PropertyProfileScreen = () => {
       });
       console.log('[PropertyProfileScreen] createRentalVisit réussi:', createdVisit.id);
 
-      // Lier le paiement à la visite créée
+      // 💰 Créer le paiement avec le provider choisi
       try {
-        const { data: latestPayment } = await supabase
-          .from('payments')
-          .select('id')
-          .eq('purpose', 'visit')
-          .eq('payer_profile_id', supabaseProfile.id)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        console.log('[PropertyProfileScreen] 🔵 Creating payment for visit:', {
+          visitId: createdVisit.id,
+          provider,
+          guestProfileId: supabaseProfile.id,
+          hostProfileId: property.landlord?.id,
+        });
 
-        if (latestPayment?.id) {
-          await supabase
-            .from('payments')
-            .update({ related_id: createdVisit.id })
-            .eq('id', latestPayment.id);
+        const { createPaymentAndEarning } = await import('@/src/lib/services/payments');
+        const { sendVisitNotificationToHost } = await import('@/src/features/rental-visits/services');
+
+        // Mapper les providers pour createPaymentAndEarning
+        const providerMap: Record<string, 'orange_money' | 'mtn_momo' | 'card'> = {
+          'orange': 'orange_money',
+          'mtn': 'mtn_momo',
+          'card': 'card',
+        };
+
+        const paymentResult = await createPaymentAndEarning({
+          payerProfileId: supabaseProfile.id,
+          hostProfileId: property.landlord?.id || '',
+          purpose: 'visit',
+          relatedId: createdVisit.id,
+          provider: providerMap[provider],
+        });
+
+        console.log('[PropertyProfileScreen] ✅ Payment created successfully:', {
+          visitId: createdVisit.id,
+          paymentId: paymentResult?.payment?.id,
+          provider,
+        });
+
+        // Récupérer les données complètes de la visite avec les relations
+        console.log('[PropertyProfileScreen] 📡 Fetching complete visit data with relations...');
+
+        const { data: visitData, error: fetchError } = await supabase
+          .from('rental_visits')
+          .select(`
+            id,
+            rental_listing_id,
+            guest_profile_id,
+            visit_date,
+            visit_time,
+            status,
+            source,
+            created_at,
+            cancelled_at,
+            cancelled_reason,
+            notes,
+            listing:listings (
+              id,
+              title,
+              cover_photo_url,
+              city,
+              district,
+              address_text,
+              host_id
+            ),
+            guest:profiles!rental_visits_guest_profile_id_fkey (
+              id,
+              first_name,
+              last_name,
+              username,
+              phone,
+              avatar_url
+            )
+          `)
+          .eq('id', createdVisit.id)
+          .single();
+
+        if (fetchError) {
+          console.error('[PropertyProfileScreen] ❌ Error fetching visit data:', fetchError);
         } else {
-          console.warn('[PropertyProfileScreen] Aucun paiement visit trouvé pour rattacher related_id');
+          console.log('[PropertyProfileScreen] ✅ Visit data fetched:', {
+            visitId: visitData?.id,
+            hasListing: !!visitData?.listing,
+            hostId: (visitData?.listing as any)?.host_id,
+          });
         }
-      } catch (linkError) {
-        console.error('[PropertyProfileScreen] Impossible de lier le paiement à la visite:', linkError);
+
+        if (visitData) {
+          // Envoyer les notifications au host ET au landlord APRÈS le paiement
+          console.log('[PropertyProfileScreen] 🔔 Sending notifications to host and landlord...');
+
+          try {
+            // Récupérer le host_id depuis la table listings via rental_listing_id
+            const listingData = (visitData as any).listing;
+            const hostId = Array.isArray(listingData) && listingData.length > 0
+              ? listingData[0]?.host_id
+              : (listingData && typeof listingData === 'object' ? listingData.host_id : null);
+
+            const landlordId = supabaseProfile?.id;
+
+            console.log('[PropertyProfileScreen] 🔍 Host and Landlord ID resolution:', {
+              visitId: visitData.id,
+              rentalListingId: visitData.rental_listing_id,
+              hostId,
+              landlordId,
+              listingDataType: typeof listingData,
+              isArray: Array.isArray(listingData),
+            });
+
+            if (hostId || landlordId) {
+              const mappedVisit = {
+                id: visitData.id,
+                guest: (visitData as any).guest,
+                listingTitle: (listingData && typeof listingData === 'object')
+                  ? (Array.isArray(listingData) ? listingData[0]?.title : listingData.title) || 'Annonce PUOL'
+                  : 'Annonce PUOL',
+                visitDate: visitData.visit_date,
+                visitTime: visitData.visit_time,
+              };
+
+              const guestName = `${(mappedVisit.guest as any)?.first_name || ''} ${(mappedVisit.guest as any)?.last_name || ''}`.trim() || 'Un visiteur';
+
+              // 1️⃣ Envoyer la notification au HOST via host-visit-notifications
+              if (hostId) {
+                const hostChannelName = `host-visit-notifications-${hostId}`;
+                console.log('[PropertyProfileScreen] 📡 Broadcasting visit notification to host:', {
+                  hostId,
+                  channelName: hostChannelName,
+                  visitId: visitData.id,
+                  guestName,
+                  listingTitle: mappedVisit.listingTitle,
+                });
+
+                try {
+                  const hostResult = await supabase.channel(hostChannelName).send({
+                    type: 'broadcast',
+                    event: 'new_host_visit',
+                    payload: {
+                      visitId: mappedVisit.id,
+                      guestName,
+                      listingTitle: mappedVisit.listingTitle,
+                      visitDate: mappedVisit.visitDate,
+                      visitTime: mappedVisit.visitTime,
+                      hostProfileId: hostId,
+                      createdAt: new Date().toISOString(),
+                    }
+                  });
+
+                  console.log('[PropertyProfileScreen] ✅ Notification sent successfully to host for visit:', {
+                    visitId: createdVisit.id,
+                    hostId,
+                    result: hostResult,
+                  });
+                } catch (hostNotificationError) {
+                  console.error('[PropertyProfileScreen] ❌ Error sending notification to host:', hostNotificationError);
+                }
+              }
+
+              // ⚠️ NE PAS envoyer la notification au landlord via broadcast
+              // Les notifications landlord sont gérées par le polling dans LandlordVisitNotificationBridge
+              // qui détecte les nouvelles visites et affiche la notification
+              console.log('[PropertyProfileScreen] ℹ️ Landlord notification will be handled by polling in LandlordVisitNotificationBridge');
+            } else {
+              console.warn('[PropertyProfileScreen] ⚠️ No host or landlord ID found for notification:', {
+                visitId: visitData.id,
+                listingData,
+              });
+            }
+          } catch (notificationError) {
+            console.error('[PropertyProfileScreen] ❌ Error sending notifications:', notificationError);
+            // Ne pas échouer si la notification échoue
+          }
+        } else {
+          console.warn('[PropertyProfileScreen] ⚠️ No visit data to send notification');
+        }
+      } catch (paymentError) {
+        console.error('[PropertyProfileScreen] ❌ Error creating payment or sending notification:', {
+          error: paymentError,
+          message: paymentError instanceof Error ? paymentError.message : 'Unknown error',
+        });
+        // Ne pas échouer la création de visite si le paiement ou la notification échoue
       }
 
       setVisitSuccessCopy({
         title: 'Visite programmée !',
-        message: 'Votre visite a été programmée. Elle sera confirmée automatiquement sous peu.',
+        message: 'Votre visite a été programmée et le paiement confirmé. Elle sera confirmée automatiquement sous peu.',
         buttonLabel: 'Voir ma visite',
       });
       setShowVisitSuccessModal(true);
@@ -2350,15 +2481,47 @@ const PropertyProfileScreen = () => {
         visible={showPaymentModal}
         onClose={() => setShowPaymentModal(false)}
         onSuccess={async () => {
-          console.log('[PropertyProfileScreen] PaymentModal onSuccess - réservation');
+          console.log('[PropertyProfileScreen] PaymentModal onSuccess - créer la réservation');
           setShowPaymentModal(false);
+          
           try {
+            // CRÉER LA RÉSERVATION SEULEMENT APRÈS LE PAIEMENT RÉUSSI
+            if (!supabaseProfile?.id || !reservationSummary) {
+              throw new Error('Données de réservation manquantes');
+            }
+
+            const baseTotal = reservationSummary.nights * pricePerNightValue;
+            const discountRatio = baseTotal > 0 ? Math.min(1, Math.max(0, reservationSummary.total / baseTotal)) : 1;
+            const effectivePricePerNight = pricePerNightValue * discountRatio;
+
+            const booking = await createBooking({
+              listingId: property.id,
+              guestProfileId: supabaseProfile.id,
+              checkInDate: reservationSummary.checkIn.toISOString(),
+              checkOutDate: reservationSummary.checkOut.toISOString(),
+              nights: reservationSummary.nights,
+              nightlyPrice: effectivePricePerNight,
+              totalPrice: reservationSummary.total,
+              depositAmount: reservationSummary.amountDueNow,
+              remainingAmount: reservationSummary.remainingAmount,
+              discountAmount: reservationSummary.discountAmount,
+              discountPercent: reservationSummary.discountPercent,
+              hasDiscount: reservationSummary.discountAmount > 0,
+              status: 'confirmed', // Statut 'confirmed' car le paiement a réussi
+            });
+
+            console.log('[PropertyProfileScreen] Réservation créée avec succès:', booking.id);
+            setReservationBookingId(null);
+            
             await refreshReservations();
+            setShowPaymentSuccessModal(true);
           } catch (error) {
-            console.error('[PropertyProfileScreen] refreshReservations error', error);
+            console.error('[PropertyProfileScreen] Erreur création réservation après paiement:', error);
+            Alert.alert(
+              'Erreur',
+              'Le paiement a réussi mais la réservation n\'a pas pu être créée. Veuillez contacter le support.'
+            );
           }
-          setReservationBookingId(null);
-          setShowPaymentSuccessModal(true);
         }}
         amount={reservationSummary.amountDueNow || reservationSummary.total}
         title="Paiement de la réservation"
@@ -2401,10 +2564,10 @@ const PropertyProfileScreen = () => {
       <PaymentModal
         visible={showVisitPaymentModal}
         onClose={() => setShowVisitPaymentModal(false)}
-        onSuccess={async () => {
-          console.log('[PropertyProfileScreen] onSuccess reçu depuis PaymentModal (visit)');
+        onSuccess={async (provider: 'orange' | 'mtn' | 'card') => {
+          console.log('[PropertyProfileScreen] onSuccess reçu depuis PaymentModal (visit) avec provider:', provider);
           try {
-            await handleVisitPaymentSuccess();
+            await handleVisitPaymentSuccess(provider);
             console.log('[PropertyProfileScreen] handleVisitPaymentSuccess terminé avec succès');
           } catch (error) {
             console.error('[PropertyProfileScreen] Erreur dans handleVisitPaymentSuccess:', error);

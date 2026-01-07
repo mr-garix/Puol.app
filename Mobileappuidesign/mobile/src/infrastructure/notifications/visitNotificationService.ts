@@ -1,5 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/src/supabaseClient';
+import { saveIdsToStorage, loadIdsFromStorage } from '@/src/utils/asyncStorageUtils';
 
 const NOTIFIED_VISITS_STORAGE_KEY = 'notified_visits_cache';
 
@@ -15,33 +15,23 @@ export const sendVisitNotification = async (visitId: string, guestName: string, 
     });
 
     // Récupérer le cache des notifications déjà envoyées
-    const cached = await AsyncStorage.getItem(NOTIFIED_VISITS_STORAGE_KEY);
-    const notifiedVisits = cached ? (JSON.parse(cached) as string[]) : [];
+    const notifiedVisits = await loadIdsFromStorage(NOTIFIED_VISITS_STORAGE_KEY);
     const notificationKey = `visit-created-${visitId}`;
 
     // Vérifier si on a déjà notifié cette visite
-    if (notifiedVisits.includes(notificationKey)) {
+    if (notifiedVisits.has(notificationKey)) {
       console.log('[visitNotificationService] Visit already notified:', visitId);
       return;
     }
 
     // Ajouter à la liste des notifications envoyées
-    notifiedVisits.push(notificationKey);
-    await AsyncStorage.setItem(NOTIFIED_VISITS_STORAGE_KEY, JSON.stringify(notifiedVisits));
+    notifiedVisits.add(notificationKey);
+    await saveIdsToStorage(NOTIFIED_VISITS_STORAGE_KEY, notifiedVisits);
 
     // Envoyer une notification via Supabase (pour les notifications push)
     // Cette fonction sera appelée par le système de notifications en temps réel
     console.log('[visitNotificationService] Visit notification cached:', notificationKey);
   } catch (error) {
     console.error('[visitNotificationService] Error sending visit notification:', error);
-  }
-};
-
-export const clearVisitNotificationCache = async () => {
-  try {
-    await AsyncStorage.removeItem(NOTIFIED_VISITS_STORAGE_KEY);
-    console.log('[visitNotificationService] Visit notification cache cleared');
-  } catch (error) {
-    console.error('[visitNotificationService] Error clearing cache:', error);
   }
 };

@@ -15,6 +15,7 @@ import HostCommentNotificationBridge from '@/src/infrastructure/notifications/Ho
 import UserCommentNotificationBridge from '@/src/infrastructure/notifications/UserCommentNotificationBridge';
 import HostReviewNotificationBridge from '@/src/infrastructure/notifications/HostReviewNotificationBridge';
 import UserReviewReplyNotificationBridge from '@/src/infrastructure/notifications/UserReviewReplyNotificationBridge';
+import GuestCancellationNotificationBridge from '@/src/infrastructure/notifications/GuestCancellationNotificationBridge';
 import NotificationHost from '@/src/infrastructure/notifications/NotificationHost';
 import ApplicationStatusNotificationBridge from '@/src/infrastructure/notifications/ApplicationStatusNotificationBridge';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
@@ -24,6 +25,9 @@ import { FeedProvider } from '@/src/contexts/FeedContext';
 import { VisitsProvider } from '@/src/contexts/VisitsContext';
 import { ProfileProvider } from '@/src/contexts/ProfileContext';
 import { PreloadProvider, usePreloadedVideo } from '@/src/contexts/PreloadContext';
+import { RefundNotificationProvider } from '@/src/contexts/RefundNotificationContext';
+import { CancelledVisitNotificationProvider } from '@/src/contexts/CancelledVisitNotificationContext';
+import { CancelledReservationNotificationProvider } from '@/src/contexts/CancelledReservationNotificationContext';
 import { usePreloadFirstVideo } from '@/src/features/listings/hooks';
 import { RemainingPaymentHandler } from '@/src/features/payments/components/RemainingPaymentHandler';
 import { useAppLifecycle } from '@/src/hooks';
@@ -145,67 +149,70 @@ export default function RootLayout() {
             <PreloadManager />
             <AppLifecycleManager />
             <ReservationProvider>
-              <ProfileProvider>
-                <NotificationProvider>
-                  <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-                    <StatusBar translucent backgroundColor="transparent" style="dark" />
-                    <Stack>
-                    <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
-                    <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'none' }} />
-                    <Stack.Screen name="search" options={{ headerShown: false }} />
-                    <Stack.Screen name="host" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-dashboard" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-finances" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-likes" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-comments" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-reservations" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-reservations/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-listings" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-visits" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-visit/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-messages" options={{ headerShown: false }} />
-                    <Stack.Screen name="host-reviews" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-likes" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-comments" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-visits" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-visit/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-tenants" options={{ headerShown: false }} />
-                    <Stack.Screen name="landlord-tenant/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
-                    <Stack.Screen name="publish" options={{ headerShown: false }} />
-                    <Stack.Screen name="profile/edit" options={{ headerShown: false }} />
-                    <Stack.Screen name="profile/[profileId]" options={{ headerShown: false }} />
-                    <Stack.Screen name="property/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="property/[id]/reviews" options={{ headerShown: false }} />
-                    <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-                    <Stack.Screen name="visits/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="visits/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="reservations/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="reservations/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="messages/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="messages/[id]" options={{ headerShown: false }} />
-                    <Stack.Screen name="likes/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="comments/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="contents/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="reviews/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="support/index" options={{ headerShown: false }} />
-                    <Stack.Screen name="support/[id]" options={{ headerShown: false }} />
-                    </Stack>
-                    <VisitNotificationBridge />
-                    <HostBookingNotificationBridge />
-                    <LandlordVisitNotificationBridge />
-                    <HostVisitNotificationBridge />
-                    <HostCommentNotificationBridge />
-                    <UserCommentNotificationBridge />
-                    <HostReviewNotificationBridge />
-                    <UserReviewReplyNotificationBridge />
-                    <ApplicationStatusNotificationBridge />
-                    <NotificationHost />
-                    <RemainingPaymentHandler />
-                  </ThemeProvider>
-                </NotificationProvider>
-              </ProfileProvider>
+              <RefundNotificationProvider>
+                <ProfileProvider>
+                  <NotificationProvider>
+                    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+                      <StatusBar translucent backgroundColor="transparent" style="dark" />
+                      <Stack>
+                        <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
+                        <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'none' }} />
+                        <Stack.Screen name="search" options={{ headerShown: false }} />
+                        <Stack.Screen name="host" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-dashboard" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-finances" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-likes" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-comments" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-reservations" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-reservations/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-listings" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-visits" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-visit/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-messages" options={{ headerShown: false }} />
+                        <Stack.Screen name="host-reviews" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-likes" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-comments" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-visits" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-visit/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-tenants" options={{ headerShown: false }} />
+                        <Stack.Screen name="landlord-tenant/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
+                        <Stack.Screen name="publish" options={{ headerShown: false }} />
+                        <Stack.Screen name="profile/edit" options={{ headerShown: false }} />
+                        <Stack.Screen name="profile/[profileId]" options={{ headerShown: false }} />
+                        <Stack.Screen name="property/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="property/[id]/reviews" options={{ headerShown: false }} />
+                        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+                        <Stack.Screen name="visits/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="visits/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="reservations/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="reservations/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="messages/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="messages/[id]" options={{ headerShown: false }} />
+                        <Stack.Screen name="likes/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="comments/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="contents/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="reviews/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="support/index" options={{ headerShown: false }} />
+                        <Stack.Screen name="support/[id]" options={{ headerShown: false }} />
+                      </Stack>
+                      <VisitNotificationBridge />
+                      <HostBookingNotificationBridge />
+                      <LandlordVisitNotificationBridge />
+                      <HostVisitNotificationBridge />
+                      <HostCommentNotificationBridge />
+                      <UserCommentNotificationBridge />
+                      <HostReviewNotificationBridge />
+                      <UserReviewReplyNotificationBridge />
+                      <GuestCancellationNotificationBridge />
+                      <ApplicationStatusNotificationBridge />
+                      <NotificationHost />
+                      <RemainingPaymentHandler />
+                    </ThemeProvider>
+                  </NotificationProvider>
+                </ProfileProvider>
+              </RefundNotificationProvider>
             </ReservationProvider>
           </FeedProvider>
         </VisitsProvider>
