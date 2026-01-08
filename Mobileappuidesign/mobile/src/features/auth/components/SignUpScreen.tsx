@@ -12,18 +12,13 @@ import {
   Keyboard,
   Pressable,
 } from 'react-native';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { Feather, FontAwesome } from '@expo/vector-icons';
 
 import type { AuthUser } from '@/src/contexts/AuthContext';
 import { useAuth } from '@/src/contexts/AuthContext';
-import {
-  confirmOtpCode,
-  createSupabaseProfile,
-  findSupabaseProfileByPhone,
-  resetPhoneConfirmation,
-  startPhoneSignIn,
-} from '@/src/features/auth/phoneAuthService';
+import { supabase } from '@/src/supabaseClient';
+import { signInWithOtp, verifyOtp } from '@/src/features/auth/services/otpService';
+import { findSupabaseProfileByPhone } from '@/src/features/auth/phoneAuthService';
 import {
   DEFAULT_PHONE_COUNTRY,
   PHONE_COUNTRY_OPTIONS,
@@ -32,7 +27,6 @@ import {
   parseE164PhoneNumber,
   sanitizeNationalNumber,
 } from '@/src/features/auth/phoneCountries';
-import { firebaseConfig } from '@/src/firebaseClient';
 
 interface SignUpScreenProps {
   visible: boolean;
@@ -50,14 +44,12 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
     gender: 'Homme',
     phone: '',
   });
-  const [otpMethod, setOtpMethod] = useState<'sms' | 'whatsapp'>('sms');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const otpRefs = useRef<(TextInput | null)[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCountryPickerOpen, setIsCountryPickerOpen] = useState(false);
-  const recaptchaVerifier = useRef<FirebaseRecaptchaVerifierModal | null>(null);
   const lastRequestedPhoneRef = useRef<string | null>(null);
   const { refreshProfile } = useAuth();
 
@@ -75,13 +67,11 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
     setStep('info');
     setFormData({ firstName: '', lastName: '', gender: 'Homme', phone: '' });
     setPhoneCountry(DEFAULT_PHONE_COUNTRY);
-    setOtpMethod('sms');
     setOtp(['', '', '', '', '', '']);
     setIsSending(false);
     setIsVerifying(false);
     setErrorMessage(null);
     setIsCountryPickerOpen(false);
-    resetPhoneConfirmation();
     lastRequestedPhoneRef.current = null;
   };
 
@@ -114,13 +104,14 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
         return;
       }
 
-      await startPhoneSignIn(e164Phone, recaptchaVerifier.current || undefined);
+      console.log('[SignUpScreen] Sending OTP to:', e164Phone);
+      await signInWithOtp({ phone: e164Phone });
       lastRequestedPhoneRef.current = e164Phone;
       setStep('otp');
       setIsCountryPickerOpen(false);
     } catch (error) {
-      console.error('Firebase phone sign-up error', error);
-      setErrorMessage("Impossible d’envoyer le code. Vérifiez votre numéro et réessayez.");
+      console.error('[SignUpScreen] Supabase OTP sign-up error', error);
+      setErrorMessage("Impossible d'envoyer le code. Vérifiez votre numéro et réessayez.");
     } finally {
       setIsSending(false);
     }
@@ -161,34 +152,114 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
     setErrorMessage(null);
 
     try {
-      const { user, phoneNumber } = await confirmOtpCode(fullCode);
       const fallbackPhone = formData.phone ? getFormattedPhone() : lastRequestedPhoneRef.current;
-      const normalizedPhone = phoneNumber ?? fallbackPhone;
+      const normalizedPhone = fallbackPhone;
 
       if (!normalizedPhone) {
         throw new Error('missing_phone_number');
       }
 
-      const existingProfile = await findSupabaseProfileByPhone(normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] START - Verifying OTP for phone:', normalizedPhone);
+      
+      // Vérifier les profils AVANT la vérification OTP
+      const { data: profilesBefore } = await supabase
+        .from('profiles')
+        .select('id, phone, first_name')
+        .eq('phone', normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] Profiles BEFORE verifyOtp:', {
+        count: profilesBefore?.length,
+        profiles: profilesBefore?.map(p => ({ id: p.id, phone: p.phone }))
+      });
+      
+      const verifyResult = await verifyOtp({ phone: normalizedPhone, token: fullCode });
+      console.log('[SignUpScreen.submitOtp] verifyOtp result:', {
+        success: verifyResult.success,
+        hasUser: !!verifyResult.data?.user,
+        hasSession: !!verifyResult.data?.session,
+      });
+      
+      // Vérifier les profils APRÈS la vérification OTP
+      const { data: profilesAfter } = await supabase
+        .from('profiles')
+        .select('id, phone, first_name')
+        .eq('phone', normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] Profiles AFTER verifyOtp:', {
+        count: profilesAfter?.length,
+        profiles: profilesAfter?.map(p => ({ id: p.id, phone: p.phone }))
+      });
+
+      // Vérifier si un profil existe déjà
+      let existingProfile = await findSupabaseProfileByPhone(normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] Existing profile check:', { found: !!existingProfile, id: existingProfile?.id, phone: existingProfile?.phone });
+      
       if (existingProfile) {
         setErrorMessage('Ce numéro est déjà associé à un compte. Utilisez la connexion.');
         setStep('phone');
         return;
       }
 
-      const createdProfile = await createSupabaseProfile({
-        user,
-        phone: normalizedPhone,
-        firstName: formData.firstName,
-        lastName: formData.lastName,
-        gender: formData.gender,
-      });
+      // Créer le profil manuellement avec le numéro de téléphone comme ID
+      console.log('[SignUpScreen.submitOtp] Creating profile with phone as ID:', normalizedPhone);
+      
+      const { data: createdProfile, error: createError } = await supabase
+        .from('profiles')
+        .insert({
+          id: normalizedPhone,
+          phone: normalizedPhone,
+          first_name: formData.firstName,
+          last_name: formData.lastName,
+          gender: formData.gender,
+          role: 'guest',
+          supply_role: 'none',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select('*')
+        .single();
 
+      if (createError) {
+        console.error('[SignUpScreen.submitOtp] Error creating profile:', createError);
+        throw createError;
+      }
+      
+      existingProfile = createdProfile;
+      console.log('[SignUpScreen.submitOtp] Profile created successfully with ID:', createdProfile?.id);
+
+      console.log('[SignUpScreen.submitOtp] Profile setup complete - verifying session');
+      
+      // Vérifier que la session Supabase est bien établie
+      const { data: { session: finalSession } } = await supabase.auth.getSession();
+      console.log('[SignUpScreen.submitOtp] Final session check:', {
+        sessionExists: !!finalSession,
+        userPhone: (finalSession?.user as any)?.phone,
+      });
+      
+      if (!finalSession) {
+        console.error('[SignUpScreen.submitOtp] ERROR - No session after verifyOtp');
+        throw new Error('Session not established after OTP verification');
+      }
+      
+      // Rafraîchir le profil via AuthContext
+      console.log('[SignUpScreen.submitOtp] Refreshing profile via AuthContext');
       await refreshProfile();
+      
+      // Attendre un peu pour que AuthContext se mette à jour
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       resetState();
-      onSuccess(createdProfile);
+      
+      // Retourner le profil créé
+      const finalProfile = await findSupabaseProfileByPhone(normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] Final profile check:', { found: !!finalProfile });
+      if (finalProfile) {
+        console.log('[SignUpScreen.submitOtp] SUCCESS - Profile found, calling onSuccess');
+        onSuccess(finalProfile);
+      } else {
+        console.error('[SignUpScreen.submitOtp] FAILED - profile not found after creation');
+        throw new Error('Profile creation failed');
+      }
     } catch (error) {
-      console.error('Firebase signup confirm error', error);
+      console.error('[SignUpScreen] Supabase signup confirm error', error);
       setErrorMessage('Code invalide ou erreur de création.');
       setOtp(['', '', '', '', '', '']);
       otpRefs.current[0]?.focus();
@@ -213,7 +284,6 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
         <View style={styles.overlay}>
           <View style={styles.modalContent}>
-            <FirebaseRecaptchaVerifierModal ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
             <View style={styles.header}>
               <TouchableOpacity style={styles.backButton} onPress={handleBack} activeOpacity={0.7}>
                 <Feather name="arrow-left" size={20} color="#0F172A" />
@@ -360,36 +430,6 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
                     ) : null}
                   </View>
 
-                  <View style={styles.inputSection}>
-                    <Text style={styles.inputLabel}>Recevoir le code par</Text>
-                    <View style={styles.methodButtons}>
-                      <TouchableOpacity
-                        style={[styles.methodButton, otpMethod === 'sms' && styles.methodButtonActive]}
-                        onPress={() => setOtpMethod('sms')}
-                        activeOpacity={0.7}
-                      >
-                        <Feather name="message-circle" size={16} color="#2ECC71" />
-                        <Text
-                          style={[styles.methodButtonText, otpMethod === 'sms' && styles.methodButtonTextActive]}
-                        >
-                          SMS
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.methodButton, otpMethod === 'whatsapp' && styles.methodButtonActive]}
-                        onPress={() => setOtpMethod('whatsapp')}
-                        activeOpacity={0.7}
-                      >
-                        <FontAwesome name="whatsapp" size={18} color="#2ECC71" />
-                        <Text
-                          style={[styles.methodButtonText, otpMethod === 'whatsapp' && styles.methodButtonTextActive]}
-                        >
-                          WhatsApp
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
 
                   <TouchableOpacity
                     style={[

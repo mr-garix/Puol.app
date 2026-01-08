@@ -1,150 +1,178 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { getCurrentAdminSession, logoutAdmin } from '@/lib/adminAuthService';
 
 interface AdminAuthContextType {
   isAdminAuthenticated: boolean;
   adminUser: AdminUser | null;
-  login: (email: string, password: string) => Promise<boolean>;
-  logout: () => void;
+  loginWithOtp: (phone: string, otp: string) => Promise<boolean>;
+  logout: () => Promise<void>;
   checkSession: () => Promise<boolean>;
+  isLoading: boolean;
 }
 
 interface AdminUser {
-  email: string;
-  name: string;
+  id: string;
+  phone: string;
+  first_name: string;
+  last_name: string | null;
   role: string;
   avatar?: string;
+}
+
+interface AdminAuthContextType {
+  isAdminAuthenticated: boolean;
+  adminUser: AdminUser | null;
+  loginWithOtp: (phone: string, otp: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  checkSession: () => Promise<boolean>;
+  isLoading: boolean;
+  refreshSession: () => Promise<void>;
+  setAuthenticatedUser: (user: AdminUser) => void;
 }
 
 const AdminAuthContext = createContext<AdminAuthContextType | undefined>(undefined);
 
 const ADMIN_SESSION_KEY = 'puol_admin_session';
-const ADMIN_SESSION_EXPIRY = 30 * 24 * 60 * 60 * 1000; // 30 jours
 
 interface AdminSession {
   user: AdminUser;
-  token: string;
   expiresAt: number;
 }
-
-const getCurrentTimestamp = () => Date.now();
-
-const createSessionToken = () =>
-  `token_${getCurrentTimestamp()}_${Math.random().toString(36).slice(2)}`;
 
 export function AdminAuthProvider({ children }: { children: ReactNode }) {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const renewSession = useCallback(async (oldSession: AdminSession): Promise<boolean> => {
-    try {
-      // Ici vous pouvez implémenter une vraie API de renouvellement
-      // Pour l'instant, on simule un renouvellement automatique
-      
-      // Simuler une vérification API (normalement vous appelleriez votre backend)
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      const newSession: AdminSession = {
-        user: oldSession.user,
-        token: oldSession.token, // Dans un vrai système, obtenir un nouveau token
-        expiresAt: getCurrentTimestamp() + ADMIN_SESSION_EXPIRY,
-      };
-
-      localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(newSession));
-      setAdminUser(newSession.user);
-      setIsAdminAuthenticated(true);
-      
-      return true;
-    } catch (error) {
-      console.error('Erreur lors du renouvellement de session:', error);
-      localStorage.removeItem(ADMIN_SESSION_KEY);
-      return false;
-    }
-  }, []);
-
   const checkSession = useCallback(async (): Promise<boolean> => {
-    await Promise.resolve();
     try {
+      console.log('[AdminAuthContext.checkSession] START');
       const sessionData = localStorage.getItem(ADMIN_SESSION_KEY);
+      console.log('[AdminAuthContext.checkSession] sessionData exists:', !!sessionData);
+      console.log('[AdminAuthContext.checkSession] sessionData raw:', sessionData);
       
       if (!sessionData) {
+        console.log('[AdminAuthContext.checkSession] No session found in localStorage');
         setIsLoading(false);
         return false;
       }
 
       const session: AdminSession = JSON.parse(sessionData);
+      console.log('[AdminAuthContext.checkSession] Parsed session:', { userId: session.user.id, expiresAt: new Date(session.expiresAt).toISOString() });
       
       // Vérifier si la session est expirée
-      if (session.expiresAt < getCurrentTimestamp()) {
-        // Session expirée, essayer de renouveler automatiquement
-        const renewed = await renewSession(session);
+      if (session.expiresAt < Date.now()) {
+        console.log('[AdminAuthContext.checkSession] Session expired');
+        localStorage.removeItem(ADMIN_SESSION_KEY);
         setIsLoading(false);
-        return renewed;
+        return false;
       }
 
-      // Session valide
+      // Session valide - on fait confiance au localStorage sans vérifier Supabase
+      // (La vérification Supabase peut échouer si persistSession est false)
+      console.log('[AdminAuthContext.checkSession] Session valid, setting authenticated state');
       setAdminUser(session.user);
       setIsAdminAuthenticated(true);
       setIsLoading(false);
+      console.log('[AdminAuthContext.checkSession] SUCCESS');
       return true;
     } catch (error) {
-      console.error('Erreur lors de la vérification de session:', error);
+      console.error('[AdminAuthContext.checkSession] ERROR:', error);
       localStorage.removeItem(ADMIN_SESSION_KEY);
       setIsLoading(false);
       return false;
     }
-  }, [renewSession]);
+  }, []);
 
   // Vérifier la session au chargement
   useEffect(() => {
+    console.log('[AdminAuthContext] useEffect: checking session on mount');
     const run = async () => {
+      console.log('[AdminAuthContext] useEffect: calling checkSession');
       await checkSession();
     };
     void run();
   }, [checkSession]);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const loginWithOtp = async (phone: string, otp: string): Promise<boolean> => {
     try {
-      void password;
-      // Simuler une authentification (à remplacer par votre vraie API)
-      // Pour la démo, on accepte n'importe quel email/mot de passe
+      console.log('[AdminAuthContext] Logging in with OTP');
+      const { verifyAdminOtp } = await import('@/lib/adminAuthService');
       
-      // Simuler un délai API
-      await new Promise(resolve => setTimeout(resolve, 500));
+      const result = await verifyAdminOtp(phone, otp);
+      
+      if (!result.profile) {
+        throw new Error('Admin profile not found');
+      }
 
-      // Créer l'utilisateur admin
+      const firstName = result.profile.first_name || 'Admin';
+      const lastName = result.profile.last_name || '';
+      const role = result.profile.role || 'admin';
       const user: AdminUser = {
-        email: email,
-        name: email.split('@')[0],
-        role: email.includes('super') ? 'Super Admin' : 'Admin',
-        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(email.split('@')[0])}&background=2ECC71&color=fff`,
+        id: result.profile.id,
+        phone: result.profile.phone,
+        first_name: firstName,
+        last_name: lastName,
+        role: role,
+        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(firstName)}&background=2ECC71&color=fff`,
       };
 
-      // Créer la session
+      // Créer la session (30 jours)
       const session: AdminSession = {
         user: user,
-        token: createSessionToken(), // Générer un token (simulé)
-        expiresAt: getCurrentTimestamp() + ADMIN_SESSION_EXPIRY,
+        expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
       };
 
-      // Sauvegarder la session
       localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
       
       setAdminUser(user);
       setIsAdminAuthenticated(true);
 
+      console.log('[AdminAuthContext] Login successful');
       return true;
     } catch (error) {
-      console.error('Erreur lors de la connexion:', error);
+      console.error('[AdminAuthContext] Login error:', error);
       return false;
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem(ADMIN_SESSION_KEY);
-    setAdminUser(null);
-    setIsAdminAuthenticated(false);
+  const logout = async () => {
+    try {
+      console.log('[AdminAuthContext] Logging out');
+      await logoutAdmin();
+      localStorage.removeItem(ADMIN_SESSION_KEY);
+      setAdminUser(null);
+      setIsAdminAuthenticated(false);
+      console.log('[AdminAuthContext] Logout successful');
+    } catch (error) {
+      console.error('[AdminAuthContext] Logout error:', error);
+      localStorage.removeItem(ADMIN_SESSION_KEY);
+      setAdminUser(null);
+      setIsAdminAuthenticated(false);
+    }
+  };
+
+  const refreshSession = async () => {
+    console.log('[AdminAuthContext] Refreshing session...');
+    await checkSession();
+  };
+
+  const setAuthenticatedUser = (user: AdminUser) => {
+    console.log('[AdminAuthContext.setAuthenticatedUser] Setting user:', user.id);
+    
+    // Sauvegarder dans localStorage
+    const session: AdminSession = {
+      user: user,
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 jours
+    };
+    localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
+    console.log('[AdminAuthContext.setAuthenticatedUser] Session saved to localStorage');
+    
+    // Mettre à jour l'état
+    setAdminUser(user);
+    setIsAdminAuthenticated(true);
+    console.log('[AdminAuthContext.setAuthenticatedUser] State updated');
   };
 
   // Afficher un loader pendant la vérification initiale
@@ -164,9 +192,12 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       value={{
         isAdminAuthenticated,
         adminUser,
-        login,
+        loginWithOtp,
         logout,
         checkSession,
+        isLoading,
+        refreshSession,
+        setAuthenticatedUser,
       }}
     >
       {children}

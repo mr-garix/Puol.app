@@ -1,20 +1,8 @@
-import {
-  ApplicationVerifier,
-  ConfirmationResult,
-  User,
-  signInWithPhoneNumber,
-} from 'firebase/auth';
-
 import type { SupabaseProfile } from '@/src/contexts/AuthContext';
-import { firebaseAuth } from '@/src/firebaseClient';
 import { supabase } from '@/src/supabaseClient';
-import { syncSupabaseSession } from './supabaseSession';
 import { getOrCreateVisitorId, deleteVisitorId } from '@/src/utils/visitorId';
 
 const DEFAULT_COUNTRY_CODE = '+237';
-
-let confirmationResultRef: ConfirmationResult | null = null;
-let lastPhoneE164: string | null = null;
 
 const toE164 = (rawPhone: string) => {
   if (!rawPhone) {
@@ -38,52 +26,6 @@ const toE164 = (rawPhone: string) => {
   return `${DEFAULT_COUNTRY_CODE}${digitsOnly}`;
 };
 
-export const getLastConfirmationResult = () => confirmationResultRef;
-export const getLastPhoneNumber = () => lastPhoneE164;
-
-export const startPhoneSignIn = async (
-  rawPhone: string,
-  verifier?: ApplicationVerifier,
-) => {
-  if (!verifier) {
-    throw new Error('missing_verifier');
-  }
-
-  const phoneE164 = toE164(rawPhone);
-
-  confirmationResultRef = await signInWithPhoneNumber(firebaseAuth, phoneE164, verifier);
-  lastPhoneE164 = phoneE164;
-  return confirmationResultRef;
-};
-
-export const confirmOtpCode = async (
-  code: string,
-): Promise<{ user: User; phoneNumber: string | null }> => {
-  if (!confirmationResultRef) {
-    throw new Error('missing_confirmation');
-  }
-
-  if (!code || code.length < 4) {
-    throw new Error('invalid_code');
-  }
-
-  const credential = await confirmationResultRef.confirm(code);
-  const user = credential.user;
-  const phoneNumber = user.phoneNumber ?? lastPhoneE164 ?? null;
-
-  // Synchroniser la session Supabase pour que les services backend (commentaires, likes) reconnaissent l'utilisateur
-  await syncSupabaseSession(user);
-
-  return { user, phoneNumber };
-};
-
-export const getFormattedPhoneForLastRequest = (phone: string) => toE164(phone);
-
-export const resetPhoneConfirmation = () => {
-  confirmationResultRef = null;
-  lastPhoneE164 = null;
-};
-
 export const findSupabaseProfileByPhone = async (
   phoneE164: string,
 ): Promise<SupabaseProfile | null> => {
@@ -103,7 +45,7 @@ export const findSupabaseProfileByPhone = async (
 };
 
 type CreateProfileInput = {
-  user: User;
+  user: any;
   phone: string;
   firstName?: string;
   lastName?: string;
@@ -117,45 +59,50 @@ export const createSupabaseProfile = async ({
   lastName,
   gender,
 }: CreateProfileInput): Promise<SupabaseProfile> => {
-  if (!user?.uid) {
+  if (!user?.id) {
     throw new Error('missing_user_id');
   }
 
   const normalizedPhone = toE164(phone);
   const timestamp = new Date().toISOString();
 
+  console.log('[createSupabaseProfile] START - userId:', user.id, 'phone:', normalizedPhone);
+
+  // Mettre à jour le profil créé par le trigger avec les informations supplémentaires
   const payload = {
-    id: user.uid,
     phone: normalizedPhone,
     first_name: firstName?.trim() || null,
     last_name: lastName?.trim() || null,
     gender: gender ?? null,
-    supply_role: 'none' as const,
-    created_at: timestamp,
     updated_at: timestamp,
   };
 
+  console.log('[createSupabaseProfile] Updating profile with id:', user.id);
   const { data, error } = await supabase
     .from('profiles')
-    .upsert(payload, { onConflict: 'id' })
+    .update(payload)
+    .eq('id', user.id)
     .select('*')
     .single();
 
   if (error) {
+    console.error('[createSupabaseProfile] Error updating profile:', error);
     throw error;
   }
+
+  console.log('[createSupabaseProfile] Profile updated successfully');
 
   // 🔄 Merger le visitor_id au user_id après création du profil
   try {
     const visitorId = await getOrCreateVisitorId();
     if (visitorId) {
-      console.log('[createSupabaseProfile] Merging visitor to user:', { visitorId, userId: user.uid });
+      console.log('[createSupabaseProfile] Merging visitor to user:', { visitorId, userId: user.id });
       
       // Mettre à jour la table visitor_activity_heartbeat pour lier le visiteur au nouvel utilisateur
       await supabase
         .from('visitor_activity_heartbeat')
         .update({
-          linked_user_id: user.uid,
+          linked_user_id: user.id,
           merged_at: timestamp,
         })
         .eq('visitor_id', visitorId);

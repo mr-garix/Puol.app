@@ -1,43 +1,12 @@
-import { supabase } from '@/src/supabaseClient';
-import type { User } from 'firebase/auth';
+// DEPRECATED: Firebase Auth synchronization is no longer needed
+// Supabase Auth (OTP) is now the primary authentication method
+// This file is kept for reference but is no longer used
 
-/**
- * Synchronise la session Supabase avec l'utilisateur Firebase.
- * À appeler après chaque login/refresh Firebase.
- */
-export async function syncSupabaseSession(firebaseUser: User): Promise<void> {
-  try {
-    const idToken = await firebaseUser.getIdToken(true);
-    const { data, error } = await supabase.auth.signInWithIdToken({
-      provider: 'firebase',
-      token: idToken,
-    });
-
-    if (error) {
-      console.warn('[supabaseSession] signInWithIdToken error:', error);
-      // On ne lève pas d’erreur pour ne pas bloquer le reste de l’app
-      return;
-    }
-
-    if (!data.session) {
-      console.warn('[supabaseSession] signInWithIdToken returned no session for user', firebaseUser.uid);
-      return;
-    }
-
-    console.log('[supabaseSession] session synced for user', firebaseUser.uid);
-  } catch (e) {
-    console.warn('[supabaseSession] sync failed', e);
-  }
+// Placeholder exports to avoid breaking imports during transition
+export async function syncSupabaseSession(): Promise<void> {
+  console.warn('[supabaseSession] syncSupabaseSession is deprecated');
 }
 
-/**
- * Termine la session Supabase (à appeler lors du logout).
- */
 export async function clearSupabaseSession(): Promise<void> {
-  try {
-    await supabase.auth.signOut();
-    console.log('[supabaseSession] session cleared');
-  } catch (e) {
-    console.warn('[supabaseSession] clear failed', e);
-  }
+  console.warn('[supabaseSession] clearSupabaseSession is deprecated');
 }

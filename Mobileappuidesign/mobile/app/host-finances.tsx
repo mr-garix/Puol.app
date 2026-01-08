@@ -140,12 +140,25 @@ export default function HostFinancesScreen() {
         if (earningsError) throw earningsError;
 
         // Récupérer les remboursements liés aux bookings de ce host
+        // Utiliser une jointure pour filtrer par host_id
         const { data: refundsData, error: refundsError } = await supabase
           .from('refunds')
-          .select('*')
+          .select(`
+            *,
+            booking:bookings(
+              id,
+              listing_id,
+              listing:listings(host_id)
+            )
+          `)
           .order('requested_at', { ascending: false });
 
         if (refundsError) throw refundsError;
+
+        // Filtrer les remboursements pour ne garder que ceux du host courant
+        const filteredRefunds = (refundsData || []).filter((r: any) => 
+          r.booking?.listing?.host_id === supabaseProfile.id
+        );
 
         // Créer une map des payouts par montant ET date
         const payoutStatusMap = new Map<string, string>();

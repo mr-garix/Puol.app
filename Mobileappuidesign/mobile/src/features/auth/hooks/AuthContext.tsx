@@ -7,12 +7,10 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
-import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 
-import { firebaseAuth } from '@/src/firebaseClient';
 import { supabase } from '@/src/supabaseClient';
 import type { Tables } from '@/src/types/supabase.generated';
-import { clearSupabaseSession, syncSupabaseSession } from '../supabaseSession';
 import { getOrCreateVisitorId, resetVisitorIdCache, deleteVisitorId } from '@/src/utils/visitorId';
 
 export type SupabaseProfile = Tables<'profiles'>;
@@ -21,137 +19,175 @@ export type SupabaseProfile = Tables<'profiles'>;
 export type AuthUser = SupabaseProfile;
 
 type AuthContextValue = {
-  firebaseUser: User | null;
+  supabaseUser: SupabaseUser | null;
   supabaseProfile: SupabaseProfile | null;
   isLoggedIn: boolean;
   isLoading: boolean;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<SupabaseProfile | null>;
+  session: Session | null;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [supabaseUser, setSupabaseUser] = useState<SupabaseUser | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [supabaseProfile, setSupabaseProfile] = useState<SupabaseProfile | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isRefreshingProfile, setIsRefreshingProfile] = useState(false);
 
-  const fetchSupabaseProfile = useCallback(async (uid: string) => {
+  const fetchSupabaseProfile = useCallback(async (phone: string | null | undefined) => {
+    console.log('[AuthContext.fetchSupabaseProfile] START - phone:', phone);
+    
+    if (!phone) {
+      console.log('[AuthContext.fetchSupabaseProfile] No phone provided - setting profile to null');
+      setSupabaseProfile(null);
+      return null;
+    }
+
     try {
+      // Normaliser le téléphone avec le + si absent
+      const normalizedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      console.log('[AuthContext.fetchSupabaseProfile] Normalized phone:', normalizedPhone);
+      console.log('[AuthContext.fetchSupabaseProfile] Querying profiles table for phone:', normalizedPhone);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', uid)
+        .eq('phone', normalizedPhone)
         .maybeSingle();
+
+      console.log('[AuthContext.fetchSupabaseProfile] Query result:', { 
+        found: !!data, 
+        error: error?.message,
+        profileId: (data as any)?.id 
+      });
 
       if (error) {
         if (error.code !== 'PGRST116') {
-          console.error('[AuthContext] Failed to load Supabase profile', error);
+          console.error('[AuthContext.fetchSupabaseProfile] Query error:', error);
         }
         setSupabaseProfile(null);
         return null;
       }
 
       const profile = (data as SupabaseProfile) ?? null;
+      console.log('[AuthContext.fetchSupabaseProfile] Setting profile:', { found: !!profile, id: profile?.id });
       setSupabaseProfile(profile);
       return profile;
     } catch (err) {
-      console.error('[AuthContext] Unexpected Supabase profile error', err);
+      console.error('[AuthContext.fetchSupabaseProfile] Unexpected error:', err);
       setSupabaseProfile(null);
       return null;
     }
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-      setFirebaseUser(user);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+      console.log('[AuthContext.onAuthStateChange] EVENT:', event);
+      console.log('[AuthContext.onAuthStateChange] Session exists:', !!currentSession);
+      console.log('[AuthContext.onAuthStateChange] User phone:', currentSession?.user?.phone);
+      
+      setSession(currentSession ?? null);
+      setSupabaseUser(currentSession?.user ?? null);
 
-      if (user) {
-        // Synchroniser la session Supabase pour que les services backend reconnaissent l'utilisateur
-        await syncSupabaseSession(user);
+      if (currentSession?.user) {
+        console.log('[AuthContext.onAuthStateChange] User authenticated - phone:', currentSession.user.phone);
         
         // Merge du visitor_id au login
         try {
           const visitorId = await getOrCreateVisitorId();
-          console.log('[AuthContext] Merging visitor_id:', visitorId, 'with user_id:', user.uid);
+          const phone = currentSession.user.phone;
+          console.log('[AuthContext.onAuthStateChange] Merging visitor_id:', visitorId, 'with phone:', phone);
           
           const { error } = await supabase
             .from('visitor_activity_heartbeat')
             .update({
-              linked_user_id: user.uid,
+              linked_user_id: phone,
               merged_at: new Date().toISOString(),
               last_activity_at: new Date().toISOString(),
             })
             .eq('visitor_id', visitorId);
           
           if (error) {
-            console.error('[AuthContext] Error merging visitor_id:', error);
+            console.error('[AuthContext.onAuthStateChange] Error merging visitor_id:', error);
           } else {
-            console.log('[AuthContext] Visitor merged successfully');
+            console.log('[AuthContext.onAuthStateChange] Visitor merged successfully');
           }
         } catch (err) {
-          console.error('[AuthContext] Unexpected error during visitor merge:', err);
+          console.error('[AuthContext.onAuthStateChange] Unexpected error during visitor merge:', err);
         }
         
-        fetchSupabaseProfile(user.uid).finally(() => {
-          setIsBootstrapping(false);
-        });
+        // Charger le profil basé sur le téléphone
+        console.log('[AuthContext.onAuthStateChange] Fetching profile for phone:', currentSession.user.phone);
+        const profile = await fetchSupabaseProfile(currentSession.user.phone);
+        console.log('[AuthContext.onAuthStateChange] Profile fetched:', { found: !!profile, id: profile?.id });
       } else {
-        await clearSupabaseSession();
+        console.log('[AuthContext.onAuthStateChange] User logged out');
         setSupabaseProfile(null);
         resetVisitorIdCache();
-        setIsBootstrapping(false);
       }
+
+      console.log('[AuthContext.onAuthStateChange] Setting isBootstrapping to false');
+      setIsBootstrapping(false);
     });
 
-    return unsubscribe;
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, [fetchSupabaseProfile]);
 
   const refreshProfile = useCallback(async () => {
-    const currentUser = firebaseAuth.currentUser ?? firebaseUser;
+    console.log('[AuthContext.refreshProfile] START');
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    console.log('[AuthContext.refreshProfile] Current session:', { 
+      exists: !!currentSession, 
+      phone: (currentSession?.user as any)?.phone 
+    });
 
-    if (!currentUser) {
+    if (!currentSession?.user) {
+      console.log('[AuthContext.refreshProfile] No session - setting profile to null');
       setSupabaseProfile(null);
       return null;
     }
 
-    // Synchroniser à nouveau la session Supabase au cas où le token Firebase a été rafraîchi
-    await syncSupabaseSession(currentUser);
-
     setIsRefreshingProfile(true);
     try {
-      return await fetchSupabaseProfile(currentUser.uid);
+      console.log('[AuthContext.refreshProfile] Fetching profile for phone:', currentSession.user.phone);
+      const profile = await fetchSupabaseProfile(currentSession.user.phone);
+      console.log('[AuthContext.refreshProfile] Profile fetched:', { found: !!profile, id: profile?.id });
+      return profile;
     } finally {
       setIsRefreshingProfile(false);
     }
-  }, [fetchSupabaseProfile, firebaseUser]);
+  }, [fetchSupabaseProfile]);
 
   const logout = useCallback(async () => {
     try {
-      await signOut(firebaseAuth);
+      await supabase.auth.signOut();
     } catch (error) {
-      console.error('[AuthContext] Firebase logout error', error);
+      console.error('[AuthContext] Supabase logout error', error);
     } finally {
-      await clearSupabaseSession();
       setSupabaseProfile(null);
-      setFirebaseUser(null);
+      setSupabaseUser(null);
+      setSession(null);
       // Supprimer le visitor_id pour que l'utilisateur soit traité comme nouveau visiteur
       await deleteVisitorId();
     }
   }, []);
 
-  const isLoggedIn = Boolean(firebaseUser && supabaseProfile);
+  const isLoggedIn = Boolean(supabaseUser && supabaseProfile);
   const value = useMemo<AuthContextValue>(
     () => ({
-      firebaseUser,
+      supabaseUser,
       supabaseProfile,
       isLoggedIn,
       isLoading: isBootstrapping || isRefreshingProfile,
       logout,
       refreshProfile,
+      session,
     }),
-    [firebaseUser, supabaseProfile, isBootstrapping, isRefreshingProfile, isLoggedIn, logout, refreshProfile],
+    [supabaseUser, supabaseProfile, isBootstrapping, isRefreshingProfile, isLoggedIn, logout, refreshProfile, session],
   );
 
   useEffect(() => {

@@ -92,19 +92,11 @@ export const useLandlordVisits = (): UseLandlordVisitsResult => {
 
       try {
         const freshVisits = await fetchLandlordRentalVisits(supabaseProfile.id);
-
-        // Comparer avec les anciennes visites pour détecter les nouvelles
-        const oldVisitIds = new Set(visits.map(v => v.id));
-        const newVisits = freshVisits.filter(v => !oldVisitIds.has(v.id));
-
-        if (newVisits.length > 0) {
-          console.log('[useLandlordVisits] Detected new visits via polling:', newVisits.map(v => v.id));
-        }
-
         // Mettre à jour l'état avec les visites fraîches
         setVisits(freshVisits);
       } catch (err) {
         console.error('[useLandlordVisits] Polling error:', err);
+        // Ne pas relancer le polling en cas d'erreur, continuer normalement
       }
     };
 
@@ -119,7 +111,7 @@ export const useLandlordVisits = (): UseLandlordVisitsResult => {
         pollingIntervalRef.current = null;
       }
     };
-  }, [isLoggedIn, supabaseProfile, isLandlord, visits]);
+  }, [isLoggedIn, supabaseProfile, isLandlord]);
 
   const getVisitById = useCallback(
     (id: string) => visits.find((visit) => visit.id === id),

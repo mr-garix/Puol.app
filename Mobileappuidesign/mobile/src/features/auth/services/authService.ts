@@ -49,6 +49,8 @@ export async function verifyOtp(
     return { success: false, error: 'missing_phone_or_code' };
   }
 
+  console.log('[authService.verifyOtp] START - phone:', sanitizedPhone);
+
   const now = new Date().toISOString();
 
   const { data: otpRow, error: otpError } = await supabase
@@ -61,42 +63,63 @@ export async function verifyOtp(
     .maybeSingle();
 
   if (otpError || !otpRow) {
+    console.error('[authService.verifyOtp] OTP invalid or expired');
     return { success: false, error: 'invalid_or_expired' };
   }
 
+  console.log('[authService.verifyOtp] OTP valid, deleting OTP code');
   await supabase.from('otp_codes').delete().eq('id', otpRow.id);
 
-  const { data: existingProfile, error: profileError } = await supabase
+  console.log('[authService.verifyOtp] Looking for existing profile with phone:', sanitizedPhone);
+  const { data: allProfiles, error: profileError } = await supabase
     .from('profiles')
     .select('*')
-    .eq('phone', sanitizedPhone)
-    .maybeSingle();
+    .eq('phone', sanitizedPhone);
 
   if (profileError) {
-    console.error('verifyOtp profile lookup error', profileError);
+    console.error('[authService.verifyOtp] Profile lookup error:', profileError);
     return { success: false, error: 'profile_lookup_failed' };
   }
 
+  console.log('[authService.verifyOtp] Found profiles:', {
+    count: allProfiles?.length,
+    profiles: allProfiles?.map(p => ({ id: p.id, phone: p.phone, first_name: p.first_name }))
+  });
+
+  // Si plusieurs profils existent, prendre le premier (celui créé par le trigger avec UUID)
+  const existingProfile = allProfiles?.[0];
+
   if (existingProfile) {
+    console.log('[authService.verifyOtp] Profile exists, returning it');
     return { success: true, user: existingProfile as AuthUser };
   }
 
   if (!createProfileIfMissing) {
+    console.log('[authService.verifyOtp] Profile not found and createProfileIfMissing is false');
     return { success: false, error: 'profile_not_found' };
   }
 
-  const { data: insertedProfile, error: insertError } = await supabase
+  console.log('[authService.verifyOtp] Profile not found, creating it with phone as ID');
+  // Créer le profil manuellement avec le numéro de téléphone comme ID
+  const { data: createdProfile, error: createError } = await supabase
     .from('profiles')
-    .insert({ phone: sanitizedPhone, supply_role: 'none' })
+    .insert({
+      id: sanitizedPhone,
+      phone: sanitizedPhone,
+      supply_role: 'none',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
     .select('*')
     .single();
 
-  if (insertError || !insertedProfile) {
-    console.error('verifyOtp profile insert error', insertError);
+  if (createError) {
+    console.error('[authService.verifyOtp] Error creating profile:', createError);
     return { success: false, error: 'profile_creation_failed' };
   }
 
-  return { success: true, user: insertedProfile as AuthUser };
+  console.log('[authService.verifyOtp] Profile created successfully');
+  return { success: true, user: createdProfile as AuthUser };
 }
 
 export async function updateProfileDetails(

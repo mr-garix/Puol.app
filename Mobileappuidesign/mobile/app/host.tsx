@@ -22,8 +22,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
-
 import { HostVerificationModal, HostSuccessScreen } from '@/src/features/auth/components';
 import {
   DEFAULT_PHONE_COUNTRY,
@@ -37,13 +35,10 @@ import { supabase } from '@/src/supabaseClient';
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { SupabaseProfile } from '@/src/features/auth/hooks/AuthContext';
 import {
-  startPhoneSignIn,
-  confirmOtpCode,
   createSupabaseProfile,
   findSupabaseProfileByPhone,
-  resetPhoneConfirmation,
 } from '@/src/features/auth/phoneAuthService';
-import { firebaseConfig } from '@/src/firebaseClient';
+import { signInWithOtp, verifyOtp } from '@/src/features/auth/services/otpService';
 import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 const PUOL_GREEN = '#2ECC71';
@@ -118,7 +113,6 @@ export default function BecomeHostScreen() {
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [resendCooldown, setResendCooldown] = useState(0);
   const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recaptchaRef = useRef<FirebaseRecaptchaVerifierModal | null>(null);
   const [blockInfo, setBlockInfo] = useState<BlockInfo | null>(null);
   const pendingPhoneRef = useRef<string | null>(null);
   const pendingProfileRef = useRef<SupabaseProfile | null>(null);
@@ -384,7 +378,6 @@ export default function BecomeHostScreen() {
       clearInterval(resendIntervalRef.current);
       resendIntervalRef.current = null;
     }
-    resetPhoneConfirmation();
     pendingPhoneRef.current = null;
     pendingProfileRef.current = null;
     setVerificationPhone(null);
@@ -498,19 +491,40 @@ export default function BecomeHostScreen() {
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) {
+      console.log('[BecomeHost] handleSubmit: canSubmit is false');
       return;
     }
 
     const e164Phone = normalizedPhone;
     if (!e164Phone) {
+      console.log('[BecomeHost] handleSubmit: e164Phone is invalid');
       setVerificationError('Numéro de téléphone invalide.');
       return;
     }
+
+    console.log('[BecomeHost] handleSubmit START', {
+      isAuthenticated,
+      hasPrefilledIdentity,
+      shouldLockIdentity,
+      userId: user?.id,
+      e164Phone,
+      firstName,
+      lastName,
+      city,
+      district,
+      selectedTypes,
+      inventory,
+    });
 
     if (shouldLockIdentity && user?.id) {
       const alreadyCompleted = hasHostCompletionFlag;
       setIsSubmittingApplication(true);
       setVerificationError(null);
+
+      console.log('[BecomeHost] Submitting application directly (authenticated user)', {
+        userId: user.id,
+        alreadyCompleted,
+      });
 
       try {
         if (!alreadyCompleted) {
@@ -519,6 +533,7 @@ export default function BecomeHostScreen() {
           justCompletedRef.current = false;
         }
         await submitHostApplication(user.id, e164Phone);
+        console.log('[BecomeHost] Application submitted successfully');
         setBlockInfo(null);
         clearVerificationState();
         if (alreadyCompleted) {
@@ -538,6 +553,11 @@ export default function BecomeHostScreen() {
       return;
     }
 
+    console.log('[BecomeHost] Sending OTP code (not authenticated or missing identity)', {
+      shouldLockIdentity,
+      userId: user?.id,
+    });
+
     setIsSendingCode(true);
     setVerificationError(null);
 
@@ -552,7 +572,8 @@ export default function BecomeHostScreen() {
         return;
       }
 
-      await startPhoneSignIn(e164Phone, recaptchaRef.current || undefined);
+      console.log('[BecomeHost] Sending OTP via Supabase to:', e164Phone);
+      await signInWithOtp({ phone: e164Phone });
 
       pendingPhoneRef.current = e164Phone;
       pendingProfileRef.current = profileByPhone ?? user ?? null;
@@ -579,8 +600,8 @@ export default function BecomeHostScreen() {
   ]);
 
   const handleVerify = useCallback(
-    async (code: string) => {
-      if (!code) {
+    async (code: string, phoneNumber: string) => {
+      if (!code || !phoneNumber) {
         return;
       }
 
@@ -588,33 +609,79 @@ export default function BecomeHostScreen() {
       setVerificationError(null);
 
       try {
-        const { user: firebaseUser, phoneNumber: confirmedPhone } = await confirmOtpCode(code);
-        const normalizedPhone = confirmedPhone ?? pendingPhoneRef.current;
+        console.log('[BecomeHost] Verifying OTP code via Supabase', { phone: phoneNumber });
+        const verifyResult = await verifyOtp({
+          phone: phoneNumber,
+          token: code,
+        });
 
-        if (!normalizedPhone) {
-          throw new Error('missing_phone');
+        if (!verifyResult.success) {
+          throw new Error('OTP verification failed');
         }
 
-        let targetProfile = pendingProfileRef.current || user || null;
+        const normalizedPhone = phoneNumber;
+
+        // Chercher si un profil existe déjà avec ce numéro de téléphone
+        console.log('[BecomeHost] Checking if profile exists...');
+        const { data: allProfiles } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('phone', normalizedPhone);
+        
+        console.log('[BecomeHost] All profiles with this phone:', {
+          count: allProfiles?.length,
+          profiles: allProfiles?.map(p => ({ id: p.id, phone: p.phone }))
+        });
+
+        let targetProfile = allProfiles?.[0];
 
         if (!targetProfile) {
-          targetProfile = await findSupabaseProfileByPhone(normalizedPhone);
-        }
+          console.log('[BecomeHost] No profile found - creating with phone as ID');
+          // Créer le profil manuellement avec le numéro de téléphone comme ID
+          const { data: createdProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert({
+              id: normalizedPhone,
+              phone: normalizedPhone,
+              first_name: firstName,
+              last_name: lastName,
+              role: 'guest',
+              supply_role: 'host',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .select('*')
+            .single();
 
-        let profileId: string;
+          if (createError) {
+            console.error('[BecomeHost] Error creating profile:', createError);
+            throw createError;
+          }
 
-        if (targetProfile) {
-          profileId = targetProfile.id;
+          console.log('[BecomeHost] Profile created successfully with ID:', createdProfile?.id);
+          targetProfile = createdProfile;
         } else {
-          const created = await createSupabaseProfile({
-            user: firebaseUser,
-            phone: normalizedPhone,
-            firstName,
-            lastName,
-          });
-          profileId = created.id;
-          pendingProfileRef.current = created;
+          console.log('[BecomeHost] Profile exists - updating with form info, ID:', targetProfile.id);
+          // Mettre à jour le profil existant avec les informations du formulaire
+          const { error: updateError } = await supabase
+            .from('profiles')
+            .update({
+              first_name: firstName,
+              last_name: lastName,
+              supply_role: 'host',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', targetProfile.id);
+
+          if (updateError) {
+            console.error('[BecomeHost] Error updating profile:', updateError);
+            throw updateError;
+          }
+          console.log('[BecomeHost] Profile updated successfully');
         }
+
+        console.log('[BecomeHost] Profile ready:', targetProfile.id);
+        const profileId = targetProfile.id;
 
         const alreadyCompleted = hasHostCompletionFlag;
         if (!alreadyCompleted) {
@@ -671,10 +738,11 @@ export default function BecomeHostScreen() {
     setVerificationError(null);
 
     try {
-      await startPhoneSignIn(verificationPhone, recaptchaRef.current || undefined);
+      console.log('[BecomeHost] Resending OTP via Supabase to:', verificationPhone);
+      await signInWithOtp({ phone: verificationPhone });
       startResendCountdown();
-    } catch (error) {
-      console.error('[BecomeHost] OTP resend error', error);
+    } catch (err) {
+      console.error('[BecomeHost] OTP resend error', err);
       setVerificationError('Impossible de renvoyer le code pour le moment. Réessaie plus tard.');
     } finally {
       setIsResendingCode(false);
@@ -949,7 +1017,6 @@ export default function BecomeHostScreen() {
     <View style={styles.container}>
       <StatusBar style="dark" />
       <RNStatusBar barStyle="dark-content" />
-      <FirebaseRecaptchaVerifierModal ref={recaptchaRef} firebaseConfig={firebaseConfig} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         {shouldShowBlockScreen && blockInfo ? (

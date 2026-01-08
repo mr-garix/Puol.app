@@ -12,18 +12,12 @@ import {
   Keyboard,
   Pressable,
 } from 'react-native';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { Feather, FontAwesome } from '@expo/vector-icons';
 
 import { useAuth } from '@/src/contexts/AuthContext';
-import {
-  confirmOtpCode,
-  findSupabaseProfileByPhone,
-  getLastPhoneNumber,
-  resetPhoneConfirmation,
-  startPhoneSignIn,
-} from '@/src/features/auth/phoneAuthService';
-import { firebaseConfig } from '@/src/firebaseClient';
+import { supabase } from '@/src/supabaseClient';
+import { signInWithOtp, verifyOtp } from '@/src/features/auth/services/otpService';
+import { findSupabaseProfileByPhone } from '@/src/features/auth/phoneAuthService';
 import {
   DEFAULT_PHONE_COUNTRY,
   PHONE_COUNTRY_OPTIONS,
@@ -49,7 +43,6 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [phoneCountry, setPhoneCountry] = useState<PhoneCountryOption>(DEFAULT_PHONE_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [otpMethod, setOtpMethod] = useState<'sms' | 'whatsapp'>('sms');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isSending, setIsSending] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -58,7 +51,6 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
   const [isCountryPickerOpen, setIsCountryPickerOpen] = useState(false);
   const [pendingSignupPhone, setPendingSignupPhone] = useState<string | null>(null);
   const [resendCooldown, setResendCooldown] = useState(0);
-  const recaptchaVerifier = useRef<FirebaseRecaptchaVerifierModal | null>(null);
   const lastPhoneE164Ref = useRef<string | null>(null);
 
   const otpRefs = useRef<(TextInput | null)[]>([]);
@@ -77,7 +69,6 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
     setErrorMessage(null);
     setShowSignUpPrompt(false);
     setIsCountryPickerOpen(false);
-    resetPhoneConfirmation();
     lastPhoneE164Ref.current = null;
     setResendCooldown(0);
   };
@@ -102,17 +93,18 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
 
     try {
       const e164Phone = formatE164PhoneNumber(phoneNumber, phoneCountry);
-      await startPhoneSignIn(e164Phone, recaptchaVerifier.current || undefined);
+      console.log('[LoginWithOTPScreen] Sending OTP to:', e164Phone);
+      await signInWithOtp({ phone: e164Phone });
       lastPhoneE164Ref.current = e164Phone;
       setStep('otp');
       setResendCooldown(90);
       setIsCountryPickerOpen(false);
     } catch (error) {
-      console.error('Firebase phone sign-in error', error);
+      console.error('[LoginWithOTPScreen] Supabase OTP sign-in error', error);
       const message =
         error instanceof Error
           ? error.message
-          : "Impossible d’envoyer le code. Vérifiez votre numéro et réessayez.";
+          : "Impossible d'envoyer le code. Vérifiez votre numéro et réessayez.";
       setErrorMessage(message);
     } finally {
       setIsSending(false);
@@ -174,32 +166,67 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
     setErrorMessage(null);
 
     try {
-      const { user, phoneNumber: confirmedPhone } = await confirmOtpCode(fullCode);
-      const fallbackPhone = phoneNumber
-        ? formatE164PhoneNumber(phoneNumber, phoneCountry)
-        : lastPhoneE164Ref.current ?? getLastPhoneNumber();
-      const normalizedPhone = confirmedPhone ?? fallbackPhone;
+      const normalizedPhone = lastPhoneE164Ref.current
+        ? lastPhoneE164Ref.current
+        : phoneNumber
+          ? formatE164PhoneNumber(phoneNumber, phoneCountry)
+          : null;
 
       if (!normalizedPhone) {
         throw new Error('missing_phone_number');
       }
 
+      console.log('[LoginWithOTPScreen.submitOtp] START - phone:', normalizedPhone);
+      const verifyResult = await verifyOtp({ phone: normalizedPhone, token: fullCode });
+      console.log('[LoginWithOTPScreen.submitOtp] verifyOtp returned:', {
+        success: verifyResult.success,
+        hasUser: !!verifyResult.data?.user,
+        hasSession: !!verifyResult.data?.session,
+      });
+      
+      // Vérifier que la session Supabase est bien établie
+      const { data: { session: finalSession } } = await supabase.auth.getSession();
+      console.log('[LoginWithOTPScreen.submitOtp] Final session check:', {
+        sessionExists: !!finalSession,
+        userPhone: (finalSession?.user as any)?.phone,
+      });
+      
+      if (!finalSession) {
+        console.error('[LoginWithOTPScreen.submitOtp] ERROR - No session after verifyOtp');
+        throw new Error('Session not established after OTP verification');
+      }
+      
+      // Le profil doit avoir été créé automatiquement par le trigger Supabase
+      console.log('[LoginWithOTPScreen.submitOtp] Searching for profile with phone:', normalizedPhone);
       const profile = await findSupabaseProfileByPhone(normalizedPhone);
+      console.log('[LoginWithOTPScreen.submitOtp] Profile search result:', {
+        profileFound: !!profile,
+        profileId: profile?.id,
+      });
 
       if (!profile) {
+        console.warn('[LoginWithOTPScreen.submitOtp] NO PROFILE FOUND - This means the trigger did not create a profile in public.profiles');
         setPendingSignupPhone(normalizedPhone);
-        setErrorMessage("Aucun compte n’est associé à ce numéro. Veuillez créer un compte s'il vous plait.");
+        setErrorMessage("Aucun compte n'est associé à ce numéro. Veuillez créer un compte s'il vous plait.");
         setShowSignUpPrompt(true);
         setOtp(['', '', '', '', '', '']);
         otpRefs.current[0]?.focus();
         return;
       }
 
+      console.log('[LoginWithOTPScreen.submitOtp] SUCCESS - OTP verified, profile found:', profile.id);
+      
+      // Rafraîchir le profil via AuthContext
+      console.log('[LoginWithOTPScreen.submitOtp] Refreshing profile via AuthContext');
       await refreshProfile();
+      
+      // Attendre un peu pour que AuthContext se mette à jour
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       resetState();
       onAuthenticated?.();
     } catch (error) {
-      console.error('Firebase confirm code error', error);
+      console.error('[LoginWithOTPScreen] Supabase OTP verification error', error);
       setErrorMessage('Code invalide ou expiré.');
       setShowSignUpPrompt(false);
       setOtp(['', '', '', '', '', '']);
@@ -224,7 +251,6 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
-      <FirebaseRecaptchaVerifierModal ref={recaptchaVerifier} firebaseConfig={firebaseConfig} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
         <View style={styles.overlay}>
           <View style={styles.modalContent}>
@@ -308,36 +334,6 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
                     ) : null}
                   </View>
 
-                  <View style={styles.inputSection}>
-                    <Text style={styles.inputLabel}>Recevoir le code par</Text>
-                    <View style={styles.methodButtons}>
-                      <TouchableOpacity
-                        style={[styles.methodButton, otpMethod === 'sms' && styles.methodButtonActive]}
-                        onPress={() => setOtpMethod('sms')}
-                        activeOpacity={0.7}
-                      >
-                        <Feather name="message-circle" size={16} color="#2ECC71" />
-                        <Text
-                          style={[styles.methodButtonText, otpMethod === 'sms' && styles.methodButtonTextActive]}
-                        >
-                          SMS
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.methodButton, otpMethod === 'whatsapp' && styles.methodButtonActive]}
-                        onPress={() => setOtpMethod('whatsapp')}
-                        activeOpacity={0.7}
-                      >
-                        <FontAwesome name="whatsapp" size={16} color="#2ECC71" />
-                        <Text
-                          style={[styles.methodButtonText, otpMethod === 'whatsapp' && styles.methodButtonTextActive]}
-                        >
-                          WhatsApp
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
 
                   <TouchableOpacity
                     style={[

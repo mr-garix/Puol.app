@@ -22,8 +22,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
-
 import {
   DEFAULT_PHONE_COUNTRY,
   PHONE_COUNTRY_OPTIONS,
@@ -36,15 +34,12 @@ import { supabase } from '@/src/supabaseClient';
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { SupabaseProfile } from '@/src/features/auth/hooks/AuthContext';
 import {
-  confirmOtpCode,
   createSupabaseProfile,
   findSupabaseProfileByPhone,
-  resetPhoneConfirmation,
-  startPhoneSignIn,
 } from '@/src/features/auth/phoneAuthService';
+import { signInWithOtp, verifyOtp } from '@/src/features/auth/services/otpService';
 import { HostVerificationModal } from '@/src/features/auth/components/HostVerificationModal';
 import { LandlordSuccessScreen } from '@/src/features/auth/components/LandlordSuccessScreen';
-import { firebaseConfig } from '@/src/firebaseClient';
 import { STORAGE_KEYS } from '@/src/constants/storageKeys';
 
 const PUOL_GREEN = '#2ECC71';
@@ -123,7 +118,6 @@ export default function BecomeLandlordScreen() {
   const [blockInfo, setBlockInfo] = useState<BlockInfo | null>(null);
   const [verificationPhone, setVerificationPhone] = useState<string | null>(null);
   const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recaptchaRef = useRef<FirebaseRecaptchaVerifierModal | null>(null);
   const backNavigationInFlightRef = useRef(false);
   const pendingPhoneRef = useRef<string | null>(null);
   const pendingProfileRef = useRef<SupabaseProfile | null>(null);
@@ -243,7 +237,6 @@ export default function BecomeLandlordScreen() {
       clearInterval(resendIntervalRef.current);
       resendIntervalRef.current = null;
     }
-    resetPhoneConfirmation();
     pendingPhoneRef.current = null;
     pendingProfileRef.current = null;
     setVerificationPhone(null);
@@ -552,7 +545,8 @@ export default function BecomeLandlordScreen() {
         return;
       }
 
-      await startPhoneSignIn(e164Phone, recaptchaRef.current || undefined);
+      console.log('[BecomeLandlord] Sending OTP via Supabase to:', e164Phone);
+      await signInWithOtp({ phone: e164Phone });
 
       pendingPhoneRef.current = e164Phone;
       pendingProfileRef.current = profileByPhone ?? user ?? null;
@@ -579,8 +573,8 @@ export default function BecomeLandlordScreen() {
   ]);
 
   const handleVerify = useCallback(
-    async (code: string) => {
-      if (!code) {
+    async (code: string, phoneNumber: string) => {
+      if (!code || !phoneNumber) {
         return;
       }
 
@@ -588,33 +582,79 @@ export default function BecomeLandlordScreen() {
       setVerificationError(null);
 
       try {
-        const { user: firebaseUser, phoneNumber: confirmedPhone } = await confirmOtpCode(code);
-        const normalizedPhone = confirmedPhone ?? pendingPhoneRef.current;
+        console.log('[BecomeLandlord] Verifying OTP code via Supabase', { phone: phoneNumber });
+        const verifyResult = await verifyOtp({
+          phone: phoneNumber,
+          token: code,
+        });
 
-        if (!normalizedPhone) {
-          throw new Error('missing_phone');
+        if (!verifyResult.success) {
+          throw new Error('OTP verification failed');
         }
 
-        let targetProfile = pendingProfileRef.current || user || null;
+        const normalizedPhone = phoneNumber;
+
+        // Chercher si un profil existe déjà avec ce numéro de téléphone
+        console.log('[BecomeLandlord] Checking if profile exists...');
+        const { data: allProfiles } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('phone', normalizedPhone);
+        
+        console.log('[BecomeLandlord] All profiles with this phone:', {
+          count: allProfiles?.length,
+          profiles: allProfiles?.map(p => ({ id: p.id, phone: p.phone }))
+        });
+
+        let targetProfile = allProfiles?.[0];
 
         if (!targetProfile) {
-          targetProfile = await findSupabaseProfileByPhone(normalizedPhone);
-        }
+          console.log('[BecomeLandlord] No profile found - creating with phone as ID');
+          // Créer le profil manuellement avec le numéro de téléphone comme ID
+          const { data: createdProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert({
+              id: normalizedPhone,
+              phone: normalizedPhone,
+              first_name: firstName,
+              last_name: lastName,
+              role: 'guest',
+              supply_role: 'landlord',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .select('*')
+            .single();
 
-        let profileId: string;
+          if (createError) {
+            console.error('[BecomeLandlord] Error creating profile:', createError);
+            throw createError;
+          }
 
-        if (targetProfile) {
-          profileId = targetProfile.id;
+          console.log('[BecomeLandlord] Profile created successfully with ID:', createdProfile?.id);
+          targetProfile = createdProfile;
         } else {
-          const created = await createSupabaseProfile({
-            user: firebaseUser,
-            phone: normalizedPhone,
-            firstName,
-            lastName,
-          });
-          profileId = created.id;
-          pendingProfileRef.current = created;
+          console.log('[BecomeLandlord] Profile exists - updating with form info, ID:', targetProfile.id);
+          // Mettre à jour le profil existant avec les informations du formulaire
+          const { error: updateError } = await supabase
+            .from('profiles')
+            .update({
+              first_name: firstName,
+              last_name: lastName,
+              supply_role: 'landlord',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', targetProfile.id);
+
+          if (updateError) {
+            console.error('[BecomeLandlord] Error updating profile:', updateError);
+            throw updateError;
+          }
+          console.log('[BecomeLandlord] Profile updated successfully');
         }
+
+        console.log('[BecomeLandlord] Profile ready:', targetProfile.id);
+        const profileId = targetProfile.id;
 
         const alreadyCompleted = hasLandlordCompletionFlag;
         await submitLandlordApplication(profileId, normalizedPhone);
@@ -656,7 +696,8 @@ export default function BecomeLandlordScreen() {
     setVerificationError(null);
 
     try {
-      await startPhoneSignIn(verificationPhone, recaptchaRef.current || undefined);
+      console.log('[BecomeLandlord] Resending OTP via Supabase to:', verificationPhone);
+      await signInWithOtp({ phone: verificationPhone });
       startResendCountdown();
     } catch (error) {
       console.error('[BecomeLandlord] OTP resend error', error);
@@ -909,7 +950,6 @@ export default function BecomeLandlordScreen() {
     <View style={styles.container}>
       <StatusBar style="dark" />
       <RNStatusBar barStyle="dark-content" />
-      <FirebaseRecaptchaVerifierModal ref={recaptchaRef} firebaseConfig={firebaseConfig} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         {shouldShowBlockScreen && blockInfo ? (

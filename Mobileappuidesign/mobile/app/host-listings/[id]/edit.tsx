@@ -536,7 +536,7 @@ export default function HostListingEditScreen() {
   const headerTopPadding = Math.max(insets.top - 40, 2);
   const { id } = useLocalSearchParams<{ id?: string }>();
   const isCreateMode = !id;
-  const { firebaseUser } = useAuth();
+  const { supabaseProfile } = useAuth();
   const { refreshListings: refreshFeedListings } = useFeed();
   const {
     data: existingListing,
@@ -1390,7 +1390,7 @@ export default function HostListingEditScreen() {
       Alert.alert('Champs manquants', 'Complétez tous les champs obligatoires avant de continuer.');
       return;
     }
-    if (!firebaseUser?.uid) {
+    if (!supabaseProfile?.id) {
       Alert.alert('Connexion requise', 'Veuillez vous reconnecter pour publier votre annonce.');
       return;
     }
@@ -1415,7 +1415,7 @@ export default function HostListingEditScreen() {
     const promotion = promoNights && promoDiscount ? { nights: Number(promoNights), discountPercent: Number(promoDiscount) } : null;
 
     const payload = {
-      hostId: firebaseUser.uid,
+      hostId: supabaseProfile.id,
       title: title.trim(),
       city: finalCity,
       district: derivedDistrict,

@@ -835,13 +835,21 @@ export default function ConversationScreen() {
           : null;
     const detectedIntentFromContent = detectVisitIntentFromContent(message.content);
     const asksScheduleQuestion = isAiMessage && detectVisitScheduleQuestionFromContent(message.content);
+    
+    // Vérifier si le host est un LANDLORD
+    const hostRole = conversation?.host?.role?.toLowerCase() ?? null;
+    const hostLandlordStatus = conversation?.host?.landlordStatus?.toLowerCase() ?? null;
+    const isLandlord = hostRole === 'landlord' || hostLandlordStatus === 'approved' || hostLandlordStatus === 'pending';
+    
     // 🔴 Afficher le bouton si :
     // 1. metadataRecord?.visitSuggestion === true (metadata explicite)
     // 2. detectedIntentFromContent && asksScheduleQuestion (détection normale)
     // 3. detectedIntentFromContent === true (détection de "la visite coûte" force le bouton)
+    // ❌ NE PAS afficher si c'est un LANDLORD
     const visitSuggestion =
       viewerRole === 'guest' &&
       isAiMessage &&
+      !isLandlord &&
       (metadataRecord?.visitSuggestion === true || (detectedIntentFromContent && asksScheduleQuestion) || detectedIntentFromContent);
 
     console.debug('[ConversationScreen][visit-btn]', {

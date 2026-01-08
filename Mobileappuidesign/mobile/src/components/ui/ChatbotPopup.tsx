@@ -82,6 +82,7 @@ interface ChatbotPopupProps {
   visible: boolean;
   onClose: () => void;
   propertyTitle?: string;
+  hostStatus?: string | null;
 }
 
 type Sender = 'user' | 'bot';
@@ -94,11 +95,15 @@ interface Message {
   showScheduleButton?: boolean;
 }
 
-export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, propertyTitle }) => {
+export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, propertyTitle, hostStatus = null }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [keyboardPadding, setKeyboardPadding] = useState(92);
   const scrollViewRef = useRef<ScrollView | null>(null);
+
+  useEffect(() => {
+    console.log('[ChatbotPopup] Opened with hostStatus:', hostStatus);
+  }, [visible, hostStatus]);
 
   useEffect(() => {
     if (visible) {
@@ -190,7 +195,7 @@ export const ChatbotPopup: React.FC<ChatbotPopupProps> = ({ visible, onClose, pr
               showsVerticalScrollIndicator={false}
             >
               {messages.map((message, index) => (
-                <MessageBubble key={message.id} message={message} index={index} />
+                <MessageBubble key={message.id} message={message} index={index} hostStatus={hostStatus} />
               ))}
             </ScrollView>
 
@@ -233,9 +238,10 @@ interface MessageBubbleProps {
   message: Message;
   index: number;
   onScheduleVisit?: () => void;
+  hostStatus?: string | null;
 }
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index, onScheduleVisit }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index, onScheduleVisit, hostStatus = null }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(10)).current;
 
@@ -263,6 +269,18 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index, onSchedul
 
   const isUser = message.sender === 'user';
 
+  // Logs pour diagnostiquer l'affichage du bouton
+  if (message.showScheduleButton && !isUser) {
+    console.log('[MessageBubble] Schedule button condition check:', {
+      messageId: message.id,
+      showScheduleButton: message.showScheduleButton,
+      isUser: isUser,
+      hostStatus: hostStatus,
+      shouldShowButton: hostStatus !== 'landlord',
+      condition: `showScheduleButton=${message.showScheduleButton} && !isUser=${!isUser} && hostStatus!=='landlord'=${hostStatus !== 'landlord'}`,
+    });
+  }
+
   return (
     <Animated.View
       style={[
@@ -273,7 +291,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, index, onSchedul
     >
       <View style={[styles.messageBubble, isUser ? styles.messageBubbleUser : styles.messageBubbleBot]}>
         <Text style={[styles.messageText, isUser ? styles.messageTextUser : styles.messageTextBot]}>{message.text}</Text>
-        {message.showScheduleButton && !isUser && (
+        {message.showScheduleButton && !isUser && hostStatus !== 'landlord' && (
           <TouchableOpacity
             style={styles.scheduleButton}
             onPress={onScheduleVisit}

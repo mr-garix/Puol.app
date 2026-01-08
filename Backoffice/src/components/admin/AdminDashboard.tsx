@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { AdminSidebarNew, type AdminSection } from './AdminSidebarNew';
 import { AdminHeader } from './AdminHeader';
+import { AdminUnifiedAuthPage } from './AdminUnifiedAuthPage';
+import { useAdminAuth } from '@/contexts/AdminAuthContext';
 
 // Sections principales
 import { DashboardSectionNew } from './sections/DashboardSectionNew';
@@ -62,6 +64,15 @@ const isAdminSection = (value: string): value is AdminSection => {
 
 export function AdminDashboard({ onLogout, onSwitchToUser }: AdminDashboardProps) {
   const [currentSection, setCurrentSection] = useState<AdminSection>('dashboard');
+  const { isAdminAuthenticated, isLoading, adminUser } = useAdminAuth();
+
+  console.log('[AdminDashboard] RENDER:', { 
+    isAdminAuthenticated, 
+    isLoading, 
+    adminUserId: adminUser?.id,
+    adminUserPhone: adminUser?.phone,
+    timestamp: new Date().toISOString()
+  });
 
   // Helper pour naviguer vers une section avec ou sans paramètres
   const handleNavigateToSection = (route: string) => {
@@ -75,6 +86,35 @@ export function AdminDashboard({ onLogout, onSwitchToUser }: AdminDashboardProps
       setCurrentSection(sectionName);
     }
   };
+
+  // Afficher le formulaire d'authentification unifié si l'utilisateur n'est pas authentifié
+  if (!isAdminAuthenticated && !isLoading) {
+    console.log('[AdminDashboard] Not authenticated, showing unified auth page');
+    return (
+      <AdminUnifiedAuthPage 
+        onLoginSuccess={() => {
+          console.log('[AdminDashboard] Login successful, reloading page');
+          // Recharger la page pour que le contexte se mette à jour
+          window.location.reload();
+        }} 
+      />
+    );
+  }
+
+  // Afficher un loader pendant la vérification de la session
+  if (isLoading) {
+    console.log('[AdminDashboard] Loading, showing loader');
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-[#2ECC71] border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="mt-4 text-gray-600">Vérification de la session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  console.log('[AdminDashboard] Authenticated, showing dashboard');
 
   const renderSection = () => {
     switch (currentSection) {

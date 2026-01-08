@@ -61,8 +61,6 @@ import { recordListingShare, resolveShareChannel } from '@/src/features/listings
 import { useListingReviews } from '@/src/features/reviews/hooks/useListingReviews';
 import { ensureListingConversation } from '@/src/features/messaging/services';
 import { addViewedListing } from '@/src/features/listings/viewHistoryStorage';
-import { firebaseAuth } from '@/src/firebaseClient';
-import { syncSupabaseSession } from '@/src/features/auth/supabaseSession';
 import { supabase } from '@/src/supabaseClient';
 import { createBooking } from '@/src/features/bookings/services';
 
@@ -1257,15 +1255,6 @@ const PropertyProfileScreen = () => {
       const { data } = await supabase.auth.getSession();
       if (data.session) {
         return true;
-      }
-
-      const currentUser = firebaseAuth.currentUser;
-      if (currentUser) {
-        await syncSupabaseSession(currentUser);
-        const { data: refreshed } = await supabase.auth.getSession();
-        if (refreshed.session) {
-          return true;
-        }
       }
 
       // En phase dev (RLS parfois désactivé), on autorise la suite si on a déjà un profile Supabase.

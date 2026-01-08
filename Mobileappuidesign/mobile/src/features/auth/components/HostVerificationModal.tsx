@@ -13,7 +13,7 @@ import { Feather } from '@expo/vector-icons';
 interface HostVerificationModalProps {
   isVisible: boolean;
   onClose: () => void;
-  onVerify: (code: string) => Promise<void>;
+  onVerify: (code: string, phoneNumber: string) => Promise<void>;
   isVerifying: boolean;
   phoneNumber: string;
   errorMessage?: string | null;
@@ -48,7 +48,7 @@ export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
 
   const handleVerify = async () => {
     if (!canSubmit || isVerifying) return;
-    await onVerify(trimmedCode);
+    await onVerify(trimmedCode, phoneNumber);
   };
 
   return (

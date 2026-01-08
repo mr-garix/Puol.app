@@ -490,7 +490,7 @@ export default function HostListingEditScreen() {
   const headerTopPadding = Math.max(insets.top - 40, 2);
   const { id } = useLocalSearchParams<{ id?: string }>();
   const isCreateMode = !id;
-  const { firebaseUser } = useAuth();
+  const { supabaseProfile } = useAuth();
   const { data: existingListing, error: loadError, refresh: refreshListing, isLoading: isLoadingListing } = useLandlordListing(id ?? null);
   const { refreshListings: refreshFeedListings } = useFeed();
   const createMutation = useCreateLandlordListingWithRelations();
@@ -1237,7 +1237,7 @@ export default function HostListingEditScreen() {
       Alert.alert('Champs manquants', 'Complétez tous les champs obligatoires avant de continuer.');
       return;
     }
-    if (!firebaseUser?.uid) {
+    if (!supabaseProfile?.id) {
       Alert.alert('Connexion requise', 'Veuillez vous reconnecter pour publier votre annonce.');
       return;
     }
