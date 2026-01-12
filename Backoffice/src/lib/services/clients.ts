@@ -245,7 +245,7 @@ export async function fetchClientProfiles(): Promise<ClientProfileRecord[]> {
   try {
     const { data: profiles, error: profilesError } = await client
       .from('profiles')
-      .select('id, first_name, last_name, username, city, phone, avatar_url, role, supply_role')
+      .select('id, first_name, last_name, username, city, phone, avatar_url, role, supply_role, created_at')
       .in('role', CLIENT_ROLES);
 
     if (profilesError) {
@@ -335,7 +335,7 @@ export async function fetchClientProfiles(): Promise<ClientProfileRecord[]> {
       spendMap.set(payerId, (spendMap.get(payerId) ?? 0) + amount);
     });
 
-    return profileRows.map((profile) => {
+    const clients = profileRows.map((profile) => {
       const bookingsForClient = bookingMap.get(profile.id as string) ?? [];
       const reservations = bookingsForClient.length;
       const nights = 0; // colonne supprimée / non utilisée
@@ -366,6 +366,14 @@ export async function fetchClientProfiles(): Promise<ClientProfileRecord[]> {
         leasesSigned,
         avatarUrl: profile.avatar_url ?? '',
       } satisfies ClientProfileRecord;
+    });
+
+    // Trier par date de création décroissante (les plus récents en haut)
+    return clients.sort((a, b) => {
+      const dateA = profileRows.find(p => p.id === a.id)?.created_at;
+      const dateB = profileRows.find(p => p.id === b.id)?.created_at;
+      if (!dateA || !dateB) return 0;
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
     });
   } catch (error) {
     console.warn('[clients] fetchClientProfiles failed', error);

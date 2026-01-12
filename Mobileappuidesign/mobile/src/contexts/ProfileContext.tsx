@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 import { useAuth } from '@/src/contexts/AuthContext';
 import type { SupabaseProfile } from '@/src/contexts/AuthContext';
+import OneSignalService from '@/src/services/OneSignalService';
 import { supabase } from '@/src/supabaseClient';
 import { uploadEnterpriseLogo, uploadProfileAvatar } from '@/src/features/auth/services/avatarService';
 import {
@@ -213,11 +214,78 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [isEnsuringUsername, isLoggedIn, refreshProfile, supabaseProfile]);
 
+  const syncOneSignalTags = useCallback(
+    async (updatedProfile: SupabaseProfile) => {
+      try {
+        console.log('[ProfileContext] Syncing OneSignal tags after profile update');
+        
+        const tags: Record<string, string> = {};
+        tags.role = updatedProfile.role?.trim() || 'unknown';
+
+        try {
+          const { data: bookingRows, error: bookingsError } = await supabase
+            .from('bookings')
+            .select('status')
+            .eq('guest_profile_id', updatedProfile.id);
+
+          if (!bookingsError && bookingRows) {
+            const activeStatuses = ['pending', 'confirmed', 'in_progress'];
+            const hasActive = bookingRows.some((b) => activeStatuses.includes((b.status ?? '').toLowerCase()));
+            tags.status = hasActive ? 'active_booking' : 'idle';
+          } else {
+            tags.status = 'idle';
+          }
+        } catch (err) {
+          console.error('[ProfileContext] Error determining booking status for OneSignal tags', err);
+          tags.status = 'idle';
+        }
+
+        if (Object.keys(tags).length > 0) {
+          console.log('[ProfileContext] Applying OneSignal tags after profile update:', tags);
+          await OneSignalService.addTags(tags);
+        }
+      } catch (err) {
+        console.error('[ProfileContext] Error syncing OneSignal tags', err);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (isLoggedIn && supabaseProfile && !supabaseProfile.username) {
       ensureUsername();
     }
   }, [ensureUsername, isLoggedIn, supabaseProfile]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !supabaseProfile?.id) {
+      return;
+    }
+
+    console.log('[ProfileContext] Setting up realtime listener for bookings changes');
+
+    const channel = supabase
+      .channel(`bookings:guest_profile_id=${supabaseProfile.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookings',
+          filter: `guest_profile_id=eq.${supabaseProfile.id}`,
+        },
+        (payload) => {
+          console.log('[ProfileContext] Booking change detected:', payload.eventType);
+          syncOneSignalTags(supabaseProfile);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      console.log('[ProfileContext] Unsubscribing from bookings realtime channel');
+      void supabase.removeChannel(channel);
+    };
+  }, [isLoggedIn, supabaseProfile, syncOneSignalTags]);
 
   const updateProfile = useCallback(
     async (updates: Partial<ProfileData>): Promise<ProfileUpdateResult> => {
@@ -281,6 +349,9 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
         setProfile(nextProfile);
         await refreshProfile();
 
+        // Sync OneSignal tags after profile update
+        await syncOneSignalTags(supabaseProfile);
+
         return { success: true };
       } catch (error) {
         console.error('[ProfileContext] Failed to update profile', error);
@@ -289,7 +360,7 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
         setIsProfileSaving(false);
       }
     },
-    [isLoggedIn, profile, refreshProfile, supabaseProfile],
+    [isLoggedIn, profile, refreshProfile, supabaseProfile, syncOneSignalTags],
   );
 
   const checkUsernameAvailability = useCallback(

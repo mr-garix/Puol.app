@@ -97,14 +97,44 @@ const GuestCancellationNotificationBridge = () => {
           // Récupérer les informations complètes de la réservation et de l'annonce
           try {
             console.log('[GuestCancellationNotificationBridge] Fetching listing data for ID:', listingId);
-            const { data: listingDataForHost, error: listingErrorForHost } = await supabase
-              .from('listings')
-              .select('id, host_id, title')
-              .eq('id', listingId)
-              .maybeSingle();
+            
+            let listingDataForHost = null;
+            let listingErrorForHost = null;
+            let retryCount = 0;
+            const maxRetries = 3;
+
+            while (retryCount < maxRetries && !listingDataForHost && !listingErrorForHost) {
+              try {
+                const result = await supabase
+                  .from('listings')
+                  .select('id, host_id, title')
+                  .eq('id', listingId)
+                  .maybeSingle();
+                
+                listingDataForHost = result.data;
+                listingErrorForHost = result.error;
+                
+                if (listingErrorForHost && retryCount < maxRetries - 1) {
+                  console.warn(`[GuestCancellationNotificationBridge] Retry ${retryCount + 1}/${maxRetries} - Error:`, listingErrorForHost);
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  retryCount++;
+                } else {
+                  break;
+                }
+              } catch (err) {
+                console.error('[GuestCancellationNotificationBridge] Network error fetching listing:', err);
+                if (retryCount < maxRetries - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  retryCount++;
+                } else {
+                  listingErrorForHost = err;
+                  break;
+                }
+              }
+            }
 
             if (listingErrorForHost) {
-              console.error('[GuestCancellationNotificationBridge] Error fetching listing data:', listingErrorForHost);
+              console.error('[GuestCancellationNotificationBridge] Error fetching listing data after retries:', listingErrorForHost);
               return;
             }
 

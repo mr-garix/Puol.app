@@ -20,6 +20,8 @@ import { useFeed, type PropertyListing } from '@/src/contexts/FeedContext';
 import { prefetchListingData } from '@/features/listings/hooks/useListingDetails';
 import { PUOL_COLORS } from '@/src/constants/theme';
 import TopFeedTabs from '../../components/navigation/TopFeedTabs';
+import { NotificationPermissionModal } from '@/src/components/ui/NotificationPermissionModal';
+import { useNotificationPermission } from '@/src/hooks/useNotificationPermission';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const EXPLORER_HORIZONTAL_PADDING = 20;
@@ -174,6 +176,13 @@ const ExplorerScreen = () => {
   const { propertyListings, isLoadingListings, listingsError, refreshListings } = useFeed();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  
+  // Notification permission hook
+  const { showModal, handleAcceptNotifications, handleDismissModal } = useNotificationPermission();
+  
+  useEffect(() => {
+    console.log('[ExplorerScreen] Notification modal showModal:', showModal);
+  }, [showModal]);
   
   // États pour la gestion des onglets
   const [activeTopTab, setActiveTopTab] = useState<'explorer' | 'pourToi'>('explorer');
@@ -620,6 +629,13 @@ const ExplorerScreen = () => {
           {renderContent()}
         </ScrollView>
       </View>
+
+      {/* Modale de permission pour les notifications */}
+      <NotificationPermissionModal
+        visible={showModal}
+        onAccept={handleAcceptNotifications}
+        onDismiss={handleDismissModal}
+      />
     </View>
   );
 };

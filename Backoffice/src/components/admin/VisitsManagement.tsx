@@ -24,7 +24,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { fetchLandlordVisits } from '@/lib/services/landlords';
+import { fetchLandlordVisits, updateVisitStatus } from '@/lib/services/landlords';
+import { supabase } from '@/lib/supabaseClient';
 
 export type VisitStatus = 'pending' | 'confirmed' | 'cancelled';
 export type VisitPaymentStatus = 'paid' | 'pending' | 'refunded';
@@ -75,6 +76,66 @@ export function VisitsManagement() {
     loadVisits();
   }, []);
 
+  useEffect(() => {
+    if (!supabase) return;
+
+    console.log('[VisitsManagement] Setting up realtime subscription for rental_visits');
+
+    const channel = (supabase as any)
+      .channel('rental-visits-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rental_visits',
+        },
+        (payload: any) => {
+          console.log('[VisitsManagement] Visit changed:', payload);
+
+          if (payload.eventType === 'UPDATE') {
+            const updatedVisit = payload.new;
+            setVisits((prev) =>
+              prev.map((visit) => {
+                if (visit.id === updatedVisit.id) {
+                  return {
+                    ...visit,
+                    status: updatedVisit.status as VisitRecord['status'],
+                  };
+                }
+                return visit;
+              })
+            );
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[VisitsManagement] Realtime subscription status:', status);
+      });
+
+    return () => {
+      (supabase as any).removeChannel(channel);
+    };
+  }, []);
+
+  const handleCancelVisit = async (visit: VisitRecord) => {
+    console.log('[VisitsManagement] handleCancelVisit called for visit:', visit.id);
+    try {
+      console.log('[VisitsManagement] Calling updateVisitStatus with visitId:', visit.id, 'status: cancelled');
+      const result = await updateVisitStatus(visit.id, 'cancelled');
+      console.log('[VisitsManagement] updateVisitStatus result:', result);
+      if (!result.success) {
+        console.error('[VisitsManagement] Failed to cancel visit:', result.error);
+        alert('Erreur lors de l\'annulation de la visite: ' + result.error);
+      } else {
+        console.log('[VisitsManagement] Visit cancelled successfully');
+      }
+    } catch (error) {
+      console.error('[VisitsManagement] Exception cancelling visit:', error);
+      alert('Erreur lors de l\'annulation de la visite: ' + String(error));
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -87,7 +148,7 @@ export function VisitsManagement() {
       {loading ? (
         <div className="p-8 text-center text-sm text-gray-500">Chargement des visites...</div>
       ) : (
-        <VisitsBoard visits={visits} />
+        <VisitsBoard visits={visits} onCancelVisit={handleCancelVisit} />
       )}
     </div>
   );
@@ -261,26 +322,62 @@ export function VisitsBoard({
   const [searchQuery, setSearchQuery] = useState('');
   const [focusedVisit, setFocusedVisit] = useState<VisitRecord | null>(null);
 
+  const isVisitCompleted = (visit: VisitRecord): boolean => {
+    try {
+      const visitDate = new Date(visit.date);
+      return visitDate < new Date();
+    } catch {
+      return false;
+    }
+  };
+
   const pendingCount = useMemo(() => visits.filter((v) => v.status === 'pending').length, [visits]);
   const confirmedCount = useMemo(() => visits.filter((v) => v.status === 'confirmed').length, [visits]);
   const cancelledCount = useMemo(() => visits.filter((v) => v.status === 'cancelled').length, [visits]);
+  const completedCount = useMemo(() => visits.filter((v) => isVisitCompleted(v)).length, [visits]);
 
   const filteredVisits = useMemo(
-    () =>
-      visits.filter(
+    () => {
+      const filtered = visits.filter(
         (v) =>
           v.property.toLowerCase().includes(searchQuery.toLowerCase()) ||
           v.visitor.toLowerCase().includes(searchQuery.toLowerCase()) ||
           v.city.toLowerCase().includes(searchQuery.toLowerCase()),
-      ),
+      );
+      // Trier par date décroissante (les plus récentes en haut)
+      return filtered.sort((a, b) => {
+        try {
+          const dateA = new Date(a.date).getTime();
+          const dateB = new Date(b.date).getTime();
+          return dateB - dateA;
+        } catch {
+          return 0;
+        }
+      });
+    },
     [visits, searchQuery],
   );
 
-  const getVisitsForTab = (status: 'all' | VisitStatus) =>
-    status === 'all' ? filteredVisits : filteredVisits.filter((visit) => visit.status === status);
+  const getVisitsForTab = (status: 'all' | VisitStatus | 'completed') => {
+    if (status === 'all') return filteredVisits;
+    if (status === 'completed') return filteredVisits.filter((visit) => isVisitCompleted(visit));
+    return filteredVisits.filter((visit) => visit.status === status);
+  };
 
-  const handleCancel = (visit: VisitRecord) => {
-    onCancelVisit?.(visit);
+  const handleCancel = async (visit: VisitRecord) => {
+    console.log('[VisitsBoard] handleCancel called for visit:', visit.id);
+    if (onCancelVisit) {
+      console.log('[VisitsBoard] Calling onCancelVisit (handleCancelVisit from parent)');
+      const result = await updateVisitStatus(visit.id, 'cancelled');
+      console.log('[VisitsManagement] updateVisitStatus result:', result);
+      if (!result.success) {
+        console.error('[VisitsManagement] Failed to cancel visit:', result.error);
+        alert('Erreur lors de l\'annulation de la visite: ' + result.error);
+      } else {
+        console.log('[VisitsManagement] Visit cancelled successfully');
+      }
+      await onCancelVisit(visit);
+    }
     setFocusedVisit((prev) => (prev?.id === visit.id ? { ...prev, status: 'cancelled' } : prev));
   };
 
@@ -456,11 +553,11 @@ export function VisitsBoard({
           <TabsTrigger value="all" className="rounded-lg data-[state=active]:bg-white">
             Toutes ({visits.length})
           </TabsTrigger>
-          <TabsTrigger value="pending" className="rounded-lg data-[state=active]:bg-white">
-            En attente ({pendingCount})
-          </TabsTrigger>
           <TabsTrigger value="confirmed" className="rounded-lg data-[state=active]:bg-white">
             Confirmées ({confirmedCount})
+          </TabsTrigger>
+          <TabsTrigger value="completed" className="rounded-lg data-[state=active]:bg-white">
+            Terminées ({completedCount})
           </TabsTrigger>
           <TabsTrigger value="cancelled" className="rounded-lg data-[state=active]:bg-white">
             Annulées ({cancelledCount})
@@ -471,12 +568,12 @@ export function VisitsBoard({
           {renderVisitsTable(getVisitsForTab('all'))}
         </TabsContent>
 
-        <TabsContent value="pending" className="mt-6 space-y-4">
-          {renderVisitsTable(getVisitsForTab('pending'))}
-        </TabsContent>
-
         <TabsContent value="confirmed" className="mt-6 space-y-4">
           {renderVisitsTable(getVisitsForTab('confirmed'))}
+        </TabsContent>
+
+        <TabsContent value="completed" className="mt-6 space-y-4">
+          {renderVisitsTable(getVisitsForTab('completed'))}
         </TabsContent>
 
         <TabsContent value="cancelled" className="mt-6 space-y-4">

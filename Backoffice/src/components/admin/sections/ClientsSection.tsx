@@ -20,14 +20,14 @@ type ClientsBoardProps = {
 
 function ClientsBoard({ clients, onViewProfile }: ClientsBoardProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const filtered = clients.filter((client) => {
+  const filtered = useMemo(() => {
     const query = searchQuery.toLowerCase();
-    return (
+    return clients.filter((client) =>
       client.fullName.toLowerCase().includes(query) ||
       client.city.toLowerCase().includes(query) ||
       client.phone.includes(query)
     );
-  });
+  }, [clients, searchQuery]);
 
   return (
     <div className="space-y-4">

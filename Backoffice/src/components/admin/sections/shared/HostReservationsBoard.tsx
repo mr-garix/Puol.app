@@ -407,24 +407,47 @@ export function HostReservationsBoard() {
     };
   }, []);
 
-  const { filteredReservations, pendingCount, confirmedCount, totalRevenue } = useMemo(() => {
-    const filtered = reservations.filter((reservation) =>
-      [reservation.property, reservation.tenant, reservation.city]
-        .join(' ')
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase())
-    );
+  const isReservationCompleted = (reservation: HostReservation): boolean => {
+    try {
+      if (!reservation.checkOut) return false;
+      const checkOutDate = new Date(reservation.checkOut);
+      return checkOutDate < new Date();
+    } catch {
+      return false;
+    }
+  };
 
-    const pending = reservations.filter((reservation) => reservation.status === 'pending').length;
+  const { filteredReservations, confirmedCount, cancelledCount, completedCount, totalRevenue } = useMemo(() => {
+    const filtered = reservations
+      .filter((reservation) =>
+        [reservation.property, reservation.tenant, reservation.city]
+          .join(' ')
+          .toLowerCase()
+          .includes(searchQuery.toLowerCase())
+      )
+      // Trier par date d'arrivée décroissante (les plus récentes en haut)
+      .sort((a, b) => {
+        try {
+          const dateA = a.checkIn ? new Date(a.checkIn).getTime() : 0;
+          const dateB = b.checkIn ? new Date(b.checkIn).getTime() : 0;
+          return dateB - dateA;
+        } catch {
+          return 0;
+        }
+      });
+
     const confirmed = reservations.filter((reservation) => reservation.status === 'confirmed').length;
+    const cancelled = reservations.filter((reservation) => reservation.status === 'cancelled').length;
+    const completed = reservations.filter((reservation) => isReservationCompleted(reservation)).length;
     const revenue = reservations
       .filter((reservation) => reservation.status === 'confirmed')
       .reduce((sum, reservation) => sum + reservation.total, 0);
 
     return {
       filteredReservations: filtered,
-      pendingCount: pending,
       confirmedCount: confirmed,
+      cancelledCount: cancelled,
+      completedCount: completed,
       totalRevenue: revenue,
     };
   }, [searchQuery, reservations]);
@@ -467,6 +490,168 @@ export function HostReservationsBoard() {
     updateReservationStatus(reservation.id, 'cancelled');
   };
 
+  const getReservationsForTab = (tab: string): HostReservation[] => {
+    if (tab === 'all') return filteredReservations;
+    if (tab === 'confirmed') return filteredReservations.filter((r) => r.status === 'confirmed');
+    if (tab === 'completed') return filteredReservations.filter((r) => isReservationCompleted(r));
+    if (tab === 'cancelled') return filteredReservations.filter((r) => r.status === 'cancelled');
+    return [];
+  };
+
+  const renderReservationsTable = (records: HostReservation[]) => (
+    <>
+      <Card>
+        <CardContent className="p-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Input
+              placeholder="Rechercher par propriété, locataire, ville..."
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="pl-10 rounded-xl"
+              disabled={isLoading}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Propriété</TableHead>
+              <TableHead>Hôte</TableHead>
+              <TableHead>Locataire</TableHead>
+              <TableHead>Dates</TableHead>
+              <TableHead>Nuits</TableHead>
+              <TableHead>Prix/nuit</TableHead>
+              <TableHead>Avance</TableHead>
+              <TableHead>Reste</TableHead>
+              <TableHead>Statut</TableHead>
+              <TableHead>Progression</TableHead>
+              <TableHead>Détail</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={12} className="text-center text-sm text-gray-500">
+                  Chargement des réservations…
+                </TableCell>
+              </TableRow>
+            ) : records.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={12} className="text-center text-sm text-gray-500">
+                  Aucune réservation trouvée.
+                </TableCell>
+              </TableRow>
+            ) : (
+              records.map((reservation) => {
+                const statusBadge = statusVariants[reservation.status];
+                const timelineBadge = timelineVariants[reservation.timelineStatus];
+                return (
+                  <TableRow key={reservation.id} className="hover:bg-gray-50">
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <div className="w-16 h-16 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center">
+                          {reservation.propertyImage ? (
+                            <img
+                              src={reservation.propertyImage}
+                              alt={reservation.property}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <MapPin className="w-5 h-5 text-gray-400" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">{reservation.property}</p>
+                          <p className="text-xs text-gray-500">
+                            {reservation.propertyType ?? 'Séjour'} · {reservation.city ?? '—'}
+                          </p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm text-gray-900">{reservation.host}</div>
+                      <div className="text-xs text-gray-500">{reservation.hostPhone ?? '—'}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="text-sm text-gray-900">{reservation.tenant}</p>
+                        <p className="text-xs text-gray-500">{reservation.phone ?? '—'}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="text-sm text-gray-900">{reservation.checkIn ?? '—'}</p>
+                        <p className="text-xs text-gray-500">→ {reservation.checkOut ?? '—'}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm text-gray-600">{reservation.nights}</TableCell>
+                    <TableCell className="text-sm text-gray-900">
+                      {reservation.pricePerNight != null ? currencyFormatter.format(reservation.pricePerNight) : '—'}
+                    </TableCell>
+                    <TableCell className="text-sm text-green-600">
+                      {currencyFormatter.format(reservation.deposit)}
+                    </TableCell>
+                    <TableCell className="text-sm text-orange-600">
+                      {currencyFormatter.format(reservation.balance)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={statusBadge.className}>{statusBadge.label}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={timelineBadge.className}>{timelineBadge.label}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => handleViewReservation(reservation)}
+                      >
+                        Voir le détail
+                      </Button>
+                    </TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm" className="rounded-lg">
+                            <MoreVertical className="w-4 h-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleViewReservation(reservation)}>
+                            <Eye className="w-4 h-4 mr-2" />
+                            Voir détails
+                          </DropdownMenuItem>
+                          {reservation.status === 'pending' && (
+                            <>
+                              <DropdownMenuItem className="text-green-600" onClick={() => handleConfirmReservation(reservation)}>
+                                <CheckCircle className="w-4 h-4 mr-2" />
+                                Confirmer
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-red-600" onClick={() => handleCancelReservation(reservation)}>
+                                <XCircle className="w-4 h-4 mr-2" />
+                                Annuler
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+    </>
+  );
+
   if (focusedReservation) {
     return (
       <HostReservationDetailView
@@ -495,19 +680,6 @@ export function HostReservationsBoard() {
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
-              <div className="p-3 bg-orange-100 rounded-xl">
-                <CalendarIcon className="w-5 h-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-2xl text-gray-900">{pendingCount}</p>
-                <p className="text-sm text-gray-600">En attente</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-3">
               <div className="p-3 bg-green-100 rounded-xl">
                 <CheckCircle className="w-5 h-5 text-green-600" />
               </div>
@@ -525,8 +697,21 @@ export function HostReservationsBoard() {
                 <CalendarIcon className="w-5 h-5 text-blue-600" />
               </div>
               <div>
-                <p className="text-2xl text-gray-900">{reservations.length}</p>
-                <p className="text-sm text-gray-600">Total</p>
+                <p className="text-2xl text-gray-900">{completedCount}</p>
+                <p className="text-sm text-gray-600">Terminées</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-red-100 rounded-xl">
+                <XCircle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <p className="text-2xl text-gray-900">{cancelledCount}</p>
+                <p className="text-sm text-gray-600">Annulées</p>
               </div>
             </div>
           </CardContent>
@@ -551,184 +736,31 @@ export function HostReservationsBoard() {
           <TabsTrigger value="all" className="rounded-lg data-[state=active]:bg-white">
             Toutes ({reservations.length})
           </TabsTrigger>
-          <TabsTrigger value="pending" className="rounded-lg data-[state=active]:bg-white">
-            En attente ({pendingCount})
-          </TabsTrigger>
           <TabsTrigger value="confirmed" className="rounded-lg data-[state=active]:bg-white">
             Confirmées ({confirmedCount})
+          </TabsTrigger>
+          <TabsTrigger value="completed" className="rounded-lg data-[state=active]:bg-white">
+            Terminées ({completedCount})
+          </TabsTrigger>
+          <TabsTrigger value="cancelled" className="rounded-lg data-[state=active]:bg-white">
+            Annulées ({cancelledCount})
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="all" className="mt-6 space-y-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <Input
-                  placeholder="Rechercher par propriété, locataire, ville..."
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  className="pl-10 rounded-xl"
-                  disabled={isLoading}
-                />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Propriété</TableHead>
-                  <TableHead>Hôte</TableHead>
-                  <TableHead>Locataire</TableHead>
-                  <TableHead>Dates</TableHead>
-                  <TableHead>Nuits</TableHead>
-                  <TableHead>Prix/nuit</TableHead>
-                  <TableHead>Avance</TableHead>
-                  <TableHead>Reste</TableHead>
-                  <TableHead>Statut</TableHead>
-                  <TableHead>Progression</TableHead>
-                  <TableHead>Détail</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading ? (
-                  <TableRow>
-                    <TableCell colSpan={11} className="text-center text-sm text-gray-500">
-                      Chargement des réservations…
-                    </TableCell>
-                  </TableRow>
-                ) : filteredReservations.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={11} className="text-center text-sm text-gray-500">
-                      Aucune réservation trouvée.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredReservations.map((reservation) => {
-                    const statusBadge = statusVariants[reservation.status];
-                    const timelineBadge = timelineVariants[reservation.timelineStatus];
-                    return (
-                      <TableRow key={reservation.id} className="hover:bg-gray-50">
-                        <TableCell>
-                          <div className="flex items-center gap-3">
-                            <div className="w-16 h-16 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center">
-                              {reservation.propertyImage ? (
-                                <img
-                                  src={reservation.propertyImage}
-                                  alt={reservation.property}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <MapPin className="w-5 h-5 text-gray-400" />
-                              )}
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-gray-900">{reservation.property}</p>
-                              <p className="text-xs text-gray-500">
-                                {reservation.propertyType ?? 'Séjour'} · {reservation.city ?? '—'}
-                              </p>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm text-gray-900">{reservation.host}</div>
-                          <div className="text-xs text-gray-500">{reservation.hostPhone ?? '—'}</div>
-                        </TableCell>
-                        <TableCell>
-                          <div>
-                            <p className="text-sm text-gray-900">{reservation.tenant}</p>
-                            <p className="text-xs text-gray-500">{reservation.phone ?? '—'}</p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div>
-                            <p className="text-sm text-gray-900">{reservation.checkIn ?? '—'}</p>
-                            <p className="text-xs text-gray-500">→ {reservation.checkOut ?? '—'}</p>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-sm text-gray-600">{reservation.nights}</TableCell>
-                        <TableCell className="text-sm text-gray-900">
-                          {reservation.pricePerNight != null ? currencyFormatter.format(reservation.pricePerNight) : '—'}
-                        </TableCell>
-                        <TableCell className="text-sm text-green-600">
-                          {currencyFormatter.format(reservation.deposit)}
-                        </TableCell>
-                        <TableCell className="text-sm text-orange-600">
-                          {currencyFormatter.format(reservation.balance)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={statusBadge.className}>{statusBadge.label}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={timelineBadge.className}>{timelineBadge.label}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="rounded-lg"
-                            onClick={() => handleViewReservation(reservation)}
-                          >
-                            Voir le détail
-                          </Button>
-                        </TableCell>
-                        <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="sm" className="rounded-lg">
-                                <MoreVertical className="w-4 h-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleViewReservation(reservation)}>
-                                <Eye className="w-4 h-4 mr-2" />
-                                Voir détails
-                              </DropdownMenuItem>
-                              {reservation.status === 'pending' && (
-                                <>
-                                  <DropdownMenuItem className="text-green-600" onClick={() => handleConfirmReservation(reservation)}>
-                                    <CheckCircle className="w-4 h-4 mr-2" />
-                                    Confirmer
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem className="text-red-600" onClick={() => handleCancelReservation(reservation)}>
-                                    <XCircle className="w-4 h-4 mr-2" />
-                                    Annuler
-                                  </DropdownMenuItem>
-                                </>
-                              )}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </Card>
+          {renderReservationsTable(getReservationsForTab('all'))}
         </TabsContent>
 
-        <TabsContent value="pending" className="mt-6">
-          <Card className="p-8 text-center">
-            <CalendarIcon className="w-12 h-12 mx-auto text-orange-500 mb-4" />
-            <h3 className="text-xl text-gray-900 mb-2">
-              {pendingCount} réservations hôtes en attente
-            </h3>
-            <p className="text-gray-500">À confirmer côté hôte ou en attente de paiement</p>
-          </Card>
+        <TabsContent value="confirmed" className="mt-6 space-y-4">
+          {renderReservationsTable(getReservationsForTab('confirmed'))}
         </TabsContent>
 
-        <TabsContent value="confirmed" className="mt-6">
-          <Card className="p-8 text-center">
-            <CheckCircle className="w-12 h-12 mx-auto text-green-500 mb-4" />
-            <h3 className="text-xl text-gray-900 mb-2">
-              {confirmedCount} réservations hôtes confirmées
-            </h3>
-            <p className="text-gray-500">Acompte encaissé. Solde à reverser aux hôtes</p>
-          </Card>
+        <TabsContent value="completed" className="mt-6 space-y-4">
+          {renderReservationsTable(getReservationsForTab('completed'))}
+        </TabsContent>
+
+        <TabsContent value="cancelled" className="mt-6 space-y-4">
+          {renderReservationsTable(getReservationsForTab('cancelled'))}
         </TabsContent>
       </Tabs>
     </div>

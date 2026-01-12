@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { getCurrentAdminSession, logoutAdmin } from '@/lib/adminAuthService';
+import { logoutAdmin } from '@/lib/adminAuthService';
+import { supabase } from '@/lib/supabaseClient';
 
 interface AdminAuthContextType {
   isAdminAuthenticated: boolean;
@@ -40,6 +41,8 @@ interface AdminSession {
   expiresAt: number;
 }
 
+const ADMIN_SUPABASE_SESSION_KEY = 'puol_admin_supabase_session';
+
 export function AdminAuthProvider({ children }: { children: ReactNode }) {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
@@ -50,7 +53,6 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       console.log('[AdminAuthContext.checkSession] START');
       const sessionData = localStorage.getItem(ADMIN_SESSION_KEY);
       console.log('[AdminAuthContext.checkSession] sessionData exists:', !!sessionData);
-      console.log('[AdminAuthContext.checkSession] sessionData raw:', sessionData);
       
       if (!sessionData) {
         console.log('[AdminAuthContext.checkSession] No session found in localStorage');
@@ -65,12 +67,29 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       if (session.expiresAt < Date.now()) {
         console.log('[AdminAuthContext.checkSession] Session expired');
         localStorage.removeItem(ADMIN_SESSION_KEY);
+        localStorage.removeItem(ADMIN_SUPABASE_SESSION_KEY);
         setIsLoading(false);
         return false;
       }
 
-      // Session valide - on fait confiance au localStorage sans vérifier Supabase
-      // (La vérification Supabase peut échouer si persistSession est false)
+      // Restaurer la session Supabase si elle existe
+      const supabaseSessionData = localStorage.getItem(ADMIN_SUPABASE_SESSION_KEY);
+      if (supabaseSessionData && supabase) {
+        try {
+          console.log('[AdminAuthContext.checkSession] Restoring Supabase session from localStorage...');
+          const supabaseSession = JSON.parse(supabaseSessionData);
+          const { error: setSessionError } = await supabase.auth.setSession(supabaseSession);
+          if (setSessionError) {
+            console.warn('[AdminAuthContext.checkSession] Warning: Could not restore Supabase session:', setSessionError);
+          } else {
+            console.log('[AdminAuthContext.checkSession] Supabase session restored successfully');
+          }
+        } catch (err) {
+          console.warn('[AdminAuthContext.checkSession] Warning: Error restoring Supabase session:', err);
+        }
+      }
+
+      // Session valide
       console.log('[AdminAuthContext.checkSession] Session valid, setting authenticated state');
       setAdminUser(session.user);
       setIsAdminAuthenticated(true);
@@ -80,6 +99,7 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('[AdminAuthContext.checkSession] ERROR:', error);
       localStorage.removeItem(ADMIN_SESSION_KEY);
+      localStorage.removeItem(ADMIN_SUPABASE_SESSION_KEY);
       setIsLoading(false);
       return false;
     }
@@ -95,6 +115,42 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
     void run();
   }, [checkSession]);
 
+  // Rafraîchir la session Supabase toutes les 5 minutes pour éviter l'expiration
+  useEffect(() => {
+    if (!isAdminAuthenticated) {
+      return;
+    }
+
+    console.log('[AdminAuthContext] Setting up session refresh interval (5 minutes)');
+    const interval = setInterval(async () => {
+      console.log('[AdminAuthContext] Refreshing Supabase session...');
+      if (supabase) {
+        try {
+          const { data: sessionData, error: sessionError } = await supabase.auth.refreshSession();
+          if (sessionError) {
+            console.warn('[AdminAuthContext] Error refreshing session:', sessionError);
+          } else if (sessionData.session) {
+            console.log('[AdminAuthContext] Session refreshed successfully');
+            // Sauvegarder la nouvelle session
+            try {
+              localStorage.setItem(ADMIN_SUPABASE_SESSION_KEY, JSON.stringify(sessionData.session));
+              console.log('[AdminAuthContext] Updated session saved to localStorage');
+            } catch (err) {
+              console.warn('[AdminAuthContext] Warning: Could not save updated session:', err);
+            }
+          }
+        } catch (err) {
+          console.error('[AdminAuthContext] Exception during session refresh:', err);
+        }
+      }
+    }, 5 * 60 * 1000); // 5 minutes
+
+    return () => {
+      console.log('[AdminAuthContext] Clearing session refresh interval');
+      clearInterval(interval);
+    };
+  }, [isAdminAuthenticated]);
+
   const loginWithOtp = async (phone: string, otp: string): Promise<boolean> => {
     try {
       console.log('[AdminAuthContext] Logging in with OTP');
@@ -106,9 +162,15 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Admin profile not found');
       }
 
+      // Vérifier que le profil a bien le rôle 'admin'
+      if (result.profile.role !== 'admin') {
+        console.error('[AdminAuthContext] User is not an admin. Role:', result.profile.role);
+        throw new Error(`Unauthorized: User role is '${result.profile.role}', expected 'admin'`);
+      }
+
       const firstName = result.profile.first_name || 'Admin';
       const lastName = result.profile.last_name || '';
-      const role = result.profile.role || 'admin';
+      const role = result.profile.role;
       const user: AdminUser = {
         id: result.profile.id,
         phone: result.profile.phone,
@@ -129,7 +191,7 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       setAdminUser(user);
       setIsAdminAuthenticated(true);
 
-      console.log('[AdminAuthContext] Login successful');
+      console.log('[AdminAuthContext] Login successful, admin role verified');
       return true;
     } catch (error) {
       console.error('[AdminAuthContext] Login error:', error);
@@ -142,12 +204,14 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       console.log('[AdminAuthContext] Logging out');
       await logoutAdmin();
       localStorage.removeItem(ADMIN_SESSION_KEY);
+      localStorage.removeItem(ADMIN_SUPABASE_SESSION_KEY);
       setAdminUser(null);
       setIsAdminAuthenticated(false);
       console.log('[AdminAuthContext] Logout successful');
     } catch (error) {
       console.error('[AdminAuthContext] Logout error:', error);
       localStorage.removeItem(ADMIN_SESSION_KEY);
+      localStorage.removeItem(ADMIN_SUPABASE_SESSION_KEY);
       setAdminUser(null);
       setIsAdminAuthenticated(false);
     }

@@ -13,12 +13,21 @@ export interface VerifyOtpInput {
  * Initiate OTP sign-in with phone number
  * Supabase will generate an OTP and send it via SMS
  */
+const normalizePhone = (phone: string) => {
+  if (!phone) throw new Error('missing_phone');
+  const trimmed = phone.trim();
+  if (trimmed.startsWith('+')) return trimmed;
+  const digits = trimmed.replace(/\D/g, '');
+  return `+${digits}`;
+};
+
 export async function signInWithOtp(input: SignInWithOtpInput) {
-  console.log('[otpService.signInWithOtp] START - phone:', input.phone);
+  const normalizedPhone = normalizePhone(input.phone);
+  console.log('[otpService.signInWithOtp] START - phone:', input.phone, 'normalized:', normalizedPhone);
 
   try {
     const { data, error } = await supabase.auth.signInWithOtp({
-      phone: input.phone,
+      phone: normalizedPhone,
     });
 
     if (error) {
@@ -47,11 +56,12 @@ export async function signInWithOtp(input: SignInWithOtpInput) {
  * This creates a session if the token is valid
  */
 export async function verifyOtp(input: VerifyOtpInput) {
-  console.log('[otpService.verifyOtp] START - phone:', input.phone, 'token:', input.token.substring(0, 3) + '***');
+  const normalizedPhone = normalizePhone(input.phone);
+  console.log('[otpService.verifyOtp] START - phone:', normalizedPhone, 'token:', input.token.substring(0, 3) + '***');
 
   try {
     const { data, error } = await supabase.auth.verifyOtp({
-      phone: input.phone,
+      phone: normalizedPhone,
       token: input.token,
       type: 'sms',
     });
@@ -65,7 +75,7 @@ export async function verifyOtp(input: VerifyOtpInput) {
       throw error;
     }
 
-    console.log('[otpService.verifyOtp] SUCCESS - OTP verified for phone:', input.phone);
+    console.log('[otpService.verifyOtp] SUCCESS - OTP verified for phone:', normalizedPhone);
     console.log('[otpService.verifyOtp] User details:', {
       userId: (data.user as any)?.id,
       userPhone: (data.user as any)?.phone,

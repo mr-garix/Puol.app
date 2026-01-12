@@ -71,11 +71,34 @@ export const verifyAdminOtp = async (phoneNumber: string, code: string) => {
     }
 
     console.log('[adminAuthService.verifyAdminOtp] OTP verified successfully');
+    console.log('[adminAuthService.verifyAdminOtp] Session data:', {
+      userId: data.user?.id,
+      sessionExists: !!data.session,
+    });
 
     // Vérifier que l'utilisateur a le rôle admin
     const adminProfile = await getAdminProfile(e164Phone);
     if (!adminProfile || adminProfile.role !== 'admin') {
       throw new Error('Unauthorized: User is not an admin');
+    }
+
+    // Sauvegarder la session Supabase pour les futures requêtes
+    if (data.session) {
+      console.log('[adminAuthService.verifyAdminOtp] Persisting Supabase session');
+      const { error: sessionError } = await supabase.auth.setSession(data.session);
+      if (sessionError) {
+        console.warn('[adminAuthService.verifyAdminOtp] Warning: Could not persist session:', sessionError);
+      } else {
+        console.log('[adminAuthService.verifyAdminOtp] Session persisted successfully');
+      }
+
+      // Sauvegarder la session dans localStorage pour la restaurer au redémarrage
+      try {
+        localStorage.setItem('puol_admin_supabase_session', JSON.stringify(data.session));
+        console.log('[adminAuthService.verifyAdminOtp] Supabase session saved to localStorage');
+      } catch (err) {
+        console.warn('[adminAuthService.verifyAdminOtp] Warning: Could not save session to localStorage:', err);
+      }
     }
 
     return {

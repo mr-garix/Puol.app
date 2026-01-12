@@ -1309,6 +1309,7 @@ export default function HostListingEditScreen() {
       };
 
       const roomsPayload = {
+        listing_id: isEditingExisting ? existingListing.listing.id : undefined,
         living_room: roomCounts.Salon ?? 0,
         bedrooms: roomCounts.Chambre ?? 0,
         kitchen: roomCounts.Cuisine ?? 0,

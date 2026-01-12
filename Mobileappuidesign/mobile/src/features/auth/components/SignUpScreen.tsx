@@ -161,86 +161,111 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
 
       console.log('[SignUpScreen.submitOtp] START - Verifying OTP for phone:', normalizedPhone);
       
-      // Vérifier les profils AVANT la vérification OTP
-      const { data: profilesBefore } = await supabase
-        .from('profiles')
-        .select('id, phone, first_name')
-        .eq('phone', normalizedPhone);
-      console.log('[SignUpScreen.submitOtp] Profiles BEFORE verifyOtp:', {
-        count: profilesBefore?.length,
-        profiles: profilesBefore?.map(p => ({ id: p.id, phone: p.phone }))
-      });
-      
+      // ✅ STEP 1: Vérifier l'OTP AVANT toute création de profil
+      console.log('[SignUpScreen.submitOtp] STEP 1: Verifying OTP token...');
       const verifyResult = await verifyOtp({ phone: normalizedPhone, token: fullCode });
-      console.log('[SignUpScreen.submitOtp] verifyOtp result:', {
-        success: verifyResult.success,
-        hasUser: !!verifyResult.data?.user,
-        hasSession: !!verifyResult.data?.session,
-      });
       
-      // Vérifier les profils APRÈS la vérification OTP
-      const { data: profilesAfter } = await supabase
-        .from('profiles')
-        .select('id, phone, first_name')
-        .eq('phone', normalizedPhone);
-      console.log('[SignUpScreen.submitOtp] Profiles AFTER verifyOtp:', {
-        count: profilesAfter?.length,
-        profiles: profilesAfter?.map(p => ({ id: p.id, phone: p.phone }))
-      });
-
-      // Vérifier si un profil existe déjà
-      let existingProfile = await findSupabaseProfileByPhone(normalizedPhone);
-      console.log('[SignUpScreen.submitOtp] Existing profile check:', { found: !!existingProfile, id: existingProfile?.id, phone: existingProfile?.phone });
-      
-      if (existingProfile) {
-        setErrorMessage('Ce numéro est déjà associé à un compte. Utilisez la connexion.');
-        setStep('phone');
+      if (!verifyResult.success) {
+        console.error('[SignUpScreen.submitOtp] OTP verification FAILED:', verifyResult);
+        setErrorMessage('Code invalide ou expiré.');
+        setOtp(['', '', '', '', '', '']);
+        otpRefs.current[0]?.focus();
+        setIsVerifying(false);
         return;
       }
 
-      // Créer le profil manuellement avec le numéro de téléphone comme ID
-      console.log('[SignUpScreen.submitOtp] Creating profile with phone as ID:', normalizedPhone);
+      console.log('[SignUpScreen.submitOtp] ✅ OTP verified successfully');
       
-      const { data: createdProfile, error: createError } = await supabase
+      // ✅ STEP 2: Vérifier que la session Supabase est établie AVANT de créer le profil
+      console.log('[SignUpScreen.submitOtp] STEP 2: Checking Supabase session...');
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      
+      if (!authSession) {
+        console.error('[SignUpScreen.submitOtp] ERROR - No session established after OTP verification');
+        setErrorMessage('Erreur d\'authentification. Veuillez réessayer.');
+        setIsVerifying(false);
+        return;
+      }
+
+      console.log('[SignUpScreen.submitOtp] ✅ Session established:', {
+        userId: (authSession.user as any)?.id,
+        userPhone: (authSession.user as any)?.phone,
+      });
+
+      // ✅ STEP 3: Vérifier si le profil existe déjà (utilisateur existant)
+      console.log('[SignUpScreen.submitOtp] STEP 3: Checking if profile already exists...', {
+        phone: normalizedPhone,
+      });
+      let existingProfile = await findSupabaseProfileByPhone(normalizedPhone);
+      
+      if (existingProfile) {
+        console.log('[SignUpScreen.submitOtp] ✅ Profile already exists (existing user)', {
+          profileId: existingProfile.id,
+        });
+        // Utilisateur existant - pas besoin de créer, juste se connecter
+        await refreshProfile();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        resetState();
+        onSuccess(existingProfile);
+        return;
+      }
+
+      // ✅ STEP 4: Créer le profil manuellement pour le nouvel utilisateur
+      console.log('[SignUpScreen.submitOtp] STEP 4: Creating new profile with form data', {
+        phone: normalizedPhone,
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+      });
+      
+      const timestamp = new Date().toISOString();
+      const { data: newProfile, error: createError } = await supabase
         .from('profiles')
         .insert({
           id: normalizedPhone,
           phone: normalizedPhone,
-          first_name: formData.firstName,
-          last_name: formData.lastName,
-          gender: formData.gender,
+          first_name: formData.firstName?.trim() || null,
+          last_name: formData.lastName?.trim() || null,
+          gender: formData.gender || null,
           role: 'guest',
           supply_role: 'none',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          created_at: timestamp,
+          updated_at: timestamp,
         })
         .select('*')
         .single();
 
       if (createError) {
         console.error('[SignUpScreen.submitOtp] Error creating profile:', createError);
-        throw createError;
+        setErrorMessage('Erreur lors de la création du profil.');
+        setIsVerifying(false);
+        return;
       }
-      
-      existingProfile = createdProfile;
-      console.log('[SignUpScreen.submitOtp] Profile created successfully with ID:', createdProfile?.id);
 
-      console.log('[SignUpScreen.submitOtp] Profile setup complete - verifying session');
+      if (!newProfile) {
+        console.error('[SignUpScreen.submitOtp] ERROR - Profile creation returned no data');
+        setErrorMessage('Erreur lors de la création du profil.');
+        setIsVerifying(false);
+        return;
+      }
+
+      console.log('[SignUpScreen.submitOtp] ✅ Profile created successfully', { id: newProfile.id });
       
-      // Vérifier que la session Supabase est bien établie
-      const { data: { session: finalSession } } = await supabase.auth.getSession();
-      console.log('[SignUpScreen.submitOtp] Final session check:', {
-        sessionExists: !!finalSession,
-        userPhone: (finalSession?.user as any)?.phone,
-      });
-      
-      if (!finalSession) {
-        console.error('[SignUpScreen.submitOtp] ERROR - No session after verifyOtp');
-        throw new Error('Session not established after OTP verification');
+      // ✅ STEP 4.5: Générer le username à partir du prénom/nom (après mise à jour)
+      console.log('[SignUpScreen.submitOtp] STEP 4.5: Generating username from first_name/last_name');
+      try {
+        const { ensureProfileUsername } = await import('@/src/features/auth/services/usernameService');
+        const updatedProfile = await findSupabaseProfileByPhone(normalizedPhone);
+        if (updatedProfile) {
+          await ensureProfileUsername(updatedProfile);
+          console.log('[SignUpScreen.submitOtp] ✅ Username generated successfully');
+        }
+      } catch (usernameError) {
+        console.warn('[SignUpScreen.submitOtp] Warning: Could not generate username', usernameError);
+        // Ne pas bloquer l'inscription si la génération du username échoue
       }
       
-      // Rafraîchir le profil via AuthContext
-      console.log('[SignUpScreen.submitOtp] Refreshing profile via AuthContext');
+      // ✅ STEP 5: Rafraîchir le profil via AuthContext
+      console.log('[SignUpScreen.submitOtp] STEP 5: Refreshing profile via AuthContext');
       await refreshProfile();
       
       // Attendre un peu pour que AuthContext se mette à jour
@@ -248,15 +273,17 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
       
       resetState();
       
-      // Retourner le profil créé
-      const finalProfile = await findSupabaseProfileByPhone(normalizedPhone);
-      console.log('[SignUpScreen.submitOtp] Final profile check:', { found: !!finalProfile });
-      if (finalProfile) {
-        console.log('[SignUpScreen.submitOtp] SUCCESS - Profile found, calling onSuccess');
-        onSuccess(finalProfile);
+      // ✅ STEP 6: Vérifier le profil final et appeler onSuccess
+      console.log('[SignUpScreen.submitOtp] STEP 6: Final verification and success callback');
+      const finalProfileAfterUpdate = await findSupabaseProfileByPhone(normalizedPhone);
+      
+      if (finalProfileAfterUpdate) {
+        console.log('[SignUpScreen.submitOtp] ✅ SUCCESS - Profile verified, calling onSuccess');
+        onSuccess(finalProfileAfterUpdate);
       } else {
         console.error('[SignUpScreen.submitOtp] FAILED - profile not found after creation');
-        throw new Error('Profile creation failed');
+        setErrorMessage('Erreur lors de la vérification du profil.');
+        setIsVerifying(false);
       }
     } catch (error) {
       console.error('[SignUpScreen] Supabase signup confirm error', error);

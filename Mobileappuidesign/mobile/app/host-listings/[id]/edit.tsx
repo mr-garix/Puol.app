@@ -729,6 +729,54 @@ export default function HostListingEditScreen() {
     }
   }, [ensureLeadVideo, existingListing, isCreateMode]);
 
+  // Listener Realtime sur listing_availability pour mettre à jour le calendrier en temps réel
+  useEffect(() => {
+    if (!existingListing || isCreateMode) {
+      return;
+    }
+
+    const listingId = existingListing.listing.id;
+    console.log('[HostListingEdit] Setting up Realtime listener for listing_availability:', listingId);
+
+    const subscription = supabase
+      .channel(`listing_availability:${listingId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'listing_availability',
+          filter: `listing_id=eq.${listingId}`,
+        },
+        async (payload) => {
+          console.log('[HostListingEdit] Realtime update received:', payload);
+          
+          // Recharger les données de disponibilité depuis Supabase
+          const { data: availabilityRows, error } = await supabase
+            .from('listing_availability')
+            .select('*')
+            .eq('listing_id', listingId)
+            .order('date', { ascending: true });
+
+          if (error) {
+            console.error('[HostListingEdit] Error fetching updated availability:', error);
+            return;
+          }
+
+          const { blocked, reserved } = mapAvailability(availabilityRows ?? []);
+          setBlockedDates(blocked);
+          setReservedDates(reserved);
+          console.log('[HostListingEdit] Calendar updated with new availability');
+        },
+      )
+      .subscribe();
+
+    return () => {
+      console.log('[HostListingEdit] Unsubscribing from Realtime listener');
+      subscription.unsubscribe();
+    };
+  }, [existingListing, isCreateMode]);
+
   useEffect(() => {
     if (addressDebounceRef.current) {
       clearTimeout(addressDebounceRef.current);

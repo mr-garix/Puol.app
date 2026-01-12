@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Search, MapPin, Clock, MoreVertical, CheckCircle, XCircle, Eye } from 'lucide-react';
+import { updateVisitStatus } from '@/lib/services/landlords';
+import { supabase } from '@/lib/supabaseClient';
 
 export type VisitStatus = 'pending' | 'confirmed' | 'cancelled';
 export type VisitPaymentStatus = 'paid' | 'pending' | 'refunded';
@@ -59,37 +61,110 @@ export function VisitsBoard({
   searchPlaceholder = 'Rechercher par propriété, visiteur, ville...',
 }: VisitsBoardProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [localVisits, setLocalVisits] = useState<VisitRecord[]>(visits);
 
-  const pendingCount = useMemo(() => visits.filter((v) => v.status === 'pending').length, [visits]);
-  const confirmedCount = useMemo(() => visits.filter((v) => v.status === 'confirmed').length, [visits]);
+  useEffect(() => {
+    setLocalVisits(visits);
+  }, [visits]);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    console.log('[VisitsBoard] Setting up realtime subscription for rental_visits');
+
+    const channel = (supabase as any)
+      .channel('rental-visits-changes-board')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rental_visits',
+        },
+        (payload: any) => {
+          console.log('[VisitsBoard] Visit changed:', payload);
+
+          if (payload.eventType === 'UPDATE') {
+            const updatedVisit = payload.new;
+            setLocalVisits((prev) =>
+              prev.map((visit) => {
+                if (visit.id === updatedVisit.id) {
+                  return {
+                    ...visit,
+                    status: updatedVisit.status as VisitStatus,
+                  };
+                }
+                return visit;
+              })
+            );
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[VisitsBoard] Realtime subscription status:', status);
+      });
+
+    return () => {
+      (supabase as any).removeChannel(channel);
+    };
+  }, []);
+
+  const handleCancelVisit = async (visit: VisitRecord) => {
+    console.log('[VisitsBoard] handleCancelVisit called for visit:', visit.id);
+    try {
+      console.log('[VisitsBoard] Calling updateVisitStatus with visitId:', visit.id, 'status: cancelled');
+      const result = await updateVisitStatus(visit.id, 'cancelled');
+      console.log('[VisitsBoard] updateVisitStatus result:', result);
+      if (!result.success) {
+        console.error('[VisitsBoard] Failed to cancel visit:', result.error);
+        alert('Erreur lors de l\'annulation de la visite: ' + result.error);
+      } else {
+        console.log('[VisitsBoard] Visit cancelled successfully');
+      }
+    } catch (error) {
+      console.error('[VisitsBoard] Exception cancelling visit:', error);
+      alert('Erreur lors de l\'annulation de la visite: ' + String(error));
+    }
+  };
+
+  const isVisitCompleted = (visit: VisitRecord): boolean => {
+    try {
+      const visitDate = new Date(visit.date);
+      return visitDate < new Date();
+    } catch {
+      return false;
+    }
+  };
+
+  const confirmedCount = useMemo(() => localVisits.filter((v) => v.status === 'confirmed').length, [localVisits]);
+  const cancelledCount = useMemo(() => localVisits.filter((v) => v.status === 'cancelled').length, [localVisits]);
+  const completedCount = useMemo(() => localVisits.filter((v) => isVisitCompleted(v)).length, [localVisits]);
 
   const filteredVisits = useMemo(
-    () =>
-      visits.filter(
+    () => {
+      const filtered = localVisits.filter(
         (v) =>
           v.property.toLowerCase().includes(searchQuery.toLowerCase()) ||
           v.visitor.toLowerCase().includes(searchQuery.toLowerCase()) ||
           v.city.toLowerCase().includes(searchQuery.toLowerCase()),
-      ),
-    [visits, searchQuery],
+      );
+      // Trier par date décroissante (les plus récentes en haut)
+      return filtered.sort((a, b) => {
+        try {
+          const dateA = new Date(a.date).getTime();
+          const dateB = new Date(b.date).getTime();
+          return dateB - dateA;
+        } catch {
+          return 0;
+        }
+      });
+    },
+    [localVisits, searchQuery],
   );
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-orange-100 rounded-xl">
-                <Clock className="w-5 h-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-2xl text-gray-900">{pendingCount}</p>
-                <p className="text-sm text-gray-600">En attente</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
@@ -107,11 +182,24 @@ export function VisitsBoard({
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-blue-100 rounded-xl">
-                <MapPin className="w-5 h-5 text-blue-600" />
+                <Clock className="w-5 h-5 text-blue-600" />
               </div>
               <div>
-                <p className="text-2xl text-gray-900">{visits.length}</p>
-                <p className="text-sm text-gray-600">Total</p>
+                <p className="text-2xl text-gray-900">{completedCount}</p>
+                <p className="text-sm text-gray-600">Terminées</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-red-100 rounded-xl">
+                <XCircle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <p className="text-2xl text-gray-900">{cancelledCount}</p>
+                <p className="text-sm text-gray-600">Annulées</p>
               </div>
             </div>
           </CardContent>
@@ -131,11 +219,14 @@ export function VisitsBoard({
           <TabsTrigger value="all" className="rounded-lg data-[state=active]:bg-white">
             Toutes ({visits.length})
           </TabsTrigger>
-          <TabsTrigger value="pending" className="rounded-lg data-[state=active]:bg-white">
-            En attente ({pendingCount})
-          </TabsTrigger>
           <TabsTrigger value="confirmed" className="rounded-lg data-[state=active]:bg-white">
             Confirmées ({confirmedCount})
+          </TabsTrigger>
+          <TabsTrigger value="completed" className="rounded-lg data-[state=active]:bg-white">
+            Terminées ({completedCount})
+          </TabsTrigger>
+          <TabsTrigger value="cancelled" className="rounded-lg data-[state=active]:bg-white">
+            Annulées ({cancelledCount})
           </TabsTrigger>
         </TabsList>
 
@@ -214,17 +305,14 @@ export function VisitsBoard({
                               <Eye className="w-4 h-4 mr-2" />
                               Voir détails
                             </DropdownMenuItem>
-                            {visit.status === 'pending' && (
-                              <>
-                                <DropdownMenuItem className="text-green-600">
-                                  <CheckCircle className="w-4 h-4 mr-2" />
-                                  Confirmer
-                                </DropdownMenuItem>
-                                <DropdownMenuItem className="text-red-600">
-                                  <XCircle className="w-4 h-4 mr-2" />
-                                  Annuler
-                                </DropdownMenuItem>
-                              </>
+                            {visit.status !== 'cancelled' && (
+                              <DropdownMenuItem 
+                                className="text-red-600"
+                                onClick={() => handleCancelVisit(visit)}
+                              >
+                                <XCircle className="w-4 h-4 mr-2" />
+                                Annuler
+                              </DropdownMenuItem>
                             )}
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -237,19 +325,27 @@ export function VisitsBoard({
           </Card>
         </TabsContent>
 
-        <TabsContent value="pending" className="mt-6">
-          <Card className="p-8 text-center">
-            <Clock className="w-12 h-12 mx-auto text-orange-500 mb-4" />
-            <h3 className="text-xl text-gray-900 mb-2">{pendingCount} visites en attente</h3>
-            <p className="text-gray-500">Délai auto-confirmation : prod (60 min) | test (20-30s)</p>
-          </Card>
-        </TabsContent>
-
         <TabsContent value="confirmed" className="mt-6">
           <Card className="p-8 text-center">
             <CheckCircle className="w-12 h-12 mx-auto text-green-500 mb-4" />
             <h3 className="text-xl text-gray-900 mb-2">{confirmedCount} visites confirmées</h3>
             <p className="text-gray-500">Visites programmées et validées</p>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="completed" className="mt-6">
+          <Card className="p-8 text-center">
+            <CheckCircle className="w-12 h-12 mx-auto text-blue-500 mb-4" />
+            <h3 className="text-xl text-gray-900 mb-2">{completedCount} visites terminées</h3>
+            <p className="text-gray-500">Visites dont la date est passée</p>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="cancelled" className="mt-6">
+          <Card className="p-8 text-center">
+            <XCircle className="w-12 h-12 mx-auto text-red-500 mb-4" />
+            <h3 className="text-xl text-gray-900 mb-2">{cancelledCount} visites annulées</h3>
+            <p className="text-gray-500">Visites annulées par l'utilisateur</p>
           </Card>
         </TabsContent>
       </Tabs>

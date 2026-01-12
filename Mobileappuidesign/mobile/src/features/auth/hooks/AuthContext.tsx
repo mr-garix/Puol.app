@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import React, {
   createContext,
   useCallback,
@@ -7,11 +9,12 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
-import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 
+import { STORAGE_KEYS } from '@/src/constants/storageKeys';
+import OneSignalService from '@/src/services/OneSignalService';
 import { supabase } from '@/src/supabaseClient';
 import type { Tables } from '@/src/types/supabase.generated';
-import { getOrCreateVisitorId, resetVisitorIdCache, deleteVisitorId } from '@/src/utils/visitorId';
+import { deleteVisitorId, getOrCreateVisitorId, resetVisitorIdCache } from '@/src/utils/visitorId';
 
 export type SupabaseProfile = Tables<'profiles'>;
 
@@ -81,6 +84,46 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       return null;
     }
   }, []);
+
+  const computeInactiveBucket = (days: number | null): string | null => {
+    if (days === null || Number.isNaN(days)) {
+      return null;
+    }
+    if (days <= 3) return '0-3';
+    if (days <= 7) return '4-7';
+    if (days <= 14) return '8-14';
+    if (days <= 30) return '15-30';
+    return '30+';
+  };
+
+  const buildOneSignalTags = useCallback(
+    async (profile: SupabaseProfile): Promise<Record<string, string>> => {
+      const tags: Record<string, string> = {};
+
+      tags.role = profile.role?.trim() || 'unknown';
+
+      try {
+        const { data: bookingRows, error: bookingsError } = await supabase
+          .from('bookings')
+          .select('status')
+          .eq('guest_profile_id', profile.id);
+
+        if (!bookingsError && bookingRows) {
+          const activeStatuses = ['pending', 'confirmed', 'in_progress'];
+          const hasActive = bookingRows.some((b) => activeStatuses.includes((b.status ?? '').toLowerCase()));
+          tags.status = hasActive ? 'active_booking' : 'idle';
+        } else {
+          tags.status = 'idle';
+        }
+      } catch (err) {
+        console.error('[AuthContext] Error determining booking status for tags', err);
+        tags.status = 'idle';
+      }
+
+      return tags;
+    },
+    [],
+  );
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
@@ -218,6 +261,43 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       void supabase.removeChannel(channel);
     };
   }, [supabaseProfile?.id]);
+
+  useEffect(() => {
+    console.log('[AuthContext] OneSignal sync effect triggered, profile id:', supabaseProfile?.id);
+    if (!supabaseProfile?.id) {
+      console.log('[AuthContext] No profile id, skipping OneSignal sync');
+      return;
+    }
+
+    const syncOneSignal = async () => {
+      console.log('[AuthContext] syncOneSignal START for profile:', supabaseProfile.id);
+      try {
+        // Step 1: Login to OneSignal (MUST be done first)
+        console.log('[AuthContext] Step 1: Logging in to OneSignal...');
+        await OneSignalService.identifyUser(supabaseProfile.id);
+        console.log('[AuthContext] Step 1: OneSignal login completed');
+
+        // Step 2: Build OneSignal tags (max 2 tags on free plan)
+        console.log('[AuthContext] Step 2: Building OneSignal tags...');
+        const oneSignalTags = await buildOneSignalTags(supabaseProfile);
+        console.log('[AuthContext] Step 2: OneSignal tags built:', oneSignalTags);
+
+        // Step 3: Apply tags
+        if (Object.keys(oneSignalTags).length > 0) {
+          console.log('[AuthContext] Step 3: Applying OneSignal tags...');
+          await OneSignalService.addTags(oneSignalTags);
+          console.log('[AuthContext] Step 3: OneSignal tags applied successfully');
+        } else {
+          console.log('[AuthContext] No tags to apply');
+        }
+        console.log('[AuthContext] syncOneSignal COMPLETE');
+      } catch (err) {
+        console.error('[AuthContext] Error syncing OneSignal tags', err);
+      }
+    };
+
+    void syncOneSignal();
+  }, [buildOneSignalTags, supabaseProfile]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

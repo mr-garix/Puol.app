@@ -28,11 +28,12 @@ import {
   fetchLandlordListingDetail,
   fetchLandlordApplications,
   fetchLandlordVisits,
+  updateVisitStatus,
   resolveSegment,
   type LandlordProfileData,
   type LandlordBoardListing,
-  type LandlordListingDetail,
 } from '@/lib/services/landlords';
+import type { LandlordListingDetail } from '../UsersManagement';
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { RefreshCw } from 'lucide-react';
 
@@ -385,6 +386,24 @@ export function LandlordsSection() {
   }, []);
 
   const formatTime = (date: Date) => date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  const handleCancelVisit = async (visit: VisitRecord) => {
+    console.log('[LandlordsSection] handleCancelVisit called for visit:', visit.id);
+    try {
+      console.log('[LandlordsSection] Calling updateVisitStatus with visitId:', visit.id, 'status: cancelled');
+      const result = await updateVisitStatus(visit.id, 'cancelled');
+      console.log('[LandlordsSection] updateVisitStatus result:', result);
+      if (!result.success) {
+        console.error('[LandlordsSection] Failed to cancel visit:', result.error);
+        alert('Erreur lors de l\'annulation de la visite: ' + result.error);
+      } else {
+        console.log('[LandlordsSection] Visit cancelled successfully');
+      }
+    } catch (error) {
+      console.error('[LandlordsSection] Exception cancelling visit:', error);
+      alert('Erreur lors de l\'annulation de la visite: ' + String(error));
+    }
+  };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -799,6 +818,7 @@ export function LandlordsSection() {
               <VisitsBoard
                 visits={liveLandlordVisits}
                 searchPlaceholder="Filtrer par bien, client ou ville..."
+                onCancelVisit={handleCancelVisit}
               />
             )}
           </div>

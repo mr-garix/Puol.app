@@ -17,6 +17,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { STORAGE_KEYS } from '@/src/constants/storageKeys';
+import { OneSignalService } from '@/src/services/OneSignalService';
 
 const PRIMARY = '#2ECC71';
 const { height } = Dimensions.get('window');
@@ -28,6 +29,9 @@ type Option = {
   icon: any;
   iconBg: string;
 };
+
+const NOTIFICATION_PERMISSION_KEY = 'notification_permission_accepted';
+const NOTIFICATION_PERMISSION_DENIED_KEY = 'notification_permission_denied';
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -41,6 +45,29 @@ export default function OnboardingScreen() {
   const titleTranslateY = useRef(new Animated.Value(20)).current;
   const footerOpacity = useRef(new Animated.Value(0)).current;
   const backNavigationInFlightRef = useRef(false);
+
+  // Demander la permission de notifications iOS dès l'affichage de l'onboarding
+  useEffect(() => {
+    console.log('[Onboarding] useEffect: Calling OneSignalService.requestPermission()');
+    OneSignalService.requestPermission()
+      .then(async (result) => {
+        console.log('[Onboarding] requestPermission result:', result);
+        try {
+          if (result) {
+            await AsyncStorage.setItem(NOTIFICATION_PERMISSION_KEY, 'true');
+            await AsyncStorage.removeItem(NOTIFICATION_PERMISSION_DENIED_KEY);
+          } else {
+            await AsyncStorage.setItem(NOTIFICATION_PERMISSION_DENIED_KEY, 'true');
+            await AsyncStorage.removeItem(NOTIFICATION_PERMISSION_KEY);
+          }
+        } catch (storageError) {
+          console.error('[Onboarding] Failed to persist notification permission flags:', storageError);
+        }
+      })
+      .catch((error) => {
+        console.error('[Onboarding] requestPermission error:', error);
+      });
+  }, []);
 
   useEffect(() => {
     Animated.parallel([

@@ -3,6 +3,7 @@ export const STORAGE_KEYS = {
   USER_ROLE: 'puol:user_role',
   RENTAL_PREFERENCES: 'puol:rental_preferences',
   RENTAL_PREFERENCES_COMPLETED: 'puol:rental_preferences_completed',
+  FIRST_OPEN_DONE: 'puol:first_open_done',
   HOST_APPLICATION_COMPLETED: 'puol:host_application_completed',
   HOST_PROFILE: 'puol:host_profile',
   HOST_VERIFICATION_STATUS: 'puol:host_verification_status',

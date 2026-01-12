@@ -1878,6 +1878,34 @@ export type LandlordMetricsResult = {
   totalLandlordsCount: number;
 };
 
+export async function updateVisitStatus(visitId: string, status: string): Promise<{ success: boolean; error?: string }> {
+  if (!supabase) {
+    console.warn('[landlords] Supabase client unavailable');
+    return { success: false, error: 'Supabase client unavailable' };
+  }
+
+  try {
+    const client = supabase as SupabaseClient<Database>;
+    console.log('[landlords] Updating visit', visitId, 'to status:', status);
+    
+    const { error } = await client
+      .from('rental_visits')
+      .update({ status })
+      .eq('id', visitId);
+
+    if (error) {
+      console.warn('[landlords] updateVisitStatus error', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('[landlords] Visit updated successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('[landlords] updateVisitStatus failed', error);
+    return { success: false, error: String(error) };
+  }
+}
+
 export async function fetchLandlordRentalMetrics(): Promise<LandlordMetricsResult> {
   if (!supabase) {
     console.warn('[landlords] Supabase client unavailable');

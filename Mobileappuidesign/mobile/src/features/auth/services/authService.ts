@@ -42,21 +42,25 @@ export async function verifyOtp(
   code: string,
   options: VerifyOtpOptions = {},
 ): Promise<{ success: boolean; error?: string; user?: AuthUser }> {
-  const { createProfileIfMissing = true } = options;
+  const { createProfileIfMissing = false } = options;
   const sanitizedPhone = phone?.trim();
   const sanitizedCode = code?.trim();
   if (!sanitizedPhone || !sanitizedCode) {
     return { success: false, error: 'missing_phone_or_code' };
   }
 
-  console.log('[authService.verifyOtp] START - phone:', sanitizedPhone);
+  const normalizedPhone = sanitizedPhone.startsWith('+')
+    ? sanitizedPhone
+    : `+${sanitizedPhone.replace(/\D/g, '')}`;
+
+  console.log('[authService.verifyOtp] START - phone:', normalizedPhone);
 
   const now = new Date().toISOString();
 
   const { data: otpRow, error: otpError } = await supabase
     .from('otp_codes')
     .select('id, phone, code, expires_at')
-    .eq('phone', sanitizedPhone)
+    .eq('phone', normalizedPhone)
     .eq('code', sanitizedCode)
     .gt('expires_at', now)
     .eq('consumed', false)
@@ -70,11 +74,11 @@ export async function verifyOtp(
   console.log('[authService.verifyOtp] OTP valid, deleting OTP code');
   await supabase.from('otp_codes').delete().eq('id', otpRow.id);
 
-  console.log('[authService.verifyOtp] Looking for existing profile with phone:', sanitizedPhone);
+  console.log('[authService.verifyOtp] Looking for existing profile with phone:', normalizedPhone);
   const { data: allProfiles, error: profileError } = await supabase
     .from('profiles')
     .select('*')
-    .eq('phone', sanitizedPhone);
+    .eq('phone', normalizedPhone);
 
   if (profileError) {
     console.error('[authService.verifyOtp] Profile lookup error:', profileError);
@@ -86,7 +90,6 @@ export async function verifyOtp(
     profiles: allProfiles?.map(p => ({ id: p.id, phone: p.phone, first_name: p.first_name }))
   });
 
-  // Si plusieurs profils existent, prendre le premier (celui créé par le trigger avec UUID)
   const existingProfile = allProfiles?.[0];
 
   if (existingProfile) {
@@ -94,32 +97,13 @@ export async function verifyOtp(
     return { success: true, user: existingProfile as AuthUser };
   }
 
+  console.log('[authService.verifyOtp] Profile not found - relying on trigger only (no manual creation)');
   if (!createProfileIfMissing) {
-    console.log('[authService.verifyOtp] Profile not found and createProfileIfMissing is false');
     return { success: false, error: 'profile_not_found' };
   }
 
-  console.log('[authService.verifyOtp] Profile not found, creating it with phone as ID');
-  // Créer le profil manuellement avec le numéro de téléphone comme ID
-  const { data: createdProfile, error: createError } = await supabase
-    .from('profiles')
-    .insert({
-      id: sanitizedPhone,
-      phone: sanitizedPhone,
-      supply_role: 'none',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select('*')
-    .single();
-
-  if (createError) {
-    console.error('[authService.verifyOtp] Error creating profile:', createError);
-    return { success: false, error: 'profile_creation_failed' };
-  }
-
-  console.log('[authService.verifyOtp] Profile created successfully');
-  return { success: true, user: createdProfile as AuthUser };
+  // Même si on nous demande explicitement, on ne crée plus manuellement pour éviter les doublons.
+  return { success: false, error: 'profile_not_found' };
 }
 
 export async function updateProfileDetails(

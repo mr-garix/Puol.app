@@ -34,6 +34,7 @@ import {
   fetchHostVisits,
   type HostBoardListing,
 } from '@/lib/services/hosts';
+import { updateVisitStatus } from '@/lib/services/landlords';
 import { isSupabaseConfigured } from '@/lib/supabaseClient';
 import { RefreshCw } from 'lucide-react';
 
@@ -395,6 +396,24 @@ export function HostsSection() {
 
   const formatTime = (date: Date) => date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
+  const handleCancelVisit = async (visit: VisitRecord) => {
+    console.log('[HostsSection] handleCancelVisit called for visit:', visit.id);
+    try {
+      console.log('[HostsSection] Calling updateVisitStatus with visitId:', visit.id, 'status: cancelled');
+      const result = await updateVisitStatus(visit.id, 'cancelled');
+      console.log('[HostsSection] updateVisitStatus result:', result);
+      if (!result.success) {
+        console.error('[HostsSection] Failed to cancel visit:', result.error);
+        alert('Erreur lors de l\'annulation de la visite: ' + result.error);
+      } else {
+        console.log('[HostsSection] Visit cancelled successfully');
+      }
+    } catch (error) {
+      console.error('[HostsSection] Exception cancelling visit:', error);
+      alert('Erreur lors de l\'annulation de la visite: ' + String(error));
+    }
+  };
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     setStatsState(prev => ({ ...prev, isLoading: true }));
@@ -697,7 +716,7 @@ export function HostsSection() {
                 </CardContent>
               </Card>
             )}
-            <VisitsBoard visits={liveHostVisits} searchPlaceholder="Rechercher par propriété, client, ville..." />
+            <VisitsBoard visits={liveHostVisits} searchPlaceholder="Rechercher par propriété, client, ville..." onCancelVisit={handleCancelVisit} />
           </div>
         );
       case 'messages':

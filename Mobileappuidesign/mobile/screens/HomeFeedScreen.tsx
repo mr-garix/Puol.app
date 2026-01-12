@@ -56,6 +56,9 @@ import { trackListingView } from '@/src/features/listings/services/viewService';
 import type { SearchCriteria } from '@/src/types/search';
 import { searchListings, type SearchResultCard } from '@/src/utils/searchResults';
 import { usePreloadedVideo } from '@/src/contexts/PreloadContext';
+import { OneSignalService } from '@/src/services/OneSignalService';
+import { NotificationPermissionModal } from '@/src/components/ui/NotificationPermissionModal';
+import { useNotificationPermission } from '@/src/hooks/useNotificationPermission';
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 const PUOL_GREEN = '#2ECC71';
@@ -182,6 +185,9 @@ export default function HomeScreen() {
   const [activeTopTab, setActiveTopTab] = useState<'explorer' | 'pourToi'>('pourToi');
   const topTabAnim = useRef(new Animated.Value(1)).current; // 0 = explorer, 1 = pourToi
 
+  // Notification permission hook
+  const { showModal, handleAcceptNotifications, handleDismissModal } = useNotificationPermission();
+
   const [mediaIndexById, setMediaIndexById] = useState<Record<string, number>>({});
   const [videoPlaybackState, setVideoPlaybackState] = useState<Record<string, boolean>>({});
   const activeVideoKeyRef = useRef<string | null>(null);
@@ -284,6 +290,16 @@ export default function HomeScreen() {
 
     pendingListingIdRef.current = null;
   }, [propertyListings, supabaseProfile?.id]);
+
+  // Identifier l'utilisateur OneSignal quand il arrive au feed (permission déjà demandée sur onboarding)
+  useEffect(() => {
+    if (!isFeedFocused || !supabaseProfile?.id) {
+      return;
+    }
+
+    // Identifier l'utilisateur (la permission a déjà été demandée sur l'écran onboarding)
+    OneSignalService.identifyUser(supabaseProfile.id);
+  }, [isFeedFocused, supabaseProfile?.id]);
 
   const {
     comments,
@@ -790,7 +806,7 @@ export default function HomeScreen() {
     });
   };
 
-  const handleCardTap = (listingId: string, onSingleTap: () => void) => {
+  const handleCardTap = (listingId: string, onSingleTap: () => void, isVideoPlayToggle: boolean = false) => {
     const now = Date.now();
 
     if (singleTapTimeoutRef.current) {
@@ -798,6 +814,7 @@ export default function HomeScreen() {
       singleTapTimeoutRef.current = null;
     }
 
+    // Vérifier si c'est un double-tap (peu importe si c'est vidéo ou pas)
     if (lastTapRef.current && now - lastTapRef.current < DOUBLE_TAP_DELAY_MS) {
       lastTapRef.current = 0;
       handleToggleLike(listingId);
@@ -805,6 +822,17 @@ export default function HomeScreen() {
     }
 
     lastTapRef.current = now;
+
+    // Pour la pause/lecture vidéo, exécuter instantanément sans attendre le double-tap
+    if (isVideoPlayToggle) {
+      onSingleTap();
+      singleTapTimeoutRef.current = setTimeout(() => {
+        singleTapTimeoutRef.current = null;
+        lastTapRef.current = 0;
+      }, DOUBLE_TAP_DELAY_MS);
+      return;
+    }
+
     singleTapTimeoutRef.current = setTimeout(() => {
       onSingleTap();
       singleTapTimeoutRef.current = null;
@@ -962,7 +990,7 @@ export default function HomeScreen() {
                     if (mediaItem.type === 'video') {
                       toggleVideoPlayback(listing.id, mediaItem.id);
                     }
-                  });
+                  }, mediaItem.type === 'video');
                 };
 
                 return (
@@ -975,7 +1003,7 @@ export default function HomeScreen() {
                         if (mediaItem.type === 'video') {
                           toggleVideoPlayback(listing.id, mediaItem.id);
                         }
-                      })
+                      }, mediaItem.type === 'video')
                     }
                   >
                     {mediaItem.type === 'video' ? (
@@ -1551,6 +1579,13 @@ export default function HomeScreen() {
       />
 
       <SearchModal visible={isSearchVisible} onClose={handleCloseSearch} onSearch={handleSearchSubmit} />
+
+      {/* Modale de permission pour les notifications */}
+      <NotificationPermissionModal
+        visible={showModal}
+        onAccept={handleAcceptNotifications}
+        onDismiss={handleDismissModal}
+      />
 
       {(() => {
         const currentListing = propertyListings[activeListingIdx] ?? propertyListings[0];

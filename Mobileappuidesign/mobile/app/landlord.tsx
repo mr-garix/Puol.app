@@ -135,7 +135,7 @@ export default function BecomeLandlordScreen() {
         const { country, nationalNumber } = parseE164PhoneNumber(normalizedPhone);
         return `${country.dialCode} ${nationalNumber}`.trim();
       })()
-    : `${phoneCountry.dialCode} ${phoneNumber}`.trim();
+    : phoneNumber.trim() ? `${phoneCountry.dialCode} ${phoneNumber}`.trim() : '';
 
   const canSubmit =
     firstName.trim().length > 1 &&
@@ -592,50 +592,66 @@ export default function BecomeLandlordScreen() {
           throw new Error('OTP verification failed');
         }
 
-        const normalizedPhone = phoneNumber;
+        // phoneNumber reçu du modal est déjà en E.164 (verificationPhone). Si le modal passe un national, on re-formate.
+        const normalizedPhone =
+          phoneNumber.startsWith('+') && phoneNumber.length > phoneCountry.dialCode.length
+            ? phoneNumber
+            : formatE164PhoneNumber(phoneNumber, phoneCountry) ?? phoneNumber;
 
-        // Chercher si un profil existe déjà avec ce numéro de téléphone
-        console.log('[BecomeLandlord] Checking if profile exists...');
-        const { data: allProfiles } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('phone', normalizedPhone);
-        
-        console.log('[BecomeLandlord] All profiles with this phone:', {
-          count: allProfiles?.length,
-          profiles: allProfiles?.map(p => ({ id: p.id, phone: p.phone }))
+        // ✅ STEP 3: Vérifier si le profil existe déjà (utilisateur existant)
+        console.log('[BecomeLandlord] STEP 3: Checking if profile already exists...', {
+          phone: normalizedPhone,
         });
-
-        let targetProfile = allProfiles?.[0];
-
+        let targetProfile = await findSupabaseProfileByPhone(normalizedPhone);
+        
         if (!targetProfile) {
-          console.log('[BecomeLandlord] No profile found - creating with phone as ID');
-          // Créer le profil manuellement avec le numéro de téléphone comme ID
-          const { data: createdProfile, error: createError } = await supabase
+          // ✅ STEP 4: Créer le profil manuellement pour le nouvel utilisateur
+          console.log('[BecomeLandlord] STEP 4: Creating new profile with form data', {
+            phone: normalizedPhone,
+            firstName,
+            lastName,
+          });
+          
+          const timestamp = new Date().toISOString();
+          const { data: newProfile, error: createError } = await supabase
             .from('profiles')
             .insert({
               id: normalizedPhone,
               phone: normalizedPhone,
-              first_name: firstName,
-              last_name: lastName,
+              first_name: firstName?.trim() || null,
+              last_name: lastName?.trim() || null,
+              gender: null,
               role: 'guest',
               supply_role: 'landlord',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
+              created_at: timestamp,
+              updated_at: timestamp,
             })
             .select('*')
             .single();
 
           if (createError) {
             console.error('[BecomeLandlord] Error creating profile:', createError);
-            throw createError;
+            setVerificationError('Erreur lors de la création du profil.');
+            setIsSubmitting(false);
+            return;
           }
 
-          console.log('[BecomeLandlord] Profile created successfully with ID:', createdProfile?.id);
-          targetProfile = createdProfile;
+          if (!newProfile) {
+            console.error('[BecomeLandlord] ERROR - Profile creation returned no data');
+            setVerificationError('Erreur lors de la création du profil.');
+            setIsSubmitting(false);
+            return;
+          }
+
+          console.log('[BecomeLandlord] ✅ Profile created successfully', { id: newProfile.id });
+          targetProfile = newProfile;
         } else {
-          console.log('[BecomeLandlord] Profile exists - updating with form info, ID:', targetProfile.id);
-          // Mettre à jour le profil existant avec les informations du formulaire
+          console.log('[BecomeLandlord] ✅ Profile already exists (existing user)', {
+            profileId: targetProfile.id,
+          });
+          
+          // Mettre à jour le profil existant avec les infos du formulaire
+          console.log('[BecomeLandlord] Updating existing profile with form info, ID:', targetProfile.id);
           const { error: updateError } = await supabase
             .from('profiles')
             .update({
@@ -651,6 +667,13 @@ export default function BecomeLandlordScreen() {
             throw updateError;
           }
           console.log('[BecomeLandlord] Profile updated successfully');
+        }
+
+        if (!targetProfile) {
+          console.error('[BecomeLandlord] ERROR - targetProfile is null after creation/update');
+          setVerificationError('Erreur lors de la création du profil.');
+          setIsSubmitting(false);
+          return;
         }
 
         console.log('[BecomeLandlord] Profile ready:', targetProfile.id);
@@ -856,7 +879,10 @@ export default function BecomeLandlordScreen() {
                   placeholderTextColor="#9CA3AF"
                   keyboardType="phone-pad"
                   value={phoneNumber}
-                  onChangeText={(value) => setPhoneNumber(sanitizeNationalNumber(value, phoneCountry))}
+                  onChangeText={(text) => {
+                    const sanitizedValue = sanitizeNationalNumber(text, phoneCountry);
+                    setPhoneNumber(sanitizedValue);
+                  }}
                 />
               </View>
             </View>

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { StatusBar as NativeStatusBar, useColorScheme } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { Asset } from 'expo-asset';
+import Constants from 'expo-constants';
+import OneSignal from 'react-native-onesignal';
+import { OneSignalService } from '@/src/services/OneSignalService';
 
 import VisitNotificationBridge from '@/src/infrastructure/notifications/VisitNotificationBridge';
 import HostBookingNotificationBridge from '@/src/infrastructure/notifications/HostBookingNotificationBridge';
@@ -18,6 +21,7 @@ import UserReviewReplyNotificationBridge from '@/src/infrastructure/notification
 import GuestCancellationNotificationBridge from '@/src/infrastructure/notifications/GuestCancellationNotificationBridge';
 import NotificationHost from '@/src/infrastructure/notifications/NotificationHost';
 import ApplicationStatusNotificationBridge from '@/src/infrastructure/notifications/ApplicationStatusNotificationBridge';
+import NotificationSyncOnFocus from '@/src/infrastructure/notifications/NotificationSyncOnFocus';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
 import { ReservationProvider } from '@/src/contexts/ReservationContext';
 import { AuthProvider } from '@/src/contexts/AuthContext';
@@ -133,6 +137,17 @@ function PreloadManager() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const router = useRouter();
+  const isOneSignalSupported = Constants.appOwnership !== 'expo';
+
+  useEffect(() => {
+    // Initialiser OneSignal au démarrage
+    if (!isOneSignalSupported) {
+      console.log('[RootLayout] Skipping OneSignal initialization (Expo Go / unsupported env)');
+      return;
+    }
+    OneSignalService.initialize();
+  }, [isOneSignalSupported]);
 
   useEffect(() => {
     NativeStatusBar.setHidden(false, 'fade');
@@ -140,6 +155,88 @@ export default function RootLayout() {
       NativeStatusBar.setHidden(false, 'fade');
     };
   }, []);
+
+  // 🔔 Gestionnaire de navigation depuis les notifications (fallback)
+  // Le handler principal est dans OneSignalService.setupNotificationHandlers()
+  // Celui-ci est un fallback supplémentaire pour s'assurer que la navigation fonctionne
+  useEffect(() => {
+    if (!isOneSignalSupported) {
+      console.log('[RootLayout] Skipping OneSignal fallback handler (unsupported env)');
+      return;
+    }
+
+    console.log('[RootLayout] Setting up OneSignal notification click handler (fallback)');
+
+    // Attendre que OneSignal soit disponible
+    const setupHandler = async () => {
+      let retries = 0;
+      const maxRetries = 40; // 20 secondes max (40 * 500ms)
+
+      while (retries < maxRetries) {
+        // @ts-ignore
+        if (OneSignal && OneSignal.Notifications && typeof OneSignal.Notifications.addEventListener === 'function') {
+          console.log('[RootLayout] OneSignal is ready, registering fallback click handler');
+
+          try {
+            // @ts-ignore
+            OneSignal.Notifications.addEventListener('click', (event: any) => {
+              try {
+                console.log('[RootLayout] Notification clicked (fallback handler):', JSON.stringify(event, null, 2));
+
+                // Chercher la route dans plusieurs endroits possibles
+                let route: string | undefined;
+                
+                if (event?.notification?.additionalData?.route) {
+                  route = event.notification.additionalData.route;
+                  console.log('[RootLayout] Route found in additionalData');
+                } else if (event?.notification?.data?.route) {
+                  route = event.notification.data.route;
+                  console.log('[RootLayout] Route found in data');
+                } else if (event?.notification?.route) {
+                  route = event.notification.route;
+                  console.log('[RootLayout] Route found in notification');
+                } else if (event?.route) {
+                  route = event.route;
+                  console.log('[RootLayout] Route found in event');
+                }
+
+                console.log('[RootLayout] Route extracted:', route);
+
+                if (route && typeof route === 'string' && route.length > 0) {
+                  console.log('[RootLayout] ✅ Navigating to route:', route);
+                  try {
+                    router.push(route as any);
+                  } catch (navError) {
+                    console.error('[RootLayout] Navigation error:', navError);
+                  }
+                } else {
+                  console.warn('[RootLayout] ⚠️ No valid route in notification');
+                  console.log('[RootLayout] Available keys:', Object.keys(event?.notification || {}));
+                }
+              } catch (handlerError) {
+                console.error('[RootLayout] Error in fallback click handler:', handlerError);
+              }
+            });
+
+            console.log('[RootLayout] ✅ Fallback click handler registered');
+            break;
+          } catch (error) {
+            console.error('[RootLayout] Error registering fallback handler:', error);
+            break;
+          }
+        }
+
+        retries++;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      if (retries >= maxRetries) {
+        console.warn('[RootLayout] ⚠️ OneSignal not ready after 20 seconds - proceeding anyway');
+      }
+    };
+
+    setupHandler();
+  }, [isOneSignalSupported, router]);
 
   return (
     <PreloadProvider>
@@ -183,7 +280,6 @@ export default function RootLayout() {
                         <Stack.Screen name="profile/[profileId]" options={{ headerShown: false }} />
                         <Stack.Screen name="property/[id]" options={{ headerShown: false }} />
                         <Stack.Screen name="property/[id]/reviews" options={{ headerShown: false }} />
-                        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
                         <Stack.Screen name="visits/index" options={{ headerShown: false }} />
                         <Stack.Screen name="visits/[id]" options={{ headerShown: false }} />
                         <Stack.Screen name="reservations/index" options={{ headerShown: false }} />
@@ -207,6 +303,7 @@ export default function RootLayout() {
                       <UserReviewReplyNotificationBridge />
                       <GuestCancellationNotificationBridge />
                       <ApplicationStatusNotificationBridge />
+                      <NotificationSyncOnFocus />
                       <NotificationHost />
                       <RemainingPaymentHandler />
                     </ThemeProvider>

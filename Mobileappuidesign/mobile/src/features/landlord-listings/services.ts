@@ -255,6 +255,17 @@ export const saveListingMedia = async ({
   coverUri?: string | null;
   deleteExisting?: boolean;
 }) => {
+  // Supprimer les anciens médias AVANT de construire les nouvelles lignes
+  if (deleteExisting) {
+    const { error: deleteError } = await supabase
+      .from('listing_media')
+      .delete()
+      .eq('listing_id', listingId);
+    if (deleteError) {
+      throw buildSupabaseError('saveListingMedia.delete', deleteError);
+    }
+  }
+
   const mediaRows = await buildMediaRowsForSave(listingId, media ?? []);
 
   const coverUrl = await ensureCoverUrl(listingId, coverUri);
@@ -265,16 +276,6 @@ export const saveListingMedia = async ({
       .eq('id', listingId);
     if (coverError) {
       throw buildSupabaseError('saveListingMedia.updateCover', coverError);
-    }
-  }
-
-  if (deleteExisting) {
-    const { error: deleteError } = await supabase
-      .from('listing_media')
-      .delete()
-      .eq('listing_id', listingId);
-    if (deleteError) {
-      throw buildSupabaseError('saveListingMedia.delete', deleteError);
     }
   }
 
@@ -442,7 +443,7 @@ export const getLandlordListingsByProfileId = async (profileId: string): Promise
 
   // Pour chaque annonce, récupérer les relations
   const listingsWithRelations = await Promise.all(
-    listings.map(async (listing) => {
+    listings.map(async (listing: ListingRow) => {
       const [
         { data: rooms },
         { data: features },
@@ -495,9 +496,14 @@ export const getLandlordListingsByProfileId = async (profileId: string): Promise
 };
 
 export const upsertListingRooms = async (listingId: string, rooms: InsertListingRoom) => {
+  const payload = {
+    ...rooms,
+    listing_id: rooms.listing_id || listingId,
+  };
+  
   const { data, error } = await supabase
     .from('listing_rooms')
-    .upsert({ ...rooms, listing_id: listingId })
+    .upsert(payload, { onConflict: 'listing_id' })
     .select()
     .single();
 
