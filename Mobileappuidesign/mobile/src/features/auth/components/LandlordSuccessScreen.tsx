@@ -31,8 +31,7 @@ export const LandlordSuccessScreen: React.FC<LandlordSuccessScreenProps> = ({ on
       </View>
       <Text style={styles.title}>Demande envoyée !</Text>
       <Text style={styles.subtitle}>
-        Votre demande pour devenir bailleur PUOL a bien été envoyée. Notre équipe vous contactera sur WhatsApp pour
-        finaliser la vérification.
+        Votre demande pour devenir bailleur PUOL a bien été envoyée. Vous pouvez maintenant accéder à votre tableau de bord.
       </Text>
       <TouchableOpacity style={styles.button} onPress={handleGoToDashboard}>
         <Text style={styles.buttonText}>Accéder à mon tableau de bord</Text>

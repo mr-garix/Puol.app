@@ -1,4 +1,5 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import { PaymentModal } from '../../payments/components/PaymentModal';
 import { useAuth } from '@/src/contexts/AuthContext';
 
@@ -8,7 +9,7 @@ interface BookingPaymentDialogProps {
   onSuccess: () => void;
   hostProfileId: string;
   customerPrice: number; // Prix payé par le client (prix affiché)
-  bookingId?: string;
+  bookingId: string;
 }
 
 export const BookingPaymentDialog: React.FC<BookingPaymentDialogProps> = ({
@@ -20,6 +21,12 @@ export const BookingPaymentDialog: React.FC<BookingPaymentDialogProps> = ({
   bookingId
 }) => {
   const { supabaseProfile } = useAuth();
+
+  if (!bookingId) {
+    console.error('[BookingPaymentDialog] ❌ bookingId manquant, impossible de lancer le paiement');
+    Alert.alert('Paiement', 'Réservation introuvable. Relance la création avant de payer.');
+    return null;
+  }
 
   return (
     <PaymentModal

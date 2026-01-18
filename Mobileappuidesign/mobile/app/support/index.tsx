@@ -260,11 +260,6 @@ export default function ContactSupportScreen() {
               multiline
             />
 
-            <TouchableOpacity style={styles.attachmentButton} activeOpacity={0.85}>
-              <Feather name="image" size={16} color={PRIMARY} />
-              <Text style={styles.attachmentButtonText}>Ajouter une capture ou un document</Text>
-            </TouchableOpacity>
-
             <TouchableOpacity
               style={[styles.submitButton, !canSend && styles.submitButtonDisabled]}
               onPress={handleSend}
@@ -280,48 +275,7 @@ export default function ContactSupportScreen() {
           </View>
         </View>
 
-        <View style={styles.section}>
-          <View style={styles.threadHeader}>
-            <Text style={styles.sectionLabel}>Derniers échanges</Text>
-            {hasNewSupportReply ? (
-              <Text style={styles.threadHint}>Nouvelle réponse détectée, voyez le bas de la page.</Text>
-            ) : (
-              <TouchableOpacity activeOpacity={0.8}>
-                <Text style={styles.threadSeeAll}>Tout voir</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {threads.map((thread) => (
-            <TouchableOpacity
-              key={thread.id}
-              style={[styles.threadCard, thread.isNew && styles.threadCardNew]}
-              activeOpacity={0.9}
-              onPress={() => router.push(`/support/${thread.id}` as never)}
-            >
-              <View style={styles.threadBadge}>
-                <Feather name="message-circle" size={18} color={PRIMARY} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.threadTitle}>{thread.title}</Text>
-                <Text style={styles.threadMeta}>
-                  {thread.lastResponse} • {thread.timestamp}
-                </Text>
-                <Text style={styles.threadExcerpt}>{thread.excerpt}</Text>
-              </View>
-              <View>
-                <View style={[styles.threadStatus, thread.status === 'Résolu' ? styles.threadStatusSuccess : styles.threadStatusPending]}>
-                  <Text style={styles.threadStatusText}>{thread.status}</Text>
-                </View>
-                {thread.isNew && (
-                  <View style={styles.newThreadBadge}>
-                    <Text style={styles.newThreadBadgeText}>Nouvelle réponse</Text>
-                  </View>
-                )}
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {/* Section "Derniers échanges" désactivée pour cette version */}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

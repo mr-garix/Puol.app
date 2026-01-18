@@ -36,10 +36,10 @@ export const VisitPaymentDialog: React.FC<VisitPaymentDialogProps> = ({
       amount={5000} // Prix fixe pour les visites
       title="Payer la visite"
       description="Confirmez votre paiement pour la visite"
-      purpose="visit"
+      purpose="visite"
       payerProfileId={supabaseProfile?.id}
-      hostProfileId={hostProfileId}
       relatedId={visitId}
+      customerPhone={supabaseProfile?.phone}
     />
   );
 };

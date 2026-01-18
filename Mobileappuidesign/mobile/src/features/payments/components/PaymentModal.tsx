@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,11 +13,13 @@ import {
   View,
   findNodeHandle,
 } from 'react-native';
+import { useRouter } from 'expo-router';
+import { WebView } from 'react-native-webview';
 import { Feather } from '@expo/vector-icons';
 import { PolicyModal } from '../../../components/ui/PolicyModal';
-import { createPaymentAndEarning } from '../../../lib/services/payments';
-import { markBookingPaid, cancelBookingAfterPaymentFailure } from '@/src/features/bookings/services';
-import { supabase } from '@/src/supabaseClient';
+import { useNotchPayPayment } from '@/src/hooks/useNotchPayPayment';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { openUssd, extractUssdCommand } from '@/src/utils/ussd';
 
 interface PaymentModalProps {
   visible: boolean;
@@ -53,6 +55,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   relatedId,
   customerPrice
 }) => {
+  const router = useRouter();
+  const { supabaseProfile } = useAuth();
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('orange');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [cardNumber, setCardNumber] = useState('');
@@ -69,6 +73,40 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const cardNameRef = useRef<TextInput | null>(null);
   const cardExpiryRef = useRef<TextInput | null>(null);
   const cardCvvRef = useRef<TextInput | null>(null);
+  const [showWarningMessage, setShowWarningMessage] = useState(false);
+  const warningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showValidationError, setShowValidationError] = useState(false);
+  const [validationErrorMessage, setValidationErrorMessage] = useState('');
+
+  // Hook NotchPay
+  const {
+    status,
+    isLoading,
+    isPolling,
+    authorizationUrl,
+    lockedChannel,
+    action,
+    confirmMessage,
+    error: paymentError,
+    startPayment,
+    reset: resetPayment,
+  } = useNotchPayPayment({
+    onSuccess: async (payment) => {
+      console.log('[PaymentModal] ✅ Paiement réussi:', payment.id);
+      Alert.alert('Succès', 'Paiement confirmé avec succès');
+      handleClose();
+      await onSuccess(paymentMethod);
+    },
+    onFailed: (payment) => {
+      console.log('[PaymentModal] ❌ Paiement échoué:', payment.failure_reason);
+      Alert.alert('Paiement échoué', payment.failure_reason || 'Veuillez réessayer');
+      setIsProcessing(false);
+    },
+    onTimeout: () => {
+      console.log('[PaymentModal] ⏱️ Timeout du paiement');
+      setIsProcessing(false);
+    },
+  });
 
   const formattedCardNumber = cardNumber.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
 
@@ -144,6 +182,27 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     return null;
   };
 
+  // Gérer l'affichage du message d'avertissement après 30 secondes
+  useEffect(() => {
+    if (status === 'polling' || isPolling) {
+      warningTimeoutRef.current = setTimeout(() => {
+        setShowWarningMessage(true);
+      }, 30000); // 30 secondes
+    } else {
+      // Nettoyer le timeout et réinitialiser le message si le statut change
+      if (warningTimeoutRef.current) {
+        clearTimeout(warningTimeoutRef.current);
+      }
+      setShowWarningMessage(false);
+    }
+
+    return () => {
+      if (warningTimeoutRef.current) {
+        clearTimeout(warningTimeoutRef.current);
+      }
+    };
+  }, [status, isPolling]);
+
   const resetState = () => {
     setPaymentMethod('orange');
     setPhoneNumber('');
@@ -154,10 +213,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     setAcceptedPolicy(false);
     setShowPolicyError(false);
     setIsProcessing(false);
+    setShowWarningMessage(false);
   };
 
   const handleClose = () => {
     resetState();
+    resetPayment();
     onClose();
   };
 
@@ -178,109 +239,41 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     setIsProcessing(true);
 
     try {
-      // Mapper le provider pour la base de données
-      const providerMap = {
-        orange: 'orange_money',
-        mtn: 'mtn_momo',
+      // Mapper le channel pour NotchPay
+      const channelMap = {
+        orange: 'cm.orange',
+        mtn: 'cm.mtn',
         card: 'card'
       } as const;
 
-      const dbProvider = providerMap[paymentMethod];
+      const channel = channelMap[paymentMethod];
 
-      // Si on a les informations nécessaires, créer le paiement dans Supabase
-      if (purpose && payerProfileId) {
-        let finalHostProfileId = hostProfileId;
-        
-        // Si hostProfileId n'est pas fourni, tenter de le récupérer depuis la réservation/listing
-        if (!finalHostProfileId && relatedId) {
-          console.log('[PaymentModal] hostProfileId manquant, tentative de récupération via booking/listing');
-          try {
-            const { data: bookingRow, error: bookingError } = await supabase
-              .from('bookings')
-              .select('listing:listing_id(host_id)')
-              .eq('id', relatedId)
-              .maybeSingle();
+      // Normaliser le numéro de téléphone: juste les 9 derniers chiffres
+      const digits = phoneNumber.replace(/\D/g, '').slice(-9);
+      const normalizedPhone = digits ? `+237${digits}` : '';
+      console.log('[PaymentModal] 📞 Téléphone normalisé (+237):', {
+        original: phoneNumber,
+        normalized: normalizedPhone,
+      });
 
-            if (bookingError) {
-              console.error('[PaymentModal] Erreur fetch booking pour host_profile_id', bookingError);
-            }
-
-            finalHostProfileId = (bookingRow as any)?.listing?.host_id ?? finalHostProfileId;
-
-            // Si toujours rien, tenter via listing directement (si relatedId est un listing_id)
-            if (!finalHostProfileId) {
-              const { data: listingRow, error: listingError } = await supabase
-                .from('listings')
-                .select('host_id')
-                .eq('id', relatedId)
-                .maybeSingle();
-
-              if (listingError) {
-                console.error('[PaymentModal] Erreur fetch listing pour host_id', listingError);
-              }
-
-              finalHostProfileId = (listingRow as any)?.host_id ?? finalHostProfileId;
-            }
-          } catch (err) {
-            console.error('[PaymentModal] Exception récupération host_profile_id', err);
-          }
-        }
-        
-        if (!finalHostProfileId) {
-          console.error('[PaymentModal] hostProfileId toujours manquant après fetch');
-          setIsProcessing(false);
-          Alert.alert(
-            'Paiement impossible',
-            'Impossible de récupérer le propriétaire du logement. Réessayez plus tard ou contactez le support.'
-          );
-          return;
-        }
-        
-        // Le paiement est déjà créé dans createBooking, pas besoin de l'appeler ici
-        console.log('[PaymentModal] Paiement déjà créé lors de la création du booking');
-      } else {
-        console.warn('[PaymentModal] Informations manquantes:', {
-          purpose,
-          payerProfileId,
-          hostProfileId,
-        });
+      // Vérifier la présence du relatedId (booking/visite)
+      if (!relatedId) {
+        console.error('[PaymentModal] ❌ relatedId manquant, paiement impossible');
+        Alert.alert('Paiement', 'Aucune réservation/visite associée. Relance la création avant de payer.');
         setIsProcessing(false);
-        Alert.alert(
-          'Paiement impossible',
-          'Informations de paiement incomplètes. Veuillez réessayer plus tard.'
-        );
         return;
       }
 
-      // Simuler un délai pour l'UX
-      console.log('[PaymentModal] Simulation délai UX...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      console.log('[PaymentModal] Fin traitement, appel onSuccess');
-      setIsProcessing(false);
-      
-      try {
-        console.log('[PaymentModal] Appel onSuccess callback avec provider:', paymentMethod);
-        const result = await onSuccess(paymentMethod);
-        console.log('[PaymentModal] onSuccess callback retourné:', result);
-        console.log('[PaymentModal] onSuccess callback exécuté avec succès');
-        // Le parent gère la fermeture via onSuccess
-      } catch (callbackError) {
-        console.error('[PaymentModal] Erreur dans onSuccess callback:', callbackError);
-        console.error('[PaymentModal] Stack trace callback:', callbackError instanceof Error ? callbackError.stack : 'No stack');
-        // Fermer en cas d'erreur callback pour éviter le figement
-        handleClose();
-      }
+      // Appeler le hook NotchPay
+      await startPayment({
+        payerProfileId: supabaseProfile?.id || payerProfileId || '',
+        purpose: (purpose as any) || 'booking',
+        relatedId: relatedId || '',
+        amount,
+        channel,
+        customerPhone: normalizedPhone,
+      });
     } catch (error) {
-      // En cas d'échec paiement, annuler le booking et libérer les dates
-      if (purpose === 'booking' && relatedId) {
-        try {
-          await cancelBookingAfterPaymentFailure(relatedId);
-        } catch (cleanupError) {
-          console.error('[PaymentModal] Échec cleanup booking après erreur paiement:', cleanupError);
-        }
-      }
-
       const serializedError = (() => {
         try {
           return JSON.stringify(error);
@@ -295,10 +288,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
       Alert.alert(
         'Erreur de paiement',
-        "Une erreur est survenue lors du traitement de votre paiement. Veuillez réessayer. Si le problème persiste, revenez en arrière puis relancez le paiement."
+        "Une erreur est survenue lors du traitement de votre paiement. Veuillez réessayer."
       );
-    } finally {
-      // Réactiver l'UI (handleClose est déjà appelé dans les branches try/catch)
       setIsProcessing(false);
     }
   };
@@ -313,12 +304,160 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       style={[styles.paymentMethodButton, paymentMethod === value && activeStyle]}
       onPress={() => setPaymentMethod(value)}
       activeOpacity={0.7}
+      disabled={isProcessing || isPolling}
     >
       <View style={styles.paymentMethodIcon}>{icon}</View>
       <Text style={styles.paymentMethodLabel}>{label}</Text>
     </TouchableOpacity>
   );
 
+  // Afficher le statut de paiement (polling)
+  if (status === 'polling' || isPolling) {
+    // Mode confirmation USSD pour Mobile Money
+    const showUssdConfirmation = (lockedChannel === 'cm.orange' || lockedChannel === 'cm.mtn') && 
+                                  action === 'confirm' && 
+                                  confirmMessage;
+    
+    const handleOpenUssd = async () => {
+      await openUssd(confirmMessage!);
+    };
+
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+        <View style={styles.container}>
+          <View style={styles.overlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.pollingContainer}>
+                {showUssdConfirmation ? (
+                  <>
+                    <Feather name="smartphone" size={48} color="#2ECC71" style={{ marginBottom: 16 }} />
+                    <Text style={styles.pollingTitle}>Confirmation requise</Text>
+                    
+                    <View style={styles.pollingIndicator}>
+                      <ActivityIndicator size="small" color="#2ECC71" />
+                      <Text style={styles.pollingIndicatorText}>Vérification en cours</Text>
+                    </View>
+
+                    {showWarningMessage && (
+                      <View style={styles.warningMessageContainer}>
+                        <Text style={styles.warningMessageText}>
+                          Une fois le code validé, la vérification peut prendre un peu plus de temps afin de garantir un paiement sécurisé🔐. Veuillez patienter s'il vous plaît.
+                        </Text>
+                      </View>
+                    )}
+
+                    <Text style={styles.ussdHelpText}>
+                      Tu vas recevoir un message d'{lockedChannel === 'cm.orange' ? 'Orange' : 'MTN'} afin de valider ton paiement. Une fois le code validé, la réservation se confirmera automatiquement.
+                    </Text>
+                  </>
+                ) : lockedChannel === 'card' && authorizationUrl ? (
+                  <>
+                    <ActivityIndicator size="large" color="#2ECC71" />
+                    <Text style={styles.pollingTitle}>Vérification du paiement</Text>
+                    <Text style={styles.pollingSubtitle}>Complétez votre paiement par carte</Text>
+                    <View style={styles.webViewContainer}>
+                      <WebView
+                        source={{ uri: authorizationUrl }}
+                        style={styles.webView}
+                        startInLoadingState
+                        renderLoading={() => <ActivityIndicator size="large" color="#2ECC71" />}
+                      />
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <ActivityIndicator size="large" color="#2ECC71" />
+                    <Text style={styles.pollingTitle}>Vérification du paiement</Text>
+                    <Text style={styles.pollingSubtitle}>Confirme sur ton téléphone</Text>
+                  </>
+                )}
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+
+  // Afficher la modale d'erreur de validation du numéro
+  if (status === 'validation_error') {
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+        <View style={styles.container}>
+          <View style={styles.overlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.errorContainer}>
+                <Feather name="alert-circle" size={48} color="#EF4444" />
+                <Text style={styles.errorTitle}>Numéro invalide</Text>
+                <Text style={styles.errorSubtitle}>{paymentError || 'Une erreur est survenue'}</Text>
+
+                <View style={styles.errorButtons}>
+                  <TouchableOpacity
+                    style={[styles.button, styles.buttonPrimary]}
+                    onPress={handleClose}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.buttonText}>Fermer</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  // Afficher l'erreur
+  if (status === 'failed' || status === 'error') {
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+        <View style={styles.container}>
+          <View style={styles.overlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.errorContainer}>
+                <Feather name="alert-circle" size={48} color="#EF4444" />
+                <Text style={styles.errorTitle}>Paiement échoué</Text>
+                <Text style={styles.errorSubtitle}>{paymentError || 'Une erreur est survenue'}</Text>
+
+                <View style={styles.errorButtons}>
+                  <TouchableOpacity
+                    style={[styles.button, styles.buttonPrimary]}
+                    onPress={handlePayment}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.buttonText}>Réessayer</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.button, styles.buttonSecondary]}
+                    onPress={() => {
+                      handleClose();
+                      router.push('/support' as never);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.buttonSecondaryText}>Contacter le support</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.button, styles.buttonSecondary]}
+                    onPress={handleClose}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.buttonSecondaryText}>Annuler</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  // Afficher le formulaire de paiement
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
@@ -915,6 +1054,157 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  pollingContainer: {
+    paddingVertical: 40,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+  },
+  pollingTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#111827',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  pollingSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: '#6B7280',
+    marginBottom: 16,
+  },
+  webViewContainer: {
+    width: '100%',
+    height: 400,
+    marginTop: 16,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  webView: {
+    flex: 1,
+  },
+  errorContainer: {
+    paddingVertical: 40,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+  },
+  errorTitle: {
+    fontFamily: 'Manrope',
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#111827',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  errorSubtitle: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  errorButtons: {
+    width: '100%',
+    gap: 12,
+  },
+  button: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  buttonPrimary: {
+    backgroundColor: '#2ECC71',
+  },
+  buttonSecondary: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  buttonText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'white',
+  },
+  buttonSecondaryText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  ussdConfirmationBlock: {
+    backgroundColor: 'rgba(46, 204, 113, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 204, 113, 0.25)',
+    borderRadius: 12,
+    padding: 16,
+    marginVertical: 20,
+    alignItems: 'center',
+  },
+  ussdConfirmationLabel: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6B7280',
+    marginBottom: 8,
+  },
+  ussdConfirmationCode: {
+    fontFamily: 'Manrope',
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#2ECC71',
+    textAlign: 'center',
+    letterSpacing: 2,
+  },
+  ussdConfirmationText: {
+    fontFamily: 'Manrope',
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111827',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  ussdHelpText: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginTop: 16,
+    lineHeight: 19,
+  },
+  pollingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 24,
+  },
+  pollingIndicatorText: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    color: '#6B7280',
+  },
+  warningMessageContainer: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderRadius: 12,
+    padding: 12,
+    marginVertical: 16,
+  },
+  warningMessageText: {
+    fontFamily: 'Manrope',
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#EF4444',
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });
 

@@ -95,6 +95,8 @@ export const createPaymentAndEarning = async (params: {
     console.log('[createPaymentAndEarning] 🔍 relatedId type:', typeof relatedId, 'value:', relatedId);
     
     // 1. Créer le paiement
+    // ⚠️ IMPORTANT: Cette fonction est DÉPRÉCIÉE - utiliser NotchPay flow à la place
+    // Le paiement doit être créé via createPendingPaymentForNotchPay() et mis à jour par webhook
     const paymentPayload: PaymentInsert = {
       payer_profile_id: payerProfileId,
       purpose,
@@ -102,9 +104,9 @@ export const createPaymentAndEarning = async (params: {
       amount,
       currency: 'XAF',
       provider,
-      provider_reference: null, // Pas de référence réelle en V1
-      status: 'success', // V1 : on considère le paiement comme réussi
-      paid_at: new Date().toISOString(),
+      provider_reference: null,
+      status: 'pending', // ⚠️ CHANGÉ: pending au lieu de success - webhook mettra à jour
+      paid_at: null, // ⚠️ CHANGÉ: null au lieu de now() - webhook mettra à jour
     };
     console.log('[createPaymentAndEarning] 💳 Payment payload avant insert:', paymentPayload);
     console.log('[createPaymentAndEarning] 🔗 related_id dans payload:', paymentPayload.related_id);

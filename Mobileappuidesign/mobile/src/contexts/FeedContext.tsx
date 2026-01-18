@@ -178,36 +178,52 @@ const matchesPreference = (listing: ListingRow, preference: string) => {
   }
 };
 
+const normalizePreference = (value: string) => {
+  if (value === 'meuble') return 'meuble';
+  if (value === 'non-meuble') return 'non-meuble';
+  if (value === 'boutique') return 'boutique';
+  return null;
+};
+
+// Ordonnancer les listings selon l'ordre de sélection des préférences (sans shuffle),
+// en conservant l'ordre d'arrivée (déjà trié par created_at desc côté requête).
 const orderListingsByPreferences = (listings: ListingRow[], preferences: string[]) => {
   if (!listings.length) {
     return listings;
   }
 
-  const recognizedPreferences = Array.from(
-    new Set(
-      preferences.filter((preference) => preference === 'meuble' || preference === 'non-meuble' || preference === 'boutique'),
-    ),
-  );
+  // Préserver l'ordre de sélection, supprimer les doublons et ne garder que les valeurs reconnues
+  const orderedPrefs: ('meuble' | 'non-meuble' | 'boutique')[] = [];
+  preferences.forEach((pref) => {
+    const normalized = normalizePreference(pref);
+    if (normalized && !orderedPrefs.includes(normalized)) {
+      orderedPrefs.push(normalized);
+    }
+  });
 
-  if (!recognizedPreferences.length || recognizedPreferences.length === 3) {
-    return shuffleArray(listings);
+  if (!orderedPrefs.length) {
+    return listings;
   }
 
-  const matchedBuckets = recognizedPreferences.map(() => [] as ListingRow[]);
+  const buckets: Record<string, ListingRow[]> = {};
   const remaining: ListingRow[] = [];
 
   listings.forEach((listing) => {
-    const bucketIndex = recognizedPreferences.findIndex((preference) => matchesPreference(listing, preference));
-    if (bucketIndex === -1) {
+    const bucketKey = orderedPrefs.find((pref) => matchesPreference(listing, pref));
+    if (bucketKey) {
+      if (!buckets[bucketKey]) {
+        buckets[bucketKey] = [];
+      }
+      buckets[bucketKey].push(listing);
+    } else {
       remaining.push(listing);
-      return;
     }
-    matchedBuckets[bucketIndex].push(listing);
   });
 
-  return matchedBuckets
-    .flatMap((bucket) => shuffleArray(bucket))
-    .concat(shuffleArray(remaining));
+  // Concaténer dans l'ordre des préférences sélectionnées, en mélangeant le contenu de chaque bucket,
+  // puis ajouter le reste (mélangé) pour éviter de montrer toujours les mêmes premiers résultats.
+  const prioritized = orderedPrefs.flatMap((pref) => shuffleArray(buckets[pref] ?? []));
+  return prioritized.concat(shuffleArray(remaining));
 };
 
 export const buildSurfaceTag = (listing: ListingRow, mediaRows: ListingMediaRow[]): string | null => {
@@ -383,6 +399,7 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
     setIsLoadingListings(true);
     setListingsError(null);
     try {
+      console.log('[FeedContext] 🚀 Fetching listings...');
       const { data: listingsData, error: listingsErrorRaw } = await supabase
         .from('listings')
         .select('*')
@@ -390,8 +407,11 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
         .order('created_at', { ascending: false });
 
       if (listingsErrorRaw) {
+        console.error('[FeedContext] ❌ Listings fetch error:', listingsErrorRaw);
         throw listingsErrorRaw;
       }
+
+      console.log('[FeedContext] ✅ Listings fetched:', listingsData?.length ?? 0);
 
       const listingRows: ListingRow[] = listingsData ?? [];
       const rentalPreferencesRaw = await AsyncStorage.getItem(STORAGE_KEYS.RENTAL_PREFERENCES);
@@ -488,25 +508,35 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       // Charger l'état de like de l'utilisateur pour chaque listing
       const likesState: Dictionary<LikeInfo> = {};
       if (supabaseProfile?.id) {
+        console.log('[FeedContext] 📊 Loading likes state for user:', supabaseProfile.id);
         await Promise.all(
           listingRows.map(async (listing) => {
-            const hasLiked = await hasUserLikedListing(listing.id, supabaseProfile.id);
-            if (hasLiked) {
-              likesState[listing.id] = { liked: true, favoritedAt: Date.now() };
-            } else {
+            try {
+              const hasLiked = await hasUserLikedListing(listing.id, supabaseProfile.id);
+              if (hasLiked) {
+                likesState[listing.id] = { liked: true, favoritedAt: Date.now() };
+              } else {
+                likesState[listing.id] = { liked: false };
+              }
+            } catch (likeError) {
+              console.error('[FeedContext] Error loading like state for listing:', listing.id, likeError);
               likesState[listing.id] = { liked: false };
             }
           })
         );
+        console.log('[FeedContext] ✅ Likes state loaded');
       } else {
+        console.log('[FeedContext] ℹ️ No user profile, setting all likes to false');
         listingRows.forEach((listing) => {
           likesState[listing.id] = { liked: false };
         });
       }
       setLikesState(likesState);
     } catch (error) {
-      console.error('[FeedProvider] Failed to load listings', error);
-      setListingsError("Impossible de charger les annonces.");
+      console.error('[FeedProvider] ❌ Failed to load listings', error);
+      const errorMessage = error instanceof Error ? error.message : "Impossible de charger les annonces.";
+      setListingsError(errorMessage);
+      setPropertyListings([]);
     } finally {
       setIsLoadingListings(false);
     }
@@ -538,7 +568,9 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
     }
 
     try {
+      console.log('[FeedContext] 👍 Toggling like for listing:', listingId);
       const newLikedState = await toggleListingLike(listingId, supabaseProfile.id);
+      console.log('[FeedContext] ✅ Like toggled:', { listingId, newLikedState });
 
       setLikesState((prev) => {
         const nextState: LikeInfo = newLikedState
@@ -572,8 +604,9 @@ export const FeedProvider = ({ children }: { children: ReactNode }) => {
       // Forcer un recalcul exact en arrière-plan pour éviter les décalages éventuels
       void refreshListingLikesCount(listingId);
     } catch (error) {
-      console.error('[FeedContext] toggleLike error', error);
-      // On ne lève pas l’erreur pour ne pas casser l’UI, mais on pourrait afficher un toast
+      console.error('[FeedContext] ❌ toggleLike error', error);
+      const errorMessage = error instanceof Error ? error.message : 'Erreur lors du like';
+      console.error('[FeedContext] Error details:', errorMessage);
     }
   }, [refreshListingLikesCount, supabaseProfile?.id]);
 

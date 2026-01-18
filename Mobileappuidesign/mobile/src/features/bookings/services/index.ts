@@ -1,7 +1,6 @@
 import { supabase } from '@/src/supabaseClient';
 import type { Database } from '@/src/types/supabase.generated';
 import { sendHeartbeat } from '@/src/utils/heartbeat';
-import { createPaymentAndEarning } from '@/src/lib/services/payments';
 
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T];
 export type BookingRow = Tables<'bookings'>['Row'] & {
@@ -137,8 +136,12 @@ const reserveListingDates = async (listingId: string, dates: string[]) => {
   }
 };
 
+/**
+ * Deprecated for NotchPay: le statut paid doit venir du webhook PSP.
+ * Conservé pour compatibilité éventuelle mais NE PAS appeler dans le flux NotchPay.
+ */
 export const markBookingPaid = async (bookingId: string) => {
-  console.log(`[markBookingPaid] Marking booking ${bookingId} as paid/confirmed`);
+  console.warn('[markBookingPaid] ⚠️ Deprecated - webhook PSP doit marquer paid');
   const { data, error } = await supabase
     .from('bookings')
     .update({
@@ -772,43 +775,11 @@ export const createBooking = async (input: CreateBookingInput) => {
   const mapped = mapToGuestBooking(data as any);
   console.log('[createBooking] Booking créé et mappé avec succès:', mapped);
 
-  // Créer le paiement avec le booking ID comme related_id
-  const hostId = (mapped as any).host?.id;
-  if (!hostId) {
-    console.error('[createBooking] Impossible de créer le paiement: hostId manquant');
-    console.warn('[createBooking] Réservation créée mais paiement non enregistré');
-  } else {
-    console.log('[createBooking] ===== AVANT createPaymentAndEarning =====');
-    console.log('[createBooking] Création du paiement avec booking ID:', mapped.id);
-    console.log('[createBooking] Paramètres paiement:', {
-      payerProfileId: input.guestProfileId,
-      hostProfileId: hostId,
-      purpose: 'booking',
-      relatedId: mapped.id,
-      provider: 'orange_money',
-      customerPrice: input.totalPrice,
-    });
-    
-    try {
-      console.log('[createBooking] Appel createPaymentAndEarning...');
-      await createPaymentAndEarning({
-        payerProfileId: input.guestProfileId,
-        hostProfileId: hostId,
-        purpose: 'booking',
-        relatedId: mapped.id,
-        provider: 'orange_money',
-        customerPrice: input.totalPrice,
-      });
-      console.log('[createBooking] ===== PAIEMENT CRÉÉ AVEC SUCCÈS =====');
-      console.log('[createBooking] Paiement créé avec succès pour booking:', mapped.id);
-    } catch (paymentError) {
-      console.error('[createBooking] ===== ERREUR CRÉATION PAIEMENT =====');
-      console.error('[createBooking] Erreur création paiement:', paymentError);
-      console.error('[createBooking] Stack trace:', paymentError instanceof Error ? paymentError.stack : 'No stack');
-      // Ne pas bloquer la réservation si le paiement échoue
-      console.warn('[createBooking] Paiement échoué mais réservation créée, continuant...');
-    }
-  }
+  // ✅ NOTCHPAY: Paiement géré côté écran via NotchPay
+  // Le booking est créé en status 'pending' avec payment_status 'pending'
+  // L'écran de paiement appellera initBookingPaymentWithNotchPay() pour déclencher le flow NotchPay
+  // Le webhook Supabase mettra à jour payments.status (success/failed)
+  console.log('[createBooking] ✅ Booking créé en status pending - paiement géré via NotchPay côté écran');
 
   // Envoyer le heartbeat (user connecté ou visiteur anonyme)
   await sendHeartbeat(input.guestProfileId || null);

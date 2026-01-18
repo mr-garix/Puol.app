@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ import {
   formatE164PhoneNumber,
   sanitizeNationalNumber,
 } from '@/src/features/auth/phoneCountries';
+import { useOtpAutocomplete } from '@/src/hooks/useOtpAutocomplete';
 
 interface LoginWithOTPScreenProps {
   visible: boolean;
@@ -124,6 +125,18 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
     if (sanitized.length === 6) {
       submitOtp(sanitized);
     }
+  };
+
+  const { detectOtpFromClipboard } = useOtpAutocomplete({
+    onOtpDetected: applyOtpValue,
+    enabled: step === 'otp',
+  });
+
+  const handleOtpFieldFocus = (index: number) => {
+    if (index === 0) {
+      detectOtpFromClipboard();
+    }
+    otpRefs.current[index]?.focus();
   };
 
   const handleOTPChange = (index: number, value: string) => {
@@ -382,6 +395,7 @@ export const LoginWithOTPScreen: React.FC<LoginWithOTPScreenProps> = ({
                         value={digit}
                         onChangeText={(value) => handleOTPChange(index, value)}
                         onKeyPress={({ nativeEvent }) => handleOTPKeyPress(index, nativeEvent.key)}
+                        onFocus={() => handleOtpFieldFocus(index)}
                         keyboardType="number-pad"
                         maxLength={1}
                         selectTextOnFocus

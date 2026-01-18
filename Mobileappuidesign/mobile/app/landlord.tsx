@@ -82,8 +82,6 @@ const PropertyChip: React.FC<PropertyChipProps> = ({ option, selected, onPress }
   );
 };
 
-const WHATSAPP_SUPPORT_PHONE = '237699791732';
-const WHATSAPP_SUPPORT_LINK = 'https://wa.me/237699791732';
 const RESEND_COOLDOWN_SECONDS = 90;
 
 type BlockInfo = {
@@ -459,37 +457,6 @@ export default function BecomeLandlordScreen() {
 
       await refreshProfile().catch((err) => console.warn('[BecomeLandlord] refreshProfile warning', err));
       await markLandlordCompletion();
-
-      const messageLines = [
-        'Nouvelle demande bailleur PUOL',
-        '',
-        `Nom: ${firstName.trim()} ${lastName.trim()}`.trim(),
-        `Téléphone: ${normalizedPhoneNumber}`,
-        `Quartier: ${district.trim() || 'Non précisé'}`,
-        `Ville: ${city.trim() || 'Non précisée'}`,
-        `Types de biens: ${selectedTypes.length ? selectedTypes.join(', ') : 'Non précisés'}`,
-        `Nombre de biens: ${inventory ?? 'Non précisé'}`,
-      ];
-
-      const encodedMessage = encodeURIComponent(messageLines.join('\n'));
-      const whatsappDeepLink = `whatsapp://send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-      const whatsappApiLink = `https://api.whatsapp.com/send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-
-      try {
-        await Linking.openURL(whatsappDeepLink);
-      } catch (deepLinkError) {
-        console.warn('[BecomeLandlord] WhatsApp deep link error', deepLinkError);
-        try {
-          await Linking.openURL(whatsappApiLink);
-        } catch (apiLinkError) {
-          console.warn('[BecomeLandlord] WhatsApp API link error', apiLinkError);
-          try {
-            await Linking.openURL(WHATSAPP_SUPPORT_LINK);
-          } catch (fallbackError) {
-            console.error('[BecomeLandlord] WhatsApp open error', fallbackError);
-          }
-        }
-      }
     },
     [city, district, ensureLandlordApplication, firstName, inventory, lastName, refreshProfile, selectedTypes],
   );

@@ -31,8 +31,7 @@ export const HostSuccessScreen: React.FC<HostSuccessScreenProps> = ({ onClose })
       </View>
       <Text style={styles.title}>Demande envoyée !</Text>
       <Text style={styles.subtitle}>
-        Votre demande pour devenir hôte PUOL a bien été envoyée. Nous allons examiner votre dossier et nous vous
-        contacterons immédiatement sur WhatsApp.
+        Votre demande pour devenir hôte PUOL a bien été envoyée. Vous pouvez maintenant accéder à votre tableau de bord.
       </Text>
       <TouchableOpacity style={styles.button} onPress={handleGoToDashboard}>
         <Text style={styles.buttonText}>Accéder à mon tableau de bord</Text>

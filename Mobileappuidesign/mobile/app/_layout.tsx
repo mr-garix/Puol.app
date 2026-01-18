@@ -22,6 +22,7 @@ import GuestCancellationNotificationBridge from '@/src/infrastructure/notificati
 import NotificationHost from '@/src/infrastructure/notifications/NotificationHost';
 import ApplicationStatusNotificationBridge from '@/src/infrastructure/notifications/ApplicationStatusNotificationBridge';
 import NotificationSyncOnFocus from '@/src/infrastructure/notifications/NotificationSyncOnFocus';
+import { SessionRefreshManager } from '@/src/infrastructure/session/SessionRefreshManager';
 import { NotificationProvider } from '@/src/contexts/NotificationContext';
 import { ReservationProvider } from '@/src/contexts/ReservationContext';
 import { AuthProvider } from '@/src/contexts/AuthContext';
@@ -293,6 +294,7 @@ export default function RootLayout() {
                         <Stack.Screen name="support/index" options={{ headerShown: false }} />
                         <Stack.Screen name="support/[id]" options={{ headerShown: false }} />
                       </Stack>
+                      <SessionRefreshManager />
                       <VisitNotificationBridge />
                       <HostBookingNotificationBridge />
                       <LandlordVisitNotificationBridge />

@@ -62,7 +62,15 @@ import { useListingReviews } from '@/src/features/reviews/hooks/useListingReview
 import { ensureListingConversation } from '@/src/features/messaging/services';
 import { addViewedListing } from '@/src/features/listings/viewHistoryStorage';
 import { supabase } from '@/src/supabaseClient';
-import { createBooking } from '@/src/features/bookings/services';
+
+// ✅ Fonction simple pour générer un UUID v4 sans dépendances externes
+const generateUUID = (): string => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const HERO_HEIGHT = SCREEN_HEIGHT * 0.58;
@@ -562,6 +570,31 @@ const PropertyProfileScreen = () => {
   const { addVisit, updateVisit, getVisitByPropertyId, fetchLatestVisitForListing, refreshVisits } = useVisits();
   const { reservations, addReservation, refreshReservations } = useReservations();
   const [reservationBookingId, setReservationBookingId] = useState<string | null>(null);
+  // ✅ Stocker les données du booking en mémoire (pas en base) jusqu'au paiement success
+  const [pendingBookingData, setPendingBookingData] = useState<{
+    id: string;
+    listingId: string;
+    guestProfileId: string;
+    checkInDate: string;
+    checkOutDate: string;
+    nights: number;
+    nightlyPrice: number;
+    totalPrice: number;
+    depositAmount: number;
+    remainingAmount: number;
+    discountAmount: number;
+    discountPercent: number | null;
+    hasDiscount: boolean;
+  } | null>(null);
+  // ✅ Stocker les données de la visite en mémoire (pas en base) jusqu'au paiement success
+  const [pendingVisitId, setPendingVisitId] = useState<string | null>(null);
+  const [pendingVisitData, setPendingVisitData] = useState<{
+    id: string;
+    listingId: string;
+    guestProfileId: string;
+    visitDate: string;
+    visitTime: string;
+  } | null>(null);
 
   const existingReservation = useMemo(() => {
     if (!property?.id) {
@@ -1656,9 +1689,30 @@ const PropertyProfileScreen = () => {
     });
     setPaymentNotice(paymentInfo.message ?? '');
 
-    // NE PAS créer la réservation ici - seulement préparer les données
-    // La réservation sera créée APRÈS le paiement réussi
-    // Ouvrir le PaymentModal externe - exactement comme les visites
+    // ✅ GÉNÉRER UN UUID EN MÉMOIRE (pas d'insertion en base)
+    // Le booking sera inséré en base SEULEMENT après paiement success
+    const bookingId = generateUUID();
+    console.log('[PropertyProfileScreen] 🔵 UUID généré pour booking (pas encore en base):', bookingId);
+
+    // Stocker les données du booking en mémoire
+    setPendingBookingData({
+      id: bookingId,
+      listingId: property.id,
+      guestProfileId: supabaseProfile.id,
+      checkInDate: checkIn.toISOString(),
+      checkOutDate: checkOut.toISOString(),
+      nights,
+      nightlyPrice: effectivePricePerNight,
+      totalPrice: total,
+      depositAmount: paymentInfo.amountDueNow,
+      remainingAmount: paymentInfo.remainingAmount,
+      discountAmount,
+      discountPercent,
+      hasDiscount: discountAmount > 0,
+    });
+
+    // Passer l'UUID comme relatedId au paiement
+    setReservationBookingId(bookingId);
     setShowPaymentModal(true);
   };
 
@@ -1707,6 +1761,21 @@ const PropertyProfileScreen = () => {
         });
       return;
     }
+
+    // ✅ GÉNÉRER UN UUID EN MÉMOIRE POUR LA VISITE (pas d'insertion en base)
+    // La visite sera insérée en base SEULEMENT après paiement success
+    const visitId = generateUUID();
+    console.log('[PropertyProfileScreen] 🔵 UUID généré pour visite (pas encore en base):', visitId);
+
+    // Stocker les données de la visite en mémoire
+    setPendingVisitData({
+      id: visitId,
+      listingId: property.id,
+      guestProfileId: supabaseProfile?.id || '',
+      visitDate: date.toISOString(),
+      visitTime: time,
+    });
+    setPendingVisitId(visitId);
 
     setShowVisitPaymentModal(true);
   };
@@ -2468,48 +2537,69 @@ const PropertyProfileScreen = () => {
 
       <PaymentModal
         visible={showPaymentModal}
-        onClose={() => setShowPaymentModal(false)}
+        onClose={() => {
+          setShowPaymentModal(false);
+          // Nettoyer les données en mémoire si l'utilisateur ferme sans payer
+          setPendingBookingData(null);
+          setReservationBookingId(null);
+        }}
         onSuccess={async () => {
-          console.log('[PropertyProfileScreen] PaymentModal onSuccess - créer la réservation');
+          console.log('[PropertyProfileScreen] PaymentModal onSuccess - INSÉRER le booking en base maintenant');
           setShowPaymentModal(false);
           
           try {
-            // CRÉER LA RÉSERVATION SEULEMENT APRÈS LE PAIEMENT RÉUSSI
-            if (!supabaseProfile?.id || !reservationSummary) {
-              throw new Error('Données de réservation manquantes');
+            // ✅ INSÉRER LE BOOKING EN BASE SEULEMENT APRÈS PAIEMENT SUCCESS
+            if (pendingBookingData) {
+              console.log('[PropertyProfileScreen] 🔵 Insertion du booking en base avec ID:', pendingBookingData.id);
+              
+              const isSplitPayment = pendingBookingData.nights >= 8;
+              const paymentScheme = isSplitPayment ? 'split' : 'full';
+              
+              const { error: insertError } = await supabase
+                .from('bookings')
+                .insert({
+                  id: pendingBookingData.id, // ✅ Utiliser l'UUID généré
+                  listing_id: pendingBookingData.listingId,
+                  guest_profile_id: pendingBookingData.guestProfileId,
+                  checkin_date: pendingBookingData.checkInDate,
+                  checkout_date: pendingBookingData.checkOutDate,
+                  nights: pendingBookingData.nights,
+                  nightly_price: pendingBookingData.nightlyPrice,
+                  total_price: pendingBookingData.totalPrice,
+                  deposit_amount: pendingBookingData.depositAmount,
+                  remaining_amount: pendingBookingData.remainingAmount,
+                  has_discount: pendingBookingData.hasDiscount,
+                  discount_amount: pendingBookingData.hasDiscount ? pendingBookingData.discountAmount : null,
+                  discount_percent: pendingBookingData.discountPercent,
+                  status: 'confirmed', // ✅ Directement confirmé car paiement réussi
+                  payment_status: isSplitPayment ? 'partially_paid' : 'paid',
+                  payment_scheme: paymentScheme,
+                  deposit_paid: true,
+                  remaining_paid: !isSplitPayment,
+                  currency: 'XAF',
+                  created_at: new Date().toISOString(),
+                });
+
+              if (insertError) {
+                console.error('[PropertyProfileScreen] ❌ Erreur insertion booking:', insertError);
+                Alert.alert('Erreur', 'Le paiement a réussi mais la réservation n\'a pas pu être créée. Veuillez contacter le support.');
+              } else {
+                console.log('[PropertyProfileScreen] ✅ Booking inséré en base avec succès:', pendingBookingData.id);
+              }
             }
 
-            const baseTotal = reservationSummary.nights * pricePerNightValue;
-            const discountRatio = baseTotal > 0 ? Math.min(1, Math.max(0, reservationSummary.total / baseTotal)) : 1;
-            const effectivePricePerNight = pricePerNightValue * discountRatio;
-
-            const booking = await createBooking({
-              listingId: property.id,
-              guestProfileId: supabaseProfile.id,
-              checkInDate: reservationSummary.checkIn.toISOString(),
-              checkOutDate: reservationSummary.checkOut.toISOString(),
-              nights: reservationSummary.nights,
-              nightlyPrice: effectivePricePerNight,
-              totalPrice: reservationSummary.total,
-              depositAmount: reservationSummary.amountDueNow,
-              remainingAmount: reservationSummary.remainingAmount,
-              discountAmount: reservationSummary.discountAmount,
-              discountPercent: reservationSummary.discountPercent,
-              hasDiscount: reservationSummary.discountAmount > 0,
-              status: 'confirmed', // Statut 'confirmed' car le paiement a réussi
-            });
-
-            console.log('[PropertyProfileScreen] Réservation créée avec succès:', booking.id);
+            // Nettoyer les données en mémoire
+            setPendingBookingData(null);
             setReservationBookingId(null);
-            
             await refreshReservations();
             setShowPaymentSuccessModal(true);
           } catch (error) {
-            console.error('[PropertyProfileScreen] Erreur création réservation après paiement:', error);
-            Alert.alert(
-              'Erreur',
-              'Le paiement a réussi mais la réservation n\'a pas pu être créée. Veuillez contacter le support.'
-            );
+            console.error('[PropertyProfileScreen] Erreur après paiement:', error);
+            // Le paiement a réussi, on affiche quand même le succès
+            setPendingBookingData(null);
+            setReservationBookingId(null);
+            await refreshReservations();
+            setShowPaymentSuccessModal(true);
           }
         }}
         amount={reservationSummary.amountDueNow || reservationSummary.total}
@@ -2524,6 +2614,9 @@ const PropertyProfileScreen = () => {
         onBack={() => {
           setShowPaymentModal(false);
           setShowReservationModal(true);
+          // Nettoyer les données en mémoire
+          setPendingBookingData(null);
+          setReservationBookingId(null);
         }}
       />
 
@@ -2552,15 +2645,81 @@ const PropertyProfileScreen = () => {
 
       <PaymentModal
         visible={showVisitPaymentModal}
-        onClose={() => setShowVisitPaymentModal(false)}
+        onClose={() => {
+          setShowVisitPaymentModal(false);
+          // Nettoyer les données en mémoire si l'utilisateur ferme sans payer
+          setPendingVisitData(null);
+          setPendingVisitId(null);
+        }}
         onSuccess={async (provider: 'orange' | 'mtn' | 'card') => {
-          console.log('[PropertyProfileScreen] onSuccess reçu depuis PaymentModal (visit) avec provider:', provider);
+          console.log('[PropertyProfileScreen] PaymentModal (visit) onSuccess - INSÉRER la visite en base maintenant');
+          setShowVisitPaymentModal(false);
+          
           try {
-            await handleVisitPaymentSuccess(provider);
-            console.log('[PropertyProfileScreen] handleVisitPaymentSuccess terminé avec succès');
+            // ✅ INSÉRER LA VISITE EN BASE SEULEMENT APRÈS PAIEMENT SUCCESS
+            if (pendingVisitData && supabaseProfile?.id) {
+              console.log('[PropertyProfileScreen] 🔵 Insertion de la visite en base avec ID:', pendingVisitData.id);
+              
+              const { error: insertError } = await supabase
+                .from('rental_visits')
+                .insert({
+                  id: pendingVisitData.id, // ✅ Utiliser l'UUID généré
+                  rental_listing_id: pendingVisitData.listingId,
+                  guest_profile_id: pendingVisitData.guestProfileId,
+                  visit_date: pendingVisitData.visitDate,
+                  visit_time: pendingVisitData.visitTime,
+                  status: 'confirmed', // ✅ Directement confirmé car paiement réussi
+                  payment_status: 'success', // ✅ Paiement réussi
+                  source: 'mobile_guest',
+                  created_at: new Date().toISOString(),
+                });
+
+              if (insertError) {
+                console.error('[PropertyProfileScreen] ❌ Erreur insertion visite:', insertError);
+                Alert.alert('Erreur', 'Le paiement a réussi mais la visite n\'a pas pu être créée. Veuillez contacter le support.');
+              } else {
+                console.log('[PropertyProfileScreen] ✅ Visite insérée en base avec succès:', pendingVisitData.id);
+                
+                // Envoyer notification au host
+                try {
+                  const { sendVisitNotificationToHost } = await import('@/src/features/rental-visits/services');
+                  await sendVisitNotificationToHost({
+                    visitId: pendingVisitData.id,
+                    listingId: pendingVisitData.listingId,
+                    guestProfileId: pendingVisitData.guestProfileId,
+                    visitDate: pendingVisitData.visitDate,
+                    visitTime: pendingVisitData.visitTime,
+                  });
+                } catch (notifError) {
+                  console.warn('[PropertyProfileScreen] Notification host échouée:', notifError);
+                }
+              }
+            }
+
+            // Nettoyer les données en mémoire
+            setPendingVisitData(null);
+            setPendingVisitId(null);
+            
+            // Afficher le succès
+            setVisitSuccessCopy({
+              title: 'Visite confirmée',
+              message: 'Votre visite a été programmée avec succès.',
+              buttonLabel: 'Voir ma visite',
+            });
+            await refreshVisits();
+            setShowVisitSuccessModal(true);
           } catch (error) {
-            console.error('[PropertyProfileScreen] Erreur dans handleVisitPaymentSuccess:', error);
-            console.error('[PropertyProfileScreen] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+            console.error('[PropertyProfileScreen] Erreur après paiement visite:', error);
+            // Le paiement a réussi, on affiche quand même le succès
+            setPendingVisitData(null);
+            setPendingVisitId(null);
+            setVisitSuccessCopy({
+              title: 'Visite confirmée',
+              message: 'Votre visite a été programmée avec succès.',
+              buttonLabel: 'Voir ma visite',
+            });
+            await refreshVisits();
+            setShowVisitSuccessModal(true);
           }
         }}
         amount={VISIT_PRICE_FCFA}
@@ -2571,10 +2730,13 @@ const PropertyProfileScreen = () => {
         purpose="visit"
         payerProfileId={supabaseProfile?.id}
         hostProfileId={property.landlord?.id ?? property.id ?? ''}
-        relatedId={undefined}
+        relatedId={pendingVisitId ?? undefined}
         onBack={() => {
           setShowVisitPaymentModal(false);
           setShowVisitScheduleModal(true);
+          // Nettoyer les données en mémoire
+          setPendingVisitData(null);
+          setPendingVisitId(null);
         }}
       />
 

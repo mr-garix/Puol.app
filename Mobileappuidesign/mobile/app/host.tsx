@@ -61,8 +61,6 @@ type FurnitureChipProps = {
   onPress: () => void;
 };
 
-const WHATSAPP_SUPPORT_PHONE = '237699791732';
-const WHATSAPP_SUPPORT_LINK = 'https://wa.me/237699791732';
 const RESEND_COOLDOWN_SECONDS = 90;
 
 type BlockInfo = {
@@ -454,37 +452,6 @@ export default function BecomeHostScreen() {
 
       await refreshProfile().catch((err) => console.warn('[BecomeHost] refreshProfile warning', err));
       await markHostCompletion();
-
-      const messageLines = [
-        'Nouvelle demande hôte PUOL',
-        '',
-        `Nom: ${firstName.trim()} ${lastName.trim()}`.trim(),
-        `Téléphone: ${normalizedPhoneNumber}`,
-        `Quartier: ${district.trim() || 'Non précisé'}`,
-        `Ville: ${city.trim() || 'Non précisée'}`,
-        `Types de biens: ${selectedTypes.length ? selectedTypes.join(', ') : 'Non précisés'}`,
-        `Nombre de biens: ${inventory ?? 'Non précisé'}`,
-      ];
-
-      const encodedMessage = encodeURIComponent(messageLines.join('\n'));
-      const whatsappDeepLink = `whatsapp://send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-      const whatsappApiLink = `https://api.whatsapp.com/send?phone=${WHATSAPP_SUPPORT_PHONE}&text=${encodedMessage}`;
-
-      try {
-        await Linking.openURL(whatsappDeepLink);
-      } catch (deepLinkError) {
-        console.warn('[BecomeHost] WhatsApp deep link error', deepLinkError);
-        try {
-          await Linking.openURL(whatsappApiLink);
-        } catch (apiLinkError) {
-          console.warn('[BecomeHost] WhatsApp API link error', apiLinkError);
-          try {
-            await Linking.openURL(WHATSAPP_SUPPORT_LINK);
-          } catch (fallbackError) {
-            console.error('[BecomeHost] WhatsApp open error', fallbackError);
-          }
-        }
-      }
     },
     [city, district, ensureHostApplication, firstName, inventory, lastName, refreshProfile, selectedTypes],
   );

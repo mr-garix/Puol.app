@@ -63,7 +63,7 @@ export const HostVerificationModal: React.FC<HostVerificationModalProps> = ({
           </View>
 
           <Text style={styles.subtitle}>
-            Nous avons envoyé un code sur WhatsApp au{'\n'}
+            Nous avons envoyé un code de vérification au{'\n'}
             <Text style={styles.phone}>{phoneNumber}</Text>
           </Text>
 

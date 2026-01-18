@@ -427,9 +427,12 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
         return next;
       });
 
-      // 💰 Créer le paiement et envoyer la notification APRÈS la création de la visite
+      // ✅ NOTCHPAY: Paiement géré côté écran via NotchPay
+      // La visite est créée en status 'pending' avec payment_status 'pending'
+      // L'écran de paiement appellera processVisitPaymentWithNotchPay() pour déclencher le flow NotchPay
+      // Le webhook Supabase mettra à jour payments.status (success/failed)
       try {
-        console.log('[VisitsContext.addVisit] 🔵 Starting payment and notification flow for visit:', {
+        console.log('[VisitsContext.addVisit] 🔵 Visit créée en status pending - paiement géré via NotchPay côté écran:', {
           visitId: created.id,
           guestProfileId: supabaseProfile.id,
           hostProfileId: created.landlordProfileId,
@@ -437,31 +440,10 @@ export const VisitsProvider = ({ children }: { children: ReactNode }) => {
           visitTime: created.visitTime,
         });
 
-        const { createPaymentAndEarning } = await import('@/src/lib/services/payments');
         const { sendVisitNotificationToHost } = await import('@/src/features/rental-visits/services');
         
-        // Créer le paiement pour la visite
-        console.log('[VisitsContext.addVisit] 💳 Creating payment with params:', {
-          payerProfileId: supabaseProfile.id,
-          hostProfileId: created.landlordProfileId || 'MISSING',
-          purpose: 'visit',
-          relatedId: created.id,
-          provider: 'card',
-        });
-
-        const paymentResult = await createPaymentAndEarning({
-          payerProfileId: supabaseProfile.id,
-          hostProfileId: created.landlordProfileId || '',
-          purpose: 'visit',
-          relatedId: created.id, // ID de la visite
-          provider: 'card', // Valeur par défaut
-        });
-
-        console.log('[VisitsContext.addVisit] ✅ Payment created successfully:', {
-          visitId: created.id,
-          paymentId: paymentResult?.payment?.id,
-          earningId: paymentResult?.earning?.id,
-        });
+        // Envoyer la notification au host que la visite a été créée
+        console.log('[VisitsContext.addVisit] 📬 Sending notification to host...');
 
         // Récupérer les données complètes de la visite avec les relations
         console.log('[VisitsContext.addVisit] 📡 Fetching complete visit data with relations...');

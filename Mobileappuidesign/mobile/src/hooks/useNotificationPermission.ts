@@ -17,21 +17,77 @@ export const useNotificationPermission = () => {
         console.log('[useNotificationPermission] Checking permission status...');
         const accepted = await AsyncStorage.getItem(NOTIFICATION_PERMISSION_KEY);
         const denied = await AsyncStorage.getItem(NOTIFICATION_PERMISSION_DENIED_KEY);
-        const state = await OneSignalService.getPermissionState();
-        const systemStatus = state?.status ?? null;
-        
-        console.log('[useNotificationPermission] Stored values - accepted:', accepted, 'denied:', denied, 'systemStatus:', systemStatus);
-        
-        // Si l'utilisateur a accepté et que le système est toujours autorisé, ne pas afficher la modale
-        if (accepted === 'true' && systemStatus === 'authorized') {
-          console.log('[useNotificationPermission] Modal hidden (already accepted)');
-          setShowModal(false);
+        // Status OneSignal (si disponible)
+        let systemStatus: string | null = null;
+        try {
+          const state = await OneSignalService.getPermissionState();
+          systemStatus = state?.status ?? null;
+        } catch (err) {
+          console.warn('[useNotificationPermission] getPermissionState failed', err);
         }
-        // Si refusé OU jamais accepté, on affiche notre modale de relance
+
+        // Fallback Expo (dynamiques, sans dépendance typée)
+        let expoStatus: string | null = null;
+        try {
+          const ExpoNotifications = require('expo-notifications');
+          if (ExpoNotifications?.getPermissionsAsync) {
+            const expoPerm = await ExpoNotifications.getPermissionsAsync();
+            expoStatus = expoPerm?.status ?? null;
+          }
+        } catch (expoErr) {
+          console.warn('[useNotificationPermission] Expo getPermissionsAsync failed', expoErr);
+        }
+
+        // Déterminer si on a pu obtenir un statut système fiable
+        const hasSystemInfo = systemStatus !== null || expoStatus !== null;
+        
+        const isAuthorized =
+          systemStatus === 'authorized' ||
+          systemStatus === 'provisional' ||
+          expoStatus === 'granted' ||
+          expoStatus === 'limited';
+        let willShowModal = false;
+        let decisionReason = '';
+        
+        console.log('[useNotificationPermission] Stored values - accepted:', accepted, 'denied:', denied, 'systemStatus:', systemStatus, 'expoStatus:', expoStatus, 'hasSystemInfo:', hasSystemInfo);
+        
+        // Si le système est autorisé, on synchronise le flag et on masque la modale
+        if (isAuthorized) {
+          await AsyncStorage.setItem(NOTIFICATION_PERMISSION_KEY, 'true');
+          await AsyncStorage.removeItem(NOTIFICATION_PERMISSION_DENIED_KEY);
+          console.log('[useNotificationPermission] Modal hidden (system authorized)');
+          setShowModal(false);
+          decisionReason = 'authorized-system';
+        }
+        // FALLBACK : Si aucune info système disponible, on se fie au flag accepted
+        else if (!hasSystemInfo && accepted === 'true') {
+          console.log('[useNotificationPermission] Modal hidden (no system info but accepted flag is true)');
+          setShowModal(false);
+          decisionReason = 'no-system-info-but-accepted-flag';
+        }
+        // Si le système n'est pas autorisé mais qu'on avait déjà accepté, on ré-affiche pour réactiver
+        else if (accepted === 'true' && hasSystemInfo && !isAuthorized) {
+          console.log('[useNotificationPermission] Showing modal (was accepted but system now blocked)');
+          setShowModal(true);
+          willShowModal = true;
+          decisionReason = 'accepted-flag-but-blocked-system';
+        }
+        // Cas générique : refusé ou jamais accepté -> afficher
         else {
           console.log('[useNotificationPermission] Showing modal (denied or not accepted yet)');
           setShowModal(true);
+          willShowModal = true;
+          decisionReason = 'denied-or-not-accepted';
         }
+
+        console.log('[useNotificationPermission] Decision summary:', {
+          isAuthorized,
+          systemStatus,
+          accepted,
+          denied,
+          willShowModal,
+          decisionReason,
+        });
       } catch (error) {
         console.error('[useNotificationPermission] Error checking permission status:', error);
         setShowModal(false);

@@ -27,6 +27,7 @@ import {
   parseE164PhoneNumber,
   sanitizeNationalNumber,
 } from '@/src/features/auth/phoneCountries';
+import { useOtpAutocomplete } from '@/src/hooks/useOtpAutocomplete';
 
 interface SignUpScreenProps {
   visible: boolean;
@@ -115,6 +116,32 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
     } finally {
       setIsSending(false);
     }
+  };
+
+  const applyOtpValue = (rawValue: string) => {
+    const sanitized = rawValue.replace(/\D/g, '').slice(0, 6);
+    const digits = sanitized.split('');
+    while (digits.length < 6) {
+      digits.push('');
+    }
+    setOtp(digits);
+    setErrorMessage(null);
+
+    if (sanitized.length === 6) {
+      submitOtp(sanitized);
+    }
+  };
+
+  const { detectOtpFromClipboard } = useOtpAutocomplete({
+    onOtpDetected: applyOtpValue,
+    enabled: step === 'otp',
+  });
+
+  const handleOtpFieldFocus = (index: number) => {
+    if (index === 0) {
+      detectOtpFromClipboard();
+    }
+    otpRefs.current[index]?.focus();
   };
 
   const handleOTPChange = (index: number, value: string) => {
@@ -497,6 +524,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ visible, onClose, on
                         value={digit}
                         onChangeText={(value) => handleOTPChange(index, value)}
                         onKeyPress={({ nativeEvent }) => handleOTPKeyPress(index, nativeEvent.key)}
+                        onFocus={() => handleOtpFieldFocus(index)}
                         keyboardType="number-pad"
                         maxLength={1}
                         selectTextOnFocus

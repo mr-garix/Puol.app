@@ -13,29 +13,15 @@ export const RemainingPaymentHandler: React.FC = () => {
     if (!pendingRemainingPayment) return;
 
     try {
-      console.log('[RemainingPaymentHandler] Processing payment success for booking:', pendingRemainingPayment.id);
+      console.log('[RemainingPaymentHandler] Payment success - webhook will update booking status');
       
-      // Mettre à jour la réservation avec le statut paid et montant restant à 0
-      const { error } = await supabase
-        .from('bookings')
-        .update({ 
-          remaining_payment_status: 'paid',
-          remaining_amount: 0,
-          remaining_nights: 0,
-          remaining_paid: true,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', pendingRemainingPayment.id);
-
-      if (error) {
-        console.error('[RemainingPaymentHandler] Error updating payment status:', error);
-        Alert.alert('Erreur', 'Une erreur est survenue lors de la confirmation du paiement');
-        return;
-      }
-
-      console.log('[RemainingPaymentHandler] Payment confirmed successfully');
+      // ⚠️ NE PAS mettre à jour booking.payment_status côté app
+      // Le webhook mettra à jour:
+      // - payments.status = 'success'
+      // - bookings.payment_status = 'paid'
+      // - bookings.remaining_payment_status = 'paid'
       
-      // Rafraîchir les réservations pour mettre à jour l'état
+      // Rafraîchir les réservations pour mettre à jour l'état depuis la DB
       await refreshReservations();
       
       // Afficher une confirmation
@@ -86,12 +72,10 @@ export const RemainingPaymentHandler: React.FC = () => {
       title="Paiement du solde"
       description="Finalisez votre réservation"
       infoMessage={infoMessage}
-      // Fournir le guest, le host et la réservation pour pouvoir créer le paiement côté Supabase
       payerProfileId={supabaseProfile?.id}
-      hostProfileId={pendingRemainingPayment.hostId}
       relatedId={pendingRemainingPayment.id}
-      purpose="booking"
-      customerPrice={pendingRemainingPayment.amountRemaining}
+      purpose="booking_remaining"
+      customerPhone={supabaseProfile?.phone}
     />
   );
 };

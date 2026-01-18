@@ -42,6 +42,7 @@ export type Database = {
       bookings: {
         Row: {
           checkin_date: string
+          checkin_reminder_sent_at: string | null
           checkout_date: string
           created_at: string
           currency: string
@@ -68,6 +69,7 @@ export type Database = {
         }
         Insert: {
           checkin_date: string
+          checkin_reminder_sent_at?: string | null
           checkout_date: string
           created_at?: string
           currency?: string
@@ -94,6 +96,7 @@ export type Database = {
         }
         Update: {
           checkin_date?: string
+          checkin_reminder_sent_at?: string | null
           checkout_date?: string
           created_at?: string
           currency?: string
@@ -322,83 +325,6 @@ export type Database = {
           {
             foreignKeyName: "landlord_applications_profile_id_fkey"
             columns: ["profile_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      landlord_rental_listings: {
-        Row: {
-          address_text: string | null
-          caution_amount: number | null
-          city: string
-          cover_photo_url: string | null
-          created_at: string
-          description: string | null
-          district: string
-          formatted_address: string | null
-          google_address: string | null
-          id: string
-          is_available: boolean
-          is_furnished: boolean | null
-          landlord_profile_id: string
-          latitude: number | null
-          longitude: number | null
-          place_id: string | null
-          price_per_month: number
-          property_type: string
-          title: string
-          updated_at: string
-        }
-        Insert: {
-          address_text?: string | null
-          caution_amount?: number | null
-          city: string
-          cover_photo_url?: string | null
-          created_at?: string
-          description?: string | null
-          district: string
-          formatted_address?: string | null
-          google_address?: string | null
-          id?: string
-          is_available?: boolean
-          is_furnished?: boolean | null
-          landlord_profile_id: string
-          latitude?: number | null
-          longitude?: number | null
-          place_id?: string | null
-          price_per_month: number
-          property_type: string
-          title: string
-          updated_at?: string
-        }
-        Update: {
-          address_text?: string | null
-          caution_amount?: number | null
-          city?: string
-          cover_photo_url?: string | null
-          created_at?: string
-          description?: string | null
-          district?: string
-          formatted_address?: string | null
-          google_address?: string | null
-          id?: string
-          is_available?: boolean
-          is_furnished?: boolean | null
-          landlord_profile_id?: string
-          latitude?: number | null
-          longitude?: number | null
-          place_id?: string | null
-          price_per_month?: number
-          property_type?: string
-          title?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "landlord_rental_listings_landlord_profile_id_fkey"
-            columns: ["landlord_profile_id"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -971,57 +897,6 @@ export type Database = {
           },
         ]
       }
-      listing_visits: {
-        Row: {
-          created_at: string
-          guest_profile_id: string
-          id: string
-          listing_id: string
-          notes: string | null
-          source: string
-          status: string
-          visit_date: string
-          visit_time: string | null
-        }
-        Insert: {
-          created_at?: string
-          guest_profile_id: string
-          id?: string
-          listing_id: string
-          notes?: string | null
-          source?: string
-          status?: string
-          visit_date: string
-          visit_time?: string | null
-        }
-        Update: {
-          created_at?: string
-          guest_profile_id?: string
-          id?: string
-          listing_id?: string
-          notes?: string | null
-          source?: string
-          status?: string
-          visit_date?: string
-          visit_time?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "listing_visits_guest_profile_id_fkey"
-            columns: ["guest_profile_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "listing_visits_listing_id_fkey"
-            columns: ["listing_id"]
-            isOneToOne: false
-            referencedRelation: "listings"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       listings: {
         Row: {
           address_text: string | null
@@ -1112,73 +987,61 @@ export type Database = {
         }
         Relationships: []
       }
-      otp_codes: {
-        Row: {
-          attempts: number | null
-          code: string
-          consumed: boolean | null
-          created_at: string | null
-          expires_at: string
-          id: number
-          phone: string
-        }
-        Insert: {
-          attempts?: number | null
-          code: string
-          consumed?: boolean | null
-          created_at?: string | null
-          expires_at: string
-          id?: number
-          phone: string
-        }
-        Update: {
-          attempts?: number | null
-          code?: string
-          consumed?: boolean | null
-          created_at?: string | null
-          expires_at?: string
-          id?: number
-          phone?: string
-        }
-        Relationships: []
-      }
       payments: {
         Row: {
           amount: number
+          client_payload: Json | null
           created_at: string
           currency: string
+          failure_reason: string | null
           id: string
+          idempotency_key: string | null
           paid_at: string | null
           payer_profile_id: string
           provider: string
+          provider_channel: string | null
+          provider_payment_url: string | null
           provider_reference: string | null
           purpose: string
+          raw_provider_payload: Json | null
           related_id: string | null
           status: string
         }
         Insert: {
           amount: number
+          client_payload?: Json | null
           created_at?: string
           currency?: string
+          failure_reason?: string | null
           id?: string
+          idempotency_key?: string | null
           paid_at?: string | null
           payer_profile_id: string
           provider: string
+          provider_channel?: string | null
+          provider_payment_url?: string | null
           provider_reference?: string | null
           purpose: string
+          raw_provider_payload?: Json | null
           related_id?: string | null
           status: string
         }
         Update: {
           amount?: number
+          client_payload?: Json | null
           created_at?: string
           currency?: string
+          failure_reason?: string | null
           id?: string
+          idempotency_key?: string | null
           paid_at?: string | null
           payer_profile_id?: string
           provider?: string
+          provider_channel?: string | null
+          provider_payment_url?: string | null
           provider_reference?: string | null
           purpose?: string
+          raw_provider_payload?: Json | null
           related_id?: string | null
           status?: string
         }
@@ -1330,6 +1193,39 @@ export type Database = {
           supply_role?: string
           updated_at?: string
           username?: string | null
+        }
+        Relationships: []
+      }
+      push_delivery_log: {
+        Row: {
+          created_at: string
+          dedupe_key: string
+          event_id: string
+          event_table: string
+          id: string
+          notification_type: string
+          recipient_profile_id: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          dedupe_key: string
+          event_id: string
+          event_table: string
+          id?: string
+          notification_type: string
+          recipient_profile_id: string
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          dedupe_key?: string
+          event_id?: string
+          event_table?: string
+          id?: string
+          notification_type?: string
+          recipient_profile_id?: string
+          status?: string
         }
         Relationships: []
       }
@@ -1486,6 +1382,8 @@ export type Database = {
           guest_profile_id: string
           id: string
           notes: string | null
+          payment_status: string | null
+          reminder_sent_at: string | null
           rental_listing_id: string
           source: string
           status: string
@@ -1499,6 +1397,8 @@ export type Database = {
           guest_profile_id: string
           id?: string
           notes?: string | null
+          payment_status?: string | null
+          reminder_sent_at?: string | null
           rental_listing_id: string
           source?: string
           status?: string
@@ -1512,6 +1412,8 @@ export type Database = {
           guest_profile_id?: string
           id?: string
           notes?: string | null
+          payment_status?: string | null
+          reminder_sent_at?: string | null
           rental_listing_id?: string
           source?: string
           status?: string
@@ -1648,7 +1550,21 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      current_user_is_admin: { Args: never; Returns: boolean }
+      current_user_is_guest: { Args: { guest_id: string }; Returns: boolean }
+      current_user_is_listing_host: {
+        Args: { listing_id: string }
+        Returns: boolean
+      }
+      current_user_matches_profile: {
+        Args: { profile_id: string }
+        Returns: boolean
+      }
+      current_user_phone: { Args: never; Returns: string }
+      profile_matches_current_user: {
+        Args: { profile_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

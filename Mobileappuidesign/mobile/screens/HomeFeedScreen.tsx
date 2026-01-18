@@ -41,6 +41,7 @@ import { CommentBottomSheet } from '@/features/host/components/CommentBottomShee
 import { useComments as useListingComments } from '@/features/comments/hooks';
 import { ShareFeature } from '@/src/components/ui/ShareFeature';
 import { SearchModal } from '@/src/features/search/components/SearchModal';
+import { FeedErrorState } from '@/src/components/FeedErrorState';
 import { useFeed, type PropertyListing } from '@/src/contexts/FeedContext';
 import { useListingDetails, prefetchListingData, listingPrefetchCache } from '@/features/listings/hooks/useListingDetails';
 import { VideoWithThumbnail } from '@/src/components/VideoWithThumbnail';
@@ -199,7 +200,7 @@ export default function HomeScreen() {
 
   const likeButtonScale = useRef(new Animated.Value(1)).current;
   const mediaScrollX = useRef(new Animated.Value(0)).current;
-  const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings, preserveFeedForAuthFlow } = useFeed();
+  const { propertyListings, likesById, toggleLike, updateListingCommentCount, refreshListings, preserveFeedForAuthFlow, isLoadingListings, listingsError } = useFeed();
 
   const [activeListingIdx, setActiveListingIdx] = useState(0);
   const prevListingsLengthRef = useRef<number>(0);
@@ -1494,6 +1495,14 @@ export default function HomeScreen() {
     },
     [ensureAuthenticated],
   );
+
+  if (listingsError && propertyListings.length === 0) {
+    return (
+      <View style={styles.screen}>
+        <FeedErrorState error={listingsError} onRetry={refreshListings} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.screen}>
